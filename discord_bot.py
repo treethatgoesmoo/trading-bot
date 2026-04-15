@@ -188,7 +188,7 @@ async def market_monitor():
         return
 
     # Reset state at the start of each trading day
-    if now.hour == MARKET_OPEN_HOUR and now.minute == MARKET_OPEN_MINUTE and not state.daily_bias:
+    if now.hour == MARKET_OPEN_HOUR and now.minute == MARKET_OPEN_MINUTE and not state.first_candle:
         state.reset()
 
     # Stop monitoring after the cutoff
@@ -202,20 +202,20 @@ async def market_monitor():
         return
 
     try:
-        # Step 1: Get daily bias if not set
-        if state.daily_bias is None:
-            bias = await get_daily_bias(client)
-            if bias:
-                state.daily_bias = bias
-                await channel.send(embed=bias_embed(bias))
-
-        # Step 2: Get first candle range after 9:35 AM ET
+        # Step 1: Get first candle range after 9:35 AM ET
         if state.first_candle is None:
             if now.hour == MARKET_OPEN_HOUR and now.minute >= FIRST_CANDLE_READY_MINUTE:
                 fc = await get_first_candle_range(client)
                 if fc:
                     state.first_candle = fc
                     await channel.send(embed=range_embed(fc))
+
+        # Step 2: Get daily bias after the first 5-min candle is posted
+        if state.first_candle is not None and state.daily_bias is None:
+            bias = await get_daily_bias(client)
+            if bias:
+                state.daily_bias = bias
+                await channel.send(embed=bias_embed(bias))
 
         # Step 3: Check for trade setups
         if state.daily_bias and state.first_candle and not state.signal_fired:
