@@ -58,17 +58,20 @@ class StrategyState:
     """Tracks the live state of the first-candle strategy throughout the session."""
 
     def __init__(self):
+        self.trading_day: str | None = None
         self.daily_bias: DailyBias | None = None
         self.first_candle: FirstCandleRange | None = None
         self.broke_above: bool = False
         self.broke_below: bool = False
         self.retest_detected: bool = False
         self.signal_fired: bool = False
+        self.monitoring_ended: bool = False
         self.break_candle_high: float | None = None
         self.break_candle_low: float | None = None
 
-    def reset(self):
+    def reset(self, today: str | None = None):
         self.__init__()
+        self.trading_day = today
 
 
 async def get_daily_bias(client: MarketDataClient, ticker: str = TICKER) -> DailyBias | None:
