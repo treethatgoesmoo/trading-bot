@@ -12,6 +12,7 @@ from config import (
     TICKER,
     FIRST_CANDLE_READY_MINUTE,
     MARKET_OPEN_HOUR,
+    MARKET_OPEN_MINUTE,
     MONITORING_END_HOUR,
     MONITORING_END_MINUTE,
     POLL_INTERVAL_SECONDS,
@@ -104,6 +105,9 @@ async def on_ready():
 @bot.command(name="bias")
 async def cmd_bias(ctx):
     """Get today's daily bias (bullish/bearish)."""
+    if state.first_candle is None:
+        await ctx.send("First 5-min candle hasn't been set yet. Bias will be posted after `!range` or automatically after 9:35 AM ET.")
+        return
     await ctx.send("Fetching daily bias...")
     try:
         bias = await get_daily_bias(client)
@@ -119,7 +123,7 @@ async def cmd_bias(ctx):
 
 @bot.command(name="range")
 async def cmd_range(ctx):
-    """Get today's first 5-minute candle range."""
+    """Get today's first 5-minute candle range, then fetch daily bias."""
     await ctx.send("Fetching first candle range...")
     try:
         fc = await get_first_candle_range(client)
@@ -131,6 +135,18 @@ async def cmd_range(ctx):
         return
     state.first_candle = fc
     await ctx.send(embed=range_embed(fc))
+
+    if state.daily_bias is None:
+        try:
+            bias = await get_daily_bias(client)
+        except Exception as exc:
+            await ctx.send(f"Error fetching daily bias: {exc}")
+            return
+        if bias is None:
+            await ctx.send("Could not fetch daily bias data.")
+            return
+        state.daily_bias = bias
+        await ctx.send(embed=bias_embed(bias))
 
 
 @bot.command(name="status")
@@ -187,17 +203,32 @@ async def market_monitor():
     if now.weekday() >= 5:
         return
 
-    # Reset state at the start of each trading day
-    if now.hour == MARKET_OPEN_HOUR and now.minute == MARKET_OPEN_MINUTE and not state.first_candle:
-        state.reset()
+    today_str = now.strftime("%Y-%m-%d")
+    channel = bot.get_channel(ALERT_CHANNEL_ID)
+
+    # Reset state when the trading day changes
+    if state.trading_day != today_str:
+        state.reset(today_str)
+        if channel:
+            market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+            end_time = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
+            await channel.send(
+                f"**Monitoring started for {today_str}** | "
+                f"{TICKER} | {market_open_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} ET"
+            )
 
     # Stop monitoring after the cutoff
     if now.hour > MONITORING_END_HOUR or (
         now.hour == MONITORING_END_HOUR and now.minute >= MONITORING_END_MINUTE
     ):
+        if not state.monitoring_ended and channel:
+            state.monitoring_ended = True
+            if state.signal_fired:
+                await channel.send(f"**Monitoring ended for {today_str}** | Signal was fired today.")
+            else:
+                await channel.send(f"**Monitoring ended for {today_str}** | No signal today.")
         return
 
-    channel = bot.get_channel(ALERT_CHANNEL_ID)
     if channel is None:
         return
 
@@ -211,6 +242,8 @@ async def market_monitor():
             if fc:
                 state.first_candle = fc
                 await channel.send(embed=range_embed(fc))
+            else:
+                logger.warning("First candle returned None for %s — will retry next poll", TICKER)
 
         # Step 2: Get daily bias after the first 5-min candle is posted
         if state.first_candle is not None and state.daily_bias is None:
@@ -218,6 +251,8 @@ async def market_monitor():
             if bias:
                 state.daily_bias = bias
                 await channel.send(embed=bias_embed(bias))
+            else:
+                logger.warning("Daily bias returned None for %s — will retry next poll", TICKER)
 
         # Step 3: Check for trade setups
         if state.daily_bias and state.first_candle and not state.signal_fired and past_first_candle:
