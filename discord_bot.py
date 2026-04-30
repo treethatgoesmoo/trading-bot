@@ -201,14 +201,16 @@ async def market_monitor():
     if channel is None:
         return
 
+    candle_ready_time = now.replace(hour=MARKET_OPEN_HOUR, minute=FIRST_CANDLE_READY_MINUTE, second=0, microsecond=0)
+    past_first_candle = now >= candle_ready_time
+
     try:
         # Step 1: Get first candle range after 9:35 AM ET
-        if state.first_candle is None:
-            if now.hour == MARKET_OPEN_HOUR and now.minute >= FIRST_CANDLE_READY_MINUTE:
-                fc = await get_first_candle_range(client)
-                if fc:
-                    state.first_candle = fc
-                    await channel.send(embed=range_embed(fc))
+        if state.first_candle is None and past_first_candle:
+            fc = await get_first_candle_range(client)
+            if fc:
+                state.first_candle = fc
+                await channel.send(embed=range_embed(fc))
 
         # Step 2: Get daily bias after the first 5-min candle is posted
         if state.first_candle is not None and state.daily_bias is None:
@@ -218,11 +220,10 @@ async def market_monitor():
                 await channel.send(embed=bias_embed(bias))
 
         # Step 3: Check for trade setups
-        if state.daily_bias and state.first_candle and not state.signal_fired:
-            if now.hour >= MARKET_OPEN_HOUR and now.minute >= FIRST_CANDLE_READY_MINUTE:
-                signal = await check_for_setup(state, client)
-                if signal:
-                    await channel.send("@everyone", embed=signal_embed(signal))
+        if state.daily_bias and state.first_candle and not state.signal_fired and past_first_candle:
+            signal = await check_for_setup(state, client)
+            if signal:
+                await channel.send("@everyone", embed=signal_embed(signal))
 
     except Exception as exc:
         logger.exception("Monitor error: %s", exc)
