@@ -192,7 +192,7 @@ class MarketDataClient:
 
         df = pd.DataFrame(values)
         df = df.rename(columns={"datetime": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(ET).dt.tz_convert("UTC")
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -236,7 +236,7 @@ class MarketDataClient:
             raise APIError(f"Finnhub unexpected response for {symbol}")
 
         df = pd.DataFrame({
-            "timestamp": pd.to_datetime(data["t"], unit="s"),
+            "timestamp": pd.to_datetime(data["t"], unit="s", utc=True),
             "open": data["o"],
             "high": data["h"],
             "low": data["l"],
@@ -273,7 +273,11 @@ class MarketDataClient:
             "Volume": "volume",
         })
         df = df[["timestamp", "open", "high", "low", "close", "volume"]]
-        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+        timestamps = pd.to_datetime(df["timestamp"])
+        if timestamps.dt.tz is not None:
+            df["timestamp"] = timestamps.dt.tz_convert("UTC")
+        else:
+            df["timestamp"] = timestamps.dt.tz_localize(ET).dt.tz_convert("UTC")
 
         if len(df) > count:
             df = df.tail(count)
