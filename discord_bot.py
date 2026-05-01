@@ -95,9 +95,16 @@ def signal_embed(signal: TradeSignal) -> discord.Embed:
 
 @bot.event
 async def on_ready():
-    logger.info("Bot connected as %s", bot.user)
+    logger.info("Bot connected as %s (ID: %s)", bot.user, bot.user.id)
+    logger.info("Config: ticker=%s channel=%s poll=%ds window=%02d:%02d-%02d:%02d ET",
+                TICKER, ALERT_CHANNEL_ID, POLL_INTERVAL_SECONDS,
+                MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, MONITORING_END_HOUR, MONITORING_END_MINUTE)
+    logger.info("Data sources: TwelveData=%s Finnhub=%s yfinance=always",
+                "configured" if client.twelvedata_limiter else "not set",
+                "configured" if client.finnhub_limiter else "not set")
     if not market_monitor.is_running():
         market_monitor.start()
+        logger.info("Market monitor loop started (every %ds)", POLL_INTERVAL_SECONDS)
 
 
 # ── Commands ────────────────────────────────────────────────
@@ -199,8 +206,10 @@ async def cmd_status(ctx):
 async def market_monitor():
     """Main loop that runs during market hours."""
     now = datetime.now(ET)
+    time_str = now.strftime("%Y-%m-%d %I:%M:%S %p ET")
 
     if now.weekday() >= 5:
+        logger.debug("[%s] Weekend — skipping", time_str)
         return
 
     today_str = now.strftime("%Y-%m-%d")
@@ -208,6 +217,7 @@ async def market_monitor():
 
     # Reset state when the trading day changes
     if state.trading_day != today_str:
+        logger.info("[%s] New trading day detected (%s) — resetting state", time_str, today_str)
         state.reset(today_str)
         if channel:
             market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
@@ -216,52 +226,80 @@ async def market_monitor():
                 f"**Monitoring started for {today_str}** | "
                 f"{TICKER} | {market_open_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} ET"
             )
+        else:
+            logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
 
     # Stop monitoring after the cutoff
     if now.hour > MONITORING_END_HOUR or (
         now.hour == MONITORING_END_HOUR and now.minute >= MONITORING_END_MINUTE
     ):
-        if not state.monitoring_ended and channel:
-            state.monitoring_ended = True
-            if state.signal_fired:
-                await channel.send(f"**Monitoring ended for {today_str}** | Signal was fired today.")
-            else:
-                await channel.send(f"**Monitoring ended for {today_str}** | No signal today.")
+        if not state.monitoring_ended:
+            logger.info("[%s] Monitoring window ended", time_str)
+            if channel:
+                state.monitoring_ended = True
+                if state.signal_fired:
+                    await channel.send(f"**Monitoring ended for {today_str}** | Signal was fired today.")
+                else:
+                    await channel.send(f"**Monitoring ended for {today_str}** | No signal today.")
         return
 
     if channel is None:
+        logger.error("[%s] Channel %s not found — skipping poll", time_str, ALERT_CHANNEL_ID)
         return
 
     candle_ready_time = now.replace(hour=MARKET_OPEN_HOUR, minute=FIRST_CANDLE_READY_MINUTE, second=0, microsecond=0)
     past_first_candle = now >= candle_ready_time
 
+    if not past_first_candle:
+        logger.info("[%s] Waiting for first candle (ready at %s)", time_str, candle_ready_time.strftime("%I:%M %p"))
+        return
+
+    logger.info("[%s] Poll cycle | first_candle=%s | bias=%s | signal_fired=%s | broke_above=%s | broke_below=%s",
+                time_str,
+                f"${state.first_candle.high}/${state.first_candle.low}" if state.first_candle else "None",
+                state.daily_bias.direction if state.daily_bias else "None",
+                state.signal_fired,
+                state.broke_above,
+                state.broke_below)
+
     try:
         # Step 1: Get first candle range after 9:35 AM ET
-        if state.first_candle is None and past_first_candle:
+        if state.first_candle is None:
+            logger.info("[%s] Fetching first 5-min candle for %s...", time_str, TICKER)
             fc = await get_first_candle_range(client)
             if fc:
                 state.first_candle = fc
+                logger.info("[%s] First candle set: high=$%s low=$%s range=$%.2f type=%s",
+                            time_str, fc.high, fc.low, fc.range_size, fc.candle_type)
                 await channel.send(embed=range_embed(fc))
             else:
-                logger.warning("First candle returned None for %s — will retry next poll", TICKER)
+                logger.warning("[%s] First candle returned None for %s — will retry next poll", time_str, TICKER)
 
         # Step 2: Get daily bias after the first 5-min candle is posted
         if state.first_candle is not None and state.daily_bias is None:
+            logger.info("[%s] Fetching daily bias for %s...", time_str, TICKER)
             bias = await get_daily_bias(client)
             if bias:
                 state.daily_bias = bias
+                logger.info("[%s] Daily bias set: %s (close=$%s sma=$%s dist=%s%% strength=%s)",
+                            time_str, bias.direction, bias.current_price, bias.sma_value,
+                            bias.distance_pct, bias.strength)
                 await channel.send(embed=bias_embed(bias))
             else:
-                logger.warning("Daily bias returned None for %s — will retry next poll", TICKER)
+                logger.warning("[%s] Daily bias returned None for %s — will retry next poll", time_str, TICKER)
 
         # Step 3: Check for trade setups
-        if state.daily_bias and state.first_candle and not state.signal_fired and past_first_candle:
+        if state.daily_bias and state.first_candle and not state.signal_fired:
             signal = await check_for_setup(state, client)
             if signal:
+                logger.info("[%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s",
+                            time_str, signal.direction, signal.entry_price, signal.stop_loss, signal.target)
                 await channel.send("@everyone", embed=signal_embed(signal))
+            else:
+                logger.debug("[%s] No setup detected this poll", time_str)
 
     except Exception as exc:
-        logger.exception("Monitor error: %s", exc)
+        logger.exception("[%s] Monitor error: %s", time_str, exc)
 
 
 @market_monitor.before_loop
