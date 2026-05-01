@@ -206,7 +206,7 @@ async def cmd_status(ctx):
 async def market_monitor():
     """Main loop that runs during market hours."""
     now = datetime.now(ET)
-    time_str = now.strftime("%I:%M:%S %p ET")
+    time_str = now.strftime("%Y-%m-%d %I:%M:%S %p ET")
 
     if now.weekday() >= 5:
         logger.debug("[%s] Weekend — skipping", time_str)
