@@ -1,6 +1,8 @@
 # ── Trading Bot Makefile ─────────────────────────────────────
 
-.PHONY: install run backtest stop status logs clean
+.PHONY: install run start stop restart status backtest logs clean
+
+PID_FILE = .bot.pid
 
 # Install dependencies
 install:
@@ -10,11 +12,39 @@ install:
 run:
 	python main.py
 
-# Run the bot in the background (Windows-compatible)
+# Run the bot in the background
 start:
-	@echo Starting bot in background...
-	start /B python main.py > logs/bot.log 2>&1
-	@echo Bot started. Logs: logs/bot.log
+	@mkdir -p logs
+	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+		echo "Bot is already running (PID $$(cat $(PID_FILE)))"; \
+	else \
+		nohup python main.py >> logs/bot.log 2>&1 & echo $$! > $(PID_FILE); \
+		echo "Bot started (PID $$(cat $(PID_FILE))). Logs: logs/bot.log"; \
+	fi
+
+# Stop the bot
+stop:
+	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+		kill $$(cat $(PID_FILE)); \
+		rm -f $(PID_FILE); \
+		echo "Bot stopped."; \
+	else \
+		echo "Bot is not running."; \
+		rm -f $(PID_FILE); \
+	fi
+
+# Restart the bot
+restart: stop
+	@sleep 2
+	@$(MAKE) start
+
+# Show bot status
+status:
+	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+		echo "Bot is running (PID $$(cat $(PID_FILE)))"; \
+	else \
+		echo "Bot is not running."; \
+	fi
 
 # Run backtest (usage: make backtest DATE=2026-04-13 TICKER=SPY)
 DATE ?= 2026-04-13
@@ -23,17 +53,15 @@ VERBOSE ?=
 backtest:
 	python backtest.py $(DATE) $(TICKER) $(if $(VERBOSE),--verbose)
 
-# Show recent logs
+# Show today's log
 logs:
-	@if exist logs\bot.log (type logs\bot.log | more) else (echo No log file found.)
+	@if [ -f logs/bot.log ]; then tail -100 logs/bot.log; else echo "No log file found."; fi
 
-# Kill running bot processes
-stop:
-	@echo Stopping bot...
-	@taskkill /F /IM python.exe /FI "WINDOWTITLE eq *main.py*" 2>nul || echo No bot process found.
+# Follow logs in real time
+tail:
+	@tail -f logs/bot.log
 
 # Remove cached files
 clean:
-	@if exist __pycache__ rmdir /S /Q __pycache__
-	@if exist logs\bot.log del logs\bot.log
-	@echo Cleaned.
+	rm -rf __pycache__ .bot.pid
+	@echo "Cleaned."
