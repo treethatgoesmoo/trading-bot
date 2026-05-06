@@ -428,15 +428,23 @@ async def market_monitor():
         logger.info("[%s] New trading day detected (%s) — resetting state for all tickers", time_str, today_str)
         for ticker in active_tickers:
             states[ticker].reset(today_str)
-        if channel:
-            market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
-            end_time = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
-            await channel.send(
-                f"**Monitoring started for {today_str}** | "
-                f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} ET"
-            )
+
+        # Only send "Monitoring started" if we're within the monitoring window
+        monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
+        if now < monitoring_cutoff:
+            if channel:
+                market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+                await channel.send(
+                    f"**Monitoring started for {today_str}** | "
+                    f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
+                )
+            else:
+                logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
         else:
-            logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
+            # Started after monitoring window — mark as ended so we don't post a blank summary
+            for ticker in active_tickers:
+                states[ticker].monitoring_ended = True
+            logger.info("[%s] Bot started after monitoring window — skipping session", time_str)
 
     # Trade tracking continues until market close
     tracking_cutoff = now.replace(hour=TRADE_TRACKING_END_HOUR, minute=TRADE_TRACKING_END_MINUTE, second=0, microsecond=0)
