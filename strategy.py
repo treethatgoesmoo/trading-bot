@@ -4,13 +4,14 @@ from datetime import datetime
 import pytz
 
 from market_data import MarketDataClient
-from config import TICKER, SMA_PERIOD, RISK_REWARD_RATIO
+from config import SMA_PERIOD, RISK_REWARD_RATIO
 
 ET = pytz.timezone("US/Eastern")
 
 
 @dataclass
 class DailyBias:
+    ticker: str
     direction: str  # "BULLISH" or "BEARISH"
     current_price: float
     sma_value: float
@@ -29,6 +30,7 @@ class DailyBias:
 
 @dataclass
 class FirstCandleRange:
+    ticker: str
     high: float
     low: float
     open_price: float
@@ -45,6 +47,7 @@ class FirstCandleRange:
 
 @dataclass
 class TradeSignal:
+    ticker: str
     direction: str  # "LONG" or "SHORT"
     entry_price: float
     stop_loss: float
@@ -74,7 +77,7 @@ class StrategyState:
         self.trading_day = today
 
 
-async def get_daily_bias(client: MarketDataClient, ticker: str = TICKER) -> DailyBias | None:
+async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | None:
     """Determine bullish/bearish bias from daily 50 SMA."""
     daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
     if daily.empty or len(daily) < SMA_PERIOD:
@@ -89,6 +92,7 @@ async def get_daily_bias(client: MarketDataClient, ticker: str = TICKER) -> Dail
     direction = "BULLISH" if close_val > sma_val else "BEARISH"
 
     return DailyBias(
+        ticker=ticker,
         direction=direction,
         current_price=round(close_val, 2),
         sma_value=round(sma_val, 2),
@@ -96,7 +100,7 @@ async def get_daily_bias(client: MarketDataClient, ticker: str = TICKER) -> Dail
     )
 
 
-async def get_first_candle_range(client: MarketDataClient, ticker: str = TICKER) -> FirstCandleRange | None:
+async def get_first_candle_range(client: MarketDataClient, ticker: str) -> FirstCandleRange | None:
     """Get the first 5-minute candle range for today."""
     data = await client.fetch_candles(ticker, interval="5", count=50)
     if data.empty:
@@ -111,6 +115,7 @@ async def get_first_candle_range(client: MarketDataClient, ticker: str = TICKER)
             ts = ts.astimezone(ET)
         if ts.date() == today and ts.hour == 9 and ts.minute == 30:
             return FirstCandleRange(
+                ticker=ticker,
                 high=round(float(row["high"]), 2),
                 low=round(float(row["low"]), 2),
                 open_price=round(float(row["open"]), 2),
@@ -119,7 +124,7 @@ async def get_first_candle_range(client: MarketDataClient, ticker: str = TICKER)
     return None
 
 
-async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker: str = TICKER) -> TradeSignal | None:
+async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker: str) -> TradeSignal | None:
     """Poll the latest 1-min candles and check for a break-and-retest setup."""
     if state.daily_bias is None or state.first_candle is None:
         return None
@@ -173,6 +178,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
                     target = recent_close - (risk * RISK_REWARD_RATIO)
                     state.signal_fired = True
                     return TradeSignal(
+                        ticker=ticker,
                         direction="SHORT",
                         entry_price=round(recent_close, 2),
                         stop_loss=round(stop_loss, 2),
@@ -193,6 +199,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
                     target = recent_close + (risk * RISK_REWARD_RATIO)
                     state.signal_fired = True
                     return TradeSignal(
+                        ticker=ticker,
                         direction="LONG",
                         entry_price=round(recent_close, 2),
                         stop_loss=round(stop_loss, 2),

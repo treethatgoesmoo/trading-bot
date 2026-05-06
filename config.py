@@ -17,7 +17,7 @@ TWELVEDATA_DAILY_LIMIT = 750
 FINNHUB_CALLS_PER_MIN = 55
 
 # Trading
-TICKER = "SPY"
+TICKERS = [t.strip().upper() for t in os.getenv("TICKERS", "SPY").split(",") if t.strip()]
 SMA_PERIOD = 50
 RISK_REWARD_RATIO = 2.0
 
