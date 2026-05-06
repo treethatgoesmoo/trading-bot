@@ -18,14 +18,107 @@ if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
 
+import numpy as np
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 
-from config import SMA_PERIOD, RISK_REWARD_RATIO
+from config import (
+    SMA_PERIOD, RISK_REWARD_RATIO,
+    RVOL_THRESHOLD, RVOL_LOOKBACK,
+    ATR_PERIOD, ATR_OVEREXTENDED_MULT,
+    EMA_FAST, EMA_SLOW,
+)
 
 ET = pytz.timezone("US/Eastern")
+
+
+def _compute_atr(df_5m: pd.DataFrame, period: int = ATR_PERIOD) -> float | None:
+    if len(df_5m) < period + 1:
+        return None
+    highs = df_5m["High"].astype(float)
+    lows = df_5m["Low"].astype(float)
+    closes = df_5m["Close"].astype(float)
+    tr = pd.concat([
+        highs - lows,
+        (highs - closes.shift(1)).abs(),
+        (lows - closes.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean().iloc[-1]
+    return float(atr) if not np.isnan(atr) else None
+
+
+def _compute_vwap(candles_1m: list) -> float | None:
+    if not candles_1m:
+        return None
+    cum_tpv = 0.0
+    cum_vol = 0.0
+    for _, row in candles_1m:
+        tp = (float(row["High"]) + float(row["Low"]) + float(row["Close"])) / 3
+        vol = float(row["Volume"])
+        cum_tpv += tp * vol
+        cum_vol += vol
+    return cum_tpv / cum_vol if cum_vol > 0 else None
+
+
+def _compute_rvol(candles_1m: list, idx: int, lookback: int = RVOL_LOOKBACK) -> tuple[bool, float]:
+    if idx < lookback:
+        return True, 0.0
+    prior_vols = [float(candles_1m[j][1]["Volume"]) for j in range(max(0, idx - lookback), idx)]
+    avg_vol = sum(prior_vols) / len(prior_vols) if prior_vols else 0
+    if avg_vol == 0:
+        return True, 0.0
+    curr_vol = float(candles_1m[idx][1]["Volume"])
+    ratio = round(curr_vol / avg_vol, 2)
+    return ratio >= RVOL_THRESHOLD, ratio
+
+
+def _compute_ema_crossover(df_5m: pd.DataFrame) -> tuple[str, float, float] | None:
+    if len(df_5m) < EMA_SLOW:
+        return None
+    closes = df_5m["Close"].astype(float)
+    ema_fast = closes.ewm(span=EMA_FAST, adjust=False).mean()
+    ema_slow = closes.ewm(span=EMA_SLOW, adjust=False).mean()
+    fast_val = round(float(ema_fast.iloc[-1]), 2)
+    slow_val = round(float(ema_slow.iloc[-1]), 2)
+    direction = "BULLISH" if fast_val > slow_val else "BEARISH"
+    return direction, fast_val, slow_val
+
+
+def _apply_filters(direction, entry_price, candles_1m, signal_idx, df_5m_at_signal):
+    """Apply all 4 filters at signal time. Returns (all_passed, filter_results)."""
+    results = []
+
+    # VWAP
+    vwap = _compute_vwap(candles_1m[:signal_idx + 1])
+    if vwap is not None:
+        if direction == "LONG":
+            passed = entry_price > vwap
+        else:
+            passed = entry_price < vwap
+        results.append(("VWAP", passed, f"Entry ${entry_price:.2f} vs VWAP ${vwap:.2f}"))
+    else:
+        results.append(("VWAP", True, "No data"))
+
+    # RVOL
+    rvol_passed, rvol_ratio = _compute_rvol(candles_1m, signal_idx)
+    results.append(("RVOL", rvol_passed, f"{rvol_ratio}x avg (threshold {RVOL_THRESHOLD}x)"))
+
+    # EMA
+    ema_result = _compute_ema_crossover(df_5m_at_signal)
+    if ema_result is not None:
+        ema_dir, ema_f, ema_s = ema_result
+        if direction == "LONG":
+            passed = ema_dir == "BULLISH"
+        else:
+            passed = ema_dir == "BEARISH"
+        results.append(("EMA", passed, f"9 EMA ${ema_f} vs 21 EMA ${ema_s} ({ema_dir})"))
+    else:
+        results.append(("EMA", True, "Insufficient data"))
+
+    all_passed = all(r[1] for r in results)
+    return all_passed, results
 
 
 def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
@@ -80,10 +173,12 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
         return
 
     first_candle = None
-    for idx in data_5m.index:
+    first_candle_idx = None
+    for idx_pos, idx in enumerate(data_5m.index):
         ts = idx.tz_localize("UTC").astimezone(ET) if idx.tzinfo is None else idx.astimezone(ET)
         if ts.date() == target_date and ts.hour == 9 and ts.minute == 30:
             first_candle = data_5m.loc[idx]
+            first_candle_idx = idx_pos
             break
 
     if first_candle is None:
@@ -95,14 +190,30 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
     box_open = float(first_candle["Open"])
     box_close = float(first_candle["Close"])
     candle_type = "Bullish" if box_close > box_open else "Bearish"
+    range_size = box_high - box_low
 
     print(f"\n--- Step 2: First 5-Min Candle (9:30-9:35) ---")
     print(f"  Open:       ${box_open:.2f}")
     print(f"  High (R):   ${box_high:.2f}")
     print(f"  Low  (S):   ${box_low:.2f}")
     print(f"  Close:      ${box_close:.2f}")
-    print(f"  Range:      ${box_high - box_low:.2f}")
+    print(f"  Range:      ${range_size:.2f}")
     print(f"  Type:       {candle_type}")
+
+    # ATR check
+    atr_data = data_5m.iloc[:first_candle_idx + 1] if first_candle_idx is not None else data_5m
+    atr = _compute_atr(atr_data)
+    if atr is not None:
+        overextended = range_size > ATR_OVEREXTENDED_MULT * atr
+        status = "⚠️  OVEREXTENDED" if overextended else "✅ Normal"
+        print(f"  ATR (14):   ${atr:.2f}")
+        print(f"  ATR Check:  {status} (range ${range_size:.2f} vs {ATR_OVEREXTENDED_MULT}x ATR ${atr * ATR_OVEREXTENDED_MULT:.2f})")
+        if overextended:
+            print(f"\n  ⚠️  Opening range overextended — would skip signals for this session.")
+            print(f"\n{'='*60}\n")
+            return
+    else:
+        print(f"  ATR:        Not enough data")
 
     # ── Step 3: Scan 1-Min Candles for Break & Retest ───────
     data_1m = yf.download(ticker, start=intra_start, end=intra_end, interval="1m", progress=False)
@@ -118,7 +229,7 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
         ts = idx.tz_localize("UTC").astimezone(ET) if idx.tzinfo is None else idx.astimezone(ET)
         if ts.date() != target_date:
             continue
-        if ts.hour == 9 and ts.minute >= 35:
+        if ts.hour == 9 and ts.minute >= 30:
             candles_1m.append((ts, data_1m.loc[idx]))
         elif ts.hour == 10:
             candles_1m.append((ts, data_1m.loc[idx]))
@@ -126,7 +237,7 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
             candles_1m.append((ts, data_1m.loc[idx]))
 
     if not candles_1m:
-        print("\nERROR: No 1-minute candles in the 9:35-11:00 window.")
+        print("\nERROR: No 1-minute candles in the 9:30-11:00 window.")
         return
 
     print(f"\n--- Step 3: Scanning {len(candles_1m)} candles (9:35 - 11:00) ---")
@@ -160,12 +271,18 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
         prev_high = float(prev_row["High"])
         prev_low = float(prev_row["Low"])
 
+        # Get 5-min data up to signal time for EMA
+        df_5m_at_signal = data_5m[data_5m.index <= ts]
+
         if broke_below and bias == "BEARISH" and not signal_found:
             if prev_high >= box_low * 0.999:
                 if c_close < c_open and c_close < box_low:
                     stop = box_high
                     risk = stop - c_close
                     if risk > 0:
+                        all_passed, filter_results = _apply_filters(
+                            "SHORT", c_close, candles_1m, i, df_5m_at_signal)
+
                         target = c_close - (risk * RISK_REWARD_RATIO)
                         signal_found = True
                         print(f"\n  🔴 SHORT SIGNAL at {time_str}")
@@ -174,7 +291,15 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
                         print(f"     Target:    ${target:.2f}")
                         print(f"     Risk:      ${risk:.2f}")
                         print(f"     Reward:    ${risk * RISK_REWARD_RATIO:.2f}")
-                        _check_outcome(candles_1m[i + 1:], "SHORT", c_close, stop, target)
+
+                        print(f"\n     --- Filters ---")
+                        for name, passed, reason in filter_results:
+                            icon = "✅" if passed else "❌"
+                            print(f"     {icon} {name}: {reason}")
+                        if not all_passed:
+                            print(f"     ⚠️  WOULD BE FILTERED — signal blocked")
+                        else:
+                            _check_outcome(candles_1m[i + 1:], "SHORT", c_close, stop, target)
                         break
 
         if broke_above and bias == "BULLISH" and not signal_found:
@@ -183,6 +308,9 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
                     stop = box_low
                     risk = c_close - stop
                     if risk > 0:
+                        all_passed, filter_results = _apply_filters(
+                            "LONG", c_close, candles_1m, i, df_5m_at_signal)
+
                         target = c_close + (risk * RISK_REWARD_RATIO)
                         signal_found = True
                         print(f"\n  🟢 LONG SIGNAL at {time_str}")
@@ -191,7 +319,15 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
                         print(f"     Target:    ${target:.2f}")
                         print(f"     Risk:      ${risk:.2f}")
                         print(f"     Reward:    ${risk * RISK_REWARD_RATIO:.2f}")
-                        _check_outcome(candles_1m[i + 1:], "LONG", c_close, stop, target)
+
+                        print(f"\n     --- Filters ---")
+                        for name, passed, reason in filter_results:
+                            icon = "✅" if passed else "❌"
+                            print(f"     {icon} {name}: {reason}")
+                        if not all_passed:
+                            print(f"     ⚠️  WOULD BE FILTERED — signal blocked")
+                        else:
+                            _check_outcome(candles_1m[i + 1:], "LONG", c_close, stop, target)
                         break
 
     if not signal_found:

@@ -21,6 +21,14 @@ TICKERS = [t.strip().upper() for t in os.getenv("TICKERS", "SPY").split(",") if 
 SMA_PERIOD = 50
 RISK_REWARD_RATIO = 2.0
 
+# Indicator filter settings
+RVOL_THRESHOLD = 1.5
+RVOL_LOOKBACK = 10
+ATR_PERIOD = 14
+ATR_OVEREXTENDED_MULT = 2.0
+EMA_FAST = 9
+EMA_SLOW = 21
+
 # Market hours (Eastern Time)
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30

@@ -16,15 +16,18 @@ from config import (
     MONITORING_END_HOUR,
     MONITORING_END_MINUTE,
     POLL_INTERVAL_SECONDS,
+    ATR_OVEREXTENDED_MULT,
 )
 from strategy import (
     get_daily_bias,
     get_first_candle_range,
     check_for_setup,
+    compute_atr,
     StrategyState,
     DailyBias,
     FirstCandleRange,
     TradeSignal,
+    FilteredSignal,
 )
 from market_data import MarketDataClient, is_market_open
 
@@ -87,7 +90,41 @@ def signal_embed(signal: TradeSignal) -> discord.Embed:
     embed.add_field(name="Risk", value=f"${signal.risk}", inline=True)
     embed.add_field(name="Reward", value=f"${signal.reward}", inline=True)
     embed.add_field(name="R:R", value=f"1:{int(signal.reward / signal.risk) if signal.risk else 0}", inline=True)
+
+    if signal.filters:
+        filter_lines = [f"✅ {f.name}: {f.reason}" for f in signal.filters]
+        embed.add_field(name="Filters", value="\n".join(filter_lines), inline=False)
+
     embed.set_footer(text=f"Signal at {signal.timestamp} | First Candle Strategy")
+    return embed
+
+
+def filtered_embed(fs: FilteredSignal) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"⚠️ Setup Filtered: {fs.direction} {fs.ticker}",
+        color=0xFFA500,
+    )
+    embed.add_field(name="Entry (would be)", value=f"${fs.entry_price}", inline=True)
+    embed.add_field(name="Time", value=fs.timestamp, inline=True)
+
+    lines = []
+    for f in fs.filters:
+        icon = "✅" if f.passed else "❌"
+        lines.append(f"{icon} **{f.name}**: {f.reason}")
+    embed.add_field(name="Filter Results", value="\n".join(lines), inline=False)
+    embed.set_footer(text="Setup detected but blocked by filters")
+    return embed
+
+
+def overextended_embed(ticker: str, range_size: float, atr: float) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"⚠️ {ticker} — Opening Range Overextended",
+        color=0xFFA500,
+    )
+    embed.add_field(name="First Candle Range", value=f"${range_size:.2f}", inline=True)
+    embed.add_field(name="ATR (14-period)", value=f"${atr:.2f}", inline=True)
+    embed.add_field(name="Threshold", value=f"{ATR_OVEREXTENDED_MULT}x ATR = ${atr * ATR_OVEREXTENDED_MULT:.2f}", inline=True)
+    embed.set_footer(text=f"Skipping {ticker} for today — opening move too large relative to normal volatility")
     return embed
 
 
@@ -194,9 +231,11 @@ async def cmd_status(ctx):
         bias_str = st.daily_bias.direction if st.daily_bias else "Not set"
         candle_str = f"${st.first_candle.high} / ${st.first_candle.low}" if st.first_candle else "Not set"
         signal_str = "Yes" if st.signal_fired else "No"
+        atr_str = f"${st.atr_value:.2f}" if st.atr_value else "N/A"
+        overext_str = " (OVEREXTENDED)" if st.first_candle_overextended else ""
         embed.add_field(
             name=f"── {ticker} ──",
-            value=f"Bias: {bias_str}\nCandle: {candle_str}\nSignal: {signal_str}",
+            value=f"Bias: {bias_str}\nCandle: {candle_str}\nSignal: {signal_str}\nATR: {atr_str}{overext_str}",
             inline=True,
         )
 
@@ -278,7 +317,7 @@ async def market_monitor():
     for ticker in TICKERS:
         st = states[ticker]
 
-        if st.signal_fired:
+        if st.signal_fired or st.first_candle_overextended:
             continue
 
         logger.info("[%s] [%s] Poll cycle | first_candle=%s | bias=%s | broke_above=%s | broke_below=%s",
@@ -301,6 +340,24 @@ async def market_monitor():
                 else:
                     logger.warning("[%s] [%s] First candle returned None — will retry next poll", time_str, ticker)
 
+            # Step 1.5: Compute ATR and check if opening range is overextended
+            if st.first_candle is not None and st.atr_value is None:
+                logger.info("[%s] [%s] Computing ATR...", time_str, ticker)
+                atr = await compute_atr(client, ticker)
+                if atr is not None:
+                    st.atr_value = atr
+                    if st.first_candle.range_size > ATR_OVEREXTENDED_MULT * atr:
+                        st.first_candle_overextended = True
+                        logger.warning("[%s] [%s] Opening range OVEREXTENDED: $%.2f > %.1fx ATR $%.2f — skipping ticker",
+                                       time_str, ticker, st.first_candle.range_size, ATR_OVEREXTENDED_MULT, atr)
+                        await channel.send(embed=overextended_embed(ticker, st.first_candle.range_size, atr))
+                        continue
+                    else:
+                        logger.info("[%s] [%s] ATR check passed: range $%.2f <= %.1fx ATR $%.2f",
+                                    time_str, ticker, st.first_candle.range_size, ATR_OVEREXTENDED_MULT, atr)
+                else:
+                    logger.warning("[%s] [%s] ATR computation returned None — will retry next poll", time_str, ticker)
+
             # Step 2: Get daily bias after the first 5-min candle is posted
             if st.first_candle is not None and st.daily_bias is None:
                 logger.info("[%s] [%s] Fetching daily bias...", time_str, ticker)
@@ -316,11 +373,18 @@ async def market_monitor():
 
             # Step 3: Check for trade setups
             if st.daily_bias and st.first_candle and not st.signal_fired:
-                signal = await check_for_setup(st, client, ticker)
-                if signal:
-                    logger.info("[%s] [%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s",
-                                time_str, ticker, signal.direction, signal.entry_price, signal.stop_loss, signal.target)
-                    await channel.send("@everyone", embed=signal_embed(signal))
+                result = await check_for_setup(st, client, ticker)
+                if isinstance(result, TradeSignal):
+                    filter_str = " | ".join(f"{f.name}:{f.reason}" for f in result.filters)
+                    logger.info("[%s] [%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s | Filters: %s",
+                                time_str, ticker, result.direction, result.entry_price,
+                                result.stop_loss, result.target, filter_str)
+                    await channel.send("@everyone", embed=signal_embed(result))
+                elif isinstance(result, FilteredSignal):
+                    failed = ", ".join(f"{f.name}: {f.reason}" for f in result.failed_filters)
+                    logger.info("[%s] [%s] Setup FILTERED: %s entry=$%s | Failed: %s",
+                                time_str, ticker, result.direction, result.entry_price, failed)
+                    await channel.send(embed=filtered_embed(result))
                 else:
                     logger.debug("[%s] [%s] No setup detected this poll", time_str, ticker)
 
