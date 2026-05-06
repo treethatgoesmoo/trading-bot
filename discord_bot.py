@@ -278,11 +278,13 @@ async def market_monitor():
     for ticker in TICKERS:
         st = states[ticker]
 
-        logger.info("[%s] [%s] Poll cycle | first_candle=%s | bias=%s | signal_fired=%s | broke_above=%s | broke_below=%s",
+        if st.signal_fired:
+            continue
+
+        logger.info("[%s] [%s] Poll cycle | first_candle=%s | bias=%s | broke_above=%s | broke_below=%s",
                     time_str, ticker,
                     f"${st.first_candle.high}/${st.first_candle.low}" if st.first_candle else "None",
                     st.daily_bias.direction if st.daily_bias else "None",
-                    st.signal_fired,
                     st.broke_above,
                     st.broke_below)
 

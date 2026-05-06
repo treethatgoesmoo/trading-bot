@@ -66,11 +66,8 @@ class StrategyState:
         self.first_candle: FirstCandleRange | None = None
         self.broke_above: bool = False
         self.broke_below: bool = False
-        self.retest_detected: bool = False
         self.signal_fired: bool = False
         self.monitoring_ended: bool = False
-        self.break_candle_high: float | None = None
-        self.break_candle_low: float | None = None
 
     def reset(self, today: str | None = None):
         self.__init__()
@@ -149,13 +146,9 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
 
         if close > box_high and not state.broke_above:
             state.broke_above = True
-            state.break_candle_high = high
-            state.break_candle_low = low
 
         if close < box_low and not state.broke_below:
             state.broke_below = True
-            state.break_candle_high = high
-            state.break_candle_low = low
 
     if len(candles) < 3:
         return None
@@ -172,7 +165,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
     if state.broke_below and bias == "BEARISH" and not state.signal_fired:
         if prev_high >= box_low * 0.999:
             if recent_close < recent_open and recent_close < box_low:
-                stop_loss = state.break_candle_high if state.break_candle_high else box_high
+                stop_loss = box_high
                 risk = stop_loss - recent_close
                 if risk > 0:
                     target = recent_close - (risk * RISK_REWARD_RATIO)
@@ -193,7 +186,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
         prev_low = float(prev["low"])
         if prev_low <= box_high * 1.001:
             if recent_close > recent_open and recent_close > box_high:
-                stop_loss = state.break_candle_low if state.break_candle_low else box_low
+                stop_loss = box_low
                 risk = recent_close - stop_loss
                 if risk > 0:
                     target = recent_close + (risk * RISK_REWARD_RATIO)

@@ -133,8 +133,6 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
 
     broke_above = False
     broke_below = False
-    break_candle_high = None
-    break_candle_low = None
     signal_found = False
 
     for i, (ts, row) in enumerate(candles_1m):
@@ -149,14 +147,10 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
 
         if c_close > box_high and not broke_above:
             broke_above = True
-            break_candle_high = c_high
-            break_candle_low = c_low
             print(f"  ⬆️  BREAK ABOVE at {time_str} — Close ${c_close:.2f} > Box High ${box_high:.2f}")
 
         if c_close < box_low and not broke_below:
             broke_below = True
-            break_candle_high = c_high
-            break_candle_low = c_low
             print(f"  ⬇️  BREAK BELOW at {time_str} — Close ${c_close:.2f} < Box Low ${box_low:.2f}")
 
         if i < 2:
@@ -169,7 +163,7 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
         if broke_below and bias == "BEARISH" and not signal_found:
             if prev_high >= box_low * 0.999:
                 if c_close < c_open and c_close < box_low:
-                    stop = break_candle_high if break_candle_high else box_high
+                    stop = box_high
                     risk = stop - c_close
                     if risk > 0:
                         target = c_close - (risk * RISK_REWARD_RATIO)
@@ -186,7 +180,7 @@ def backtest_date(date_str: str, ticker: str = "SPY", verbose: bool = False):
         if broke_above and bias == "BULLISH" and not signal_found:
             if prev_low <= box_high * 1.001:
                 if c_close > c_open and c_close > box_high:
-                    stop = break_candle_low if break_candle_low else box_low
+                    stop = box_low
                     risk = c_close - stop
                     if risk > 0:
                         target = c_close + (risk * RISK_REWARD_RATIO)
