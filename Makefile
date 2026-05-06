@@ -18,8 +18,8 @@ start:
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Bot is already running (PID $$(cat $(PID_FILE)))"; \
 	else \
-		nohup python main.py >> logs/bot.log 2>&1 & echo $$! > $(PID_FILE); \
-		echo "Bot started (PID $$(cat $(PID_FILE))). Logs: logs/bot.log"; \
+		nohup python main.py > /dev/null 2>&1 & echo $$! > $(PID_FILE); \
+		echo "Bot started (PID $$(cat $(PID_FILE))). Logs: logs/"; \
 	fi
 
 # Stop the bot
@@ -55,11 +55,11 @@ backtest:
 
 # Show today's log
 logs:
-	@if [ -f logs/bot.log ]; then tail -100 logs/bot.log; else echo "No log file found."; fi
+	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -100 {} || echo "No log file found."
 
 # Follow logs in real time
 tail:
-	@tail -f logs/bot.log
+	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -f {} || echo "No log file found."
 
 # Remove cached files
 clean:
