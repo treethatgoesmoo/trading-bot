@@ -17,9 +17,24 @@ TWELVEDATA_DAILY_LIMIT = 750
 FINNHUB_CALLS_PER_MIN = 55
 
 # Trading
-TICKER = "SPY"
+TICKERS = [t.strip().upper() for t in os.getenv("TICKERS", "SPY").split(",") if t.strip()]
 SMA_PERIOD = 50
 RISK_REWARD_RATIO = 2.0
+
+# Indicator filter settings
+RVOL_THRESHOLD = 1.5
+RVOL_LOOKBACK = 10
+ATR_PERIOD = 14
+ATR_OVEREXTENDED_MULT = 2.0
+EMA_FAST = 9
+EMA_SLOW = 21
+
+# Filter cooldown
+FILTER_COOLDOWN_MINUTES = 5
+
+# Trade tracking
+TRADE_TRACKING_END_HOUR = 16
+TRADE_TRACKING_END_MINUTE = 0
 
 # Market hours (Eastern Time)
 MARKET_OPEN_HOUR = 9
