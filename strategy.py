@@ -160,7 +160,7 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
 
 
 async def get_first_candle_range(client: MarketDataClient, ticker: str) -> FirstCandleRange | None:
-    data = await client.fetch_candles(ticker, interval="5", count=50)
+    data = await client.fetch_candles(ticker, interval="5", count=100)
     if data.empty:
         return None
 
