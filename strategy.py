@@ -160,7 +160,7 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
 
 
 async def get_first_candle_range(client: MarketDataClient, ticker: str) -> FirstCandleRange | None:
-    data = await client.fetch_candles(ticker, interval="5", count=50)
+    data = await client.fetch_candles(ticker, interval="5", count=100)
     if data.empty:
         return None
 
@@ -223,8 +223,23 @@ async def get_premarket_levels(ticker: str) -> PremarketLevels | None:
 # ── Indicator functions ─────────────────────────────────────
 
 async def compute_atr(client: MarketDataClient, ticker: str, period: int = ATR_PERIOD) -> float | None:
-    data = await client.fetch_candles(ticker, interval="5", count=period + 20)
-    if data.empty or len(data) < period + 1:
+    """Compute ATR from regular-session 5-min candles only."""
+    data = await client.fetch_candles(ticker, interval="5", count=200)
+    if data.empty:
+        return None
+
+    # Filter to regular trading hours (9:30-16:00 ET) to avoid after-hours/pre-market noise
+    timestamps = pd.to_datetime(data["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
+    else:
+        timestamps = timestamps.dt.tz_convert(ET)
+    mask = (timestamps.dt.hour >= 9) & (timestamps.dt.hour < 16)
+    mask = mask | ((timestamps.dt.hour == 9) & (timestamps.dt.minute >= 30))
+    mask = mask & ~((timestamps.dt.hour == 9) & (timestamps.dt.minute < 30))
+    data = data[mask.values].reset_index(drop=True)
+
+    if len(data) < period + 1:
         return None
 
     highs = data["high"].astype(float)
