@@ -408,6 +408,93 @@ async def cmd_watchlist(ctx):
     await ctx.send(f"**Watchlist:** {', '.join(active_tickers)}")
 
 
+@bot.command(name="test")
+async def cmd_test(ctx, ticker: str = None):
+    """Simulate the full strategy flow for a ticker. Usage: !test [ticker]"""
+    resolved = _resolve_ticker(ticker)
+    if resolved is None:
+        await ctx.send(f"Specify a ticker: `!test <{'|'.join(active_tickers)}>`")
+        return
+
+    await ctx.send(f"**Running full strategy test for {resolved}...**")
+
+    # Step 0: Pre-market levels
+    await ctx.send("Fetching pre-market levels...")
+    try:
+        pm = await get_premarket_levels(resolved)
+        if pm:
+            await ctx.send(embed=premarket_embed(pm))
+        else:
+            await ctx.send("No pre-market data available (market may not have had a pre-market session yet).")
+    except Exception as exc:
+        await ctx.send(f"Pre-market fetch error: {exc}")
+
+    # Step 1: First candle
+    await ctx.send("Fetching first 5-min candle...")
+    try:
+        fc = await get_first_candle_range(client, resolved)
+        if fc:
+            await ctx.send(embed=range_embed(fc))
+        else:
+            await ctx.send("First 5-min candle not available. Market may not be open yet or no 9:30 candle found.")
+            return
+    except Exception as exc:
+        await ctx.send(f"First candle error: {exc}")
+        return
+
+    # Step 1.5: ATR check
+    await ctx.send("Computing ATR...")
+    try:
+        atr = await compute_atr(client, resolved)
+        if atr:
+            overextended = fc.range_size > ATR_OVEREXTENDED_MULT * atr
+            if overextended:
+                await ctx.send(embed=overextended_embed(resolved, fc.range_size, atr))
+                return
+            else:
+                await ctx.send(f"ATR check passed: range ${fc.range_size:.2f} <= {ATR_OVEREXTENDED_MULT}x ATR ${atr:.2f}")
+        else:
+            await ctx.send("Could not compute ATR (insufficient data).")
+    except Exception as exc:
+        await ctx.send(f"ATR error: {exc}")
+
+    # Step 2: Daily bias
+    await ctx.send("Fetching daily bias...")
+    try:
+        bias = await get_daily_bias(client, resolved)
+        if bias:
+            await ctx.send(embed=bias_embed(bias))
+        else:
+            await ctx.send("Could not fetch daily bias.")
+            return
+    except Exception as exc:
+        await ctx.send(f"Bias error: {exc}")
+        return
+
+    # Step 3: Check for setup (using a temporary state so we don't affect the live one)
+    await ctx.send("Checking for break-and-retest setup...")
+    test_state = StrategyState()
+    test_state.trading_day = datetime.now(ET).strftime("%Y-%m-%d")
+    test_state.first_candle = fc
+    test_state.daily_bias = bias
+    test_state.premarket = pm
+    if atr:
+        test_state.atr_value = atr
+
+    try:
+        result = await check_for_setup(test_state, client, resolved)
+        if isinstance(result, TradeSignal):
+            await ctx.send("**Signal detected!**", embed=signal_embed(result))
+        elif isinstance(result, FilteredSignal):
+            await ctx.send("**Setup found but filtered:**", embed=filtered_embed(result))
+        else:
+            await ctx.send("No break-and-retest pattern detected at this time.")
+    except Exception as exc:
+        await ctx.send(f"Setup check error: {exc}")
+
+    await ctx.send(f"**Test complete for {resolved}.**")
+
+
 # ── Background monitor ──────────────────────────────────────
 
 @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
@@ -428,15 +515,23 @@ async def market_monitor():
         logger.info("[%s] New trading day detected (%s) — resetting state for all tickers", time_str, today_str)
         for ticker in active_tickers:
             states[ticker].reset(today_str)
-        if channel:
-            market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
-            end_time = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
-            await channel.send(
-                f"**Monitoring started for {today_str}** | "
-                f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} ET"
-            )
+
+        # Only send "Monitoring started" if we're within the monitoring window
+        monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
+        if now < monitoring_cutoff:
+            if channel:
+                market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+                await channel.send(
+                    f"**Monitoring started for {today_str}** | "
+                    f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
+                )
+            else:
+                logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
         else:
-            logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
+            # Started after monitoring window — mark as ended so we don't post a blank summary
+            for ticker in active_tickers:
+                states[ticker].monitoring_ended = True
+            logger.info("[%s] Bot started after monitoring window — skipping session", time_str)
 
     # Trade tracking continues until market close
     tracking_cutoff = now.replace(hour=TRADE_TRACKING_END_HOUR, minute=TRADE_TRACKING_END_MINUTE, second=0, microsecond=0)
