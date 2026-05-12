@@ -123,6 +123,7 @@ class StrategyState:
         self.broke_above: bool = False
         self.broke_below: bool = False
         self.signal_fired: bool = False
+        self.monitoring_started_posted: bool = False
         self.monitoring_ended: bool = False
         self.atr_value: float | None = None
         self.first_candle_overextended: bool = False
