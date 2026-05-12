@@ -516,22 +516,25 @@ async def market_monitor():
         for ticker in active_tickers:
             states[ticker].reset(today_str)
 
-        # Only send "Monitoring started" if we're within the monitoring window
+        # Only send "Monitoring started" if we're within the monitoring window (market open to end)
+        market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
-        if now < monitoring_cutoff:
+        if market_open_time <= now < monitoring_cutoff:
+            for ticker in active_tickers:
+                states[ticker].monitoring_started_posted = True
             if channel:
-                market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
                 await channel.send(
                     f"**Monitoring started for {today_str}** | "
                     f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
                 )
             else:
                 logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
-        else:
-            # Started after monitoring window — mark as ended so we don't post a blank summary
+        elif now >= monitoring_cutoff:
             for ticker in active_tickers:
                 states[ticker].monitoring_ended = True
             logger.info("[%s] Bot started after monitoring window — skipping session", time_str)
+        else:
+            logger.info("[%s] Bot started before market open — will post when market opens", time_str)
 
     # Trade tracking continues until market close
     tracking_cutoff = now.replace(hour=TRADE_TRACKING_END_HOUR, minute=TRADE_TRACKING_END_MINUTE, second=0, microsecond=0)
@@ -592,6 +595,19 @@ async def market_monitor():
 
     if past_monitoring:
         return
+
+    # Post "Monitoring started" at market open if bot was running before open
+    if first_state and not first_state.monitoring_started_posted:
+        market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
+        if market_open_time <= now < monitoring_cutoff:
+            first_state.monitoring_started_posted = True
+            if channel:
+                await channel.send(
+                    f"**Monitoring started for {today_str}** | "
+                    f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
+                )
+                logger.info("[%s] Monitoring started message posted", time_str)
 
     candle_ready_time = now.replace(hour=MARKET_OPEN_HOUR, minute=FIRST_CANDLE_READY_MINUTE, second=0, microsecond=0)
     past_first_candle = now >= candle_ready_time
