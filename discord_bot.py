@@ -86,13 +86,19 @@ _load_watchlist()
 def bias_embed(bias: DailyBias) -> discord.Embed:
     color = 0x00CC66 if bias.direction == "BULLISH" else 0xFF4444
     emoji = "\U0001f7e2" if bias.direction == "BULLISH" else "\U0001f534"
+    trend_emoji = "\U0001f7e2" if bias.trend == "BULLISH" else "\U0001f534"
+    prev_emoji = "\U0001f7e2" if bias.short_term == "BULLISH" else "\U0001f534"
+    md_emoji = "\U0001f7e2" if bias.multi_day == "BULLISH" else ("\U0001f534" if bias.multi_day == "BEARISH" else "\U0001f7e1")
+
     embed = discord.Embed(title=f"{emoji} Daily Bias: {bias.direction}", color=color)
     embed.add_field(name="Ticker", value=bias.ticker, inline=True)
-    embed.add_field(name="Close", value=f"${bias.current_price}", inline=True)
-    embed.add_field(name="50 SMA", value=f"${bias.sma_value}", inline=True)
-    embed.add_field(name="Distance", value=f"{bias.distance_pct}%", inline=True)
-    embed.add_field(name="Strength", value=bias.strength, inline=True)
-    embed.set_footer(text="Based on 50-period SMA on the daily timeframe")
+    embed.add_field(name="Prev Day", value=f"{prev_emoji} {bias.short_term} (${bias.prev_open} -> ${bias.prev_close})", inline=True)
+    embed.add_field(name="Prev Day Range", value=f"${bias.prev_low} - ${bias.prev_high}", inline=True)
+    embed.add_field(name="5-Day Trend", value=f"{md_emoji} {bias.multi_day} ({bias.green_days}G / {bias.red_days}R)", inline=True)
+    embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
+    rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
+    embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
+    embed.set_footer(text="Bias: prev day direction | Filters: RSI, 5-day trend, prev day S/R")
     return embed
 
 

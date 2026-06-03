@@ -21,10 +21,20 @@ ET = pytz.timezone("US/Eastern")
 @dataclass
 class DailyBias:
     ticker: str
-    direction: str
+    direction: str  # combined bias: "BULLISH" or "BEARISH"
+    trend: str  # long-term 50 SMA: "BULLISH" or "BEARISH"
+    short_term: str  # previous day candle: "BULLISH" or "BEARISH"
+    multi_day: str  # 5-day trend: "BULLISH", "BEARISH", or "NEUTRAL"
     current_price: float
     sma_value: float
     distance_pct: float
+    prev_open: float
+    prev_close: float
+    prev_high: float
+    prev_low: float
+    green_days: int  # out of last 5
+    red_days: int
+    rsi: float | None
 
     @property
     def strength(self) -> str:
@@ -35,6 +45,20 @@ class DailyBias:
             return "Moderate"
         else:
             return "Strong"
+
+    @property
+    def aligned(self) -> bool:
+        return self.trend == self.short_term
+
+    @property
+    def rsi_signal(self) -> str:
+        if self.rsi is None:
+            return "N/A"
+        if self.rsi >= 70:
+            return "Overbought"
+        if self.rsi <= 30:
+            return "Oversold"
+        return "Neutral"
 
 
 @dataclass
@@ -149,15 +173,66 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
     sma_val = float(latest["SMA"])
     close_val = float(latest["close"])
     distance_pct = ((close_val - sma_val) / sma_val) * 100
-    direction = "BULLISH" if close_val > sma_val else "BEARISH"
+
+    # Long-term trend: price vs 50 SMA
+    trend = "BULLISH" if close_val > sma_val else "BEARISH"
+
+    # Short-term bias: previous day's candle direction
+    prev = daily.iloc[-2] if len(daily) >= 2 else latest
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+    prev_high = float(prev["high"])
+    prev_low = float(prev["low"])
+    short_term = "BULLISH" if prev_close > prev_open else "BEARISH"
+
+    # Multi-day trend: count green/red days in last 5
+    last_5 = daily.tail(5)
+    green_days = int((last_5["close"].astype(float) > last_5["open"].astype(float)).sum())
+    red_days = 5 - green_days
+    if green_days >= 4:
+        multi_day = "BULLISH"
+    elif red_days >= 4:
+        multi_day = "BEARISH"
+    else:
+        multi_day = "NEUTRAL"
+
+    # Daily RSI (14-period)
+    rsi = _compute_rsi(daily["close"].astype(float))
+
+    # Combined bias: use short-term direction
+    direction = short_term
 
     return DailyBias(
         ticker=ticker,
         direction=direction,
+        trend=trend,
+        short_term=short_term,
+        multi_day=multi_day,
         current_price=round(close_val, 2),
         sma_value=round(sma_val, 2),
         distance_pct=round(distance_pct, 2),
+        prev_open=round(prev_open, 2),
+        prev_close=round(prev_close, 2),
+        prev_high=round(prev_high, 2),
+        prev_low=round(prev_low, 2),
+        green_days=green_days,
+        red_days=red_days,
+        rsi=round(rsi, 1) if rsi is not None else None,
     )
+
+
+def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
+    if len(closes) < period + 1:
+        return None
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    val = float(rsi.iloc[-1])
+    return val if not np.isnan(val) else None
 
 
 async def get_first_candle_range(client: MarketDataClient, ticker: str) -> FirstCandleRange | None:
@@ -379,6 +454,42 @@ def _apply_filters(
                 passed = trend_dir == "BEARISH"
             filters.append(FilterStatus(name="EMA 15m", passed=passed,
                 reason=f"9 EMA ${f15} {'>' if trend_dir == 'BULLISH' else '<'} 21 EMA ${s15} ({trend_dir})"))
+
+    # Previous day high/low as S/R
+    if state.daily_bias is not None:
+        bias = state.daily_bias
+        if direction == "LONG" and entry_price > bias.prev_high:
+            filters.append(FilterStatus(name="Prev Day", passed=True,
+                reason=f"Entry ${entry_price} > Prev High ${bias.prev_high} (breakout)"))
+        elif direction == "SHORT" and entry_price < bias.prev_low:
+            filters.append(FilterStatus(name="Prev Day", passed=True,
+                reason=f"Entry ${entry_price} < Prev Low ${bias.prev_low} (breakdown)"))
+        else:
+            filters.append(FilterStatus(name="Prev Day", passed=True,
+                reason=f"Inside prev range ${bias.prev_low}-${bias.prev_high} (neutral)"))
+
+    # Daily RSI — warn but don't block
+    if state.daily_bias is not None and state.daily_bias.rsi is not None:
+        rsi = state.daily_bias.rsi
+        if direction == "LONG" and rsi >= 70:
+            filters.append(FilterStatus(name="RSI", passed=False,
+                reason=f"RSI {rsi} >= 70 (overbought — risky to go long)"))
+        elif direction == "SHORT" and rsi <= 30:
+            filters.append(FilterStatus(name="RSI", passed=False,
+                reason=f"RSI {rsi} <= 30 (oversold — risky to go short)"))
+        else:
+            filters.append(FilterStatus(name="RSI", passed=True,
+                reason=f"RSI {rsi} ({state.daily_bias.rsi_signal})"))
+
+    # Multi-day trend confluence
+    if state.daily_bias is not None:
+        md = state.daily_bias
+        if direction == "LONG":
+            passed = md.multi_day != "BEARISH"
+        else:
+            passed = md.multi_day != "BULLISH"
+        filters.append(FilterStatus(name="5-Day", passed=passed,
+            reason=f"{md.green_days} green / {md.red_days} red ({md.multi_day})"))
 
     # Pre-market level confluence
     if state.premarket is not None:
