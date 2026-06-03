@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+logs/bot.log
 logs/
 .bot.pid
 .watchlist.json
