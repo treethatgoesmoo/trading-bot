@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime
@@ -52,6 +53,26 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 active_tickers: list[str] = list(TICKERS)
 states: dict[str, StrategyState] = {t: StrategyState() for t in active_tickers}
 client = MarketDataClient()
+
+
+def _get_version() -> str:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__) or ".",
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=os.path.dirname(__file__) or ".",
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return f"{branch}@{commit}"
+    except Exception:
+        return "unknown"
+
+
+BOT_VERSION = _get_version()
 
 
 def _load_watchlist():
@@ -236,7 +257,7 @@ def daily_summary_embed(today_str: str) -> discord.Embed:
 
 @bot.event
 async def on_ready():
-    logger.info("Bot connected as %s (ID: %s)", bot.user, bot.user.id)
+    logger.info("Bot connected as %s (ID: %s) | Version: %s", bot.user, bot.user.id, BOT_VERSION)
     logger.info("Config: tickers=%s channel=%s poll=%ds window=%02d:%02d-%02d:%02d ET",
                 ",".join(active_tickers), ALERT_CHANNEL_ID, POLL_INTERVAL_SECONDS,
                 MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE, MONITORING_END_HOUR, MONITORING_END_MINUTE)
@@ -327,6 +348,7 @@ async def cmd_status(ctx):
     embed.add_field(name="Market", value=market, inline=True)
     embed.add_field(name="Monitoring", value=monitoring, inline=True)
     embed.add_field(name="Time (ET)", value=now.strftime("%I:%M %p"), inline=True)
+    embed.add_field(name="Version", value=BOT_VERSION, inline=True)
     embed.add_field(name="Tickers", value=", ".join(active_tickers), inline=True)
 
     for ticker in active_tickers:
