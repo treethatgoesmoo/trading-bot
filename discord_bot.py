@@ -86,13 +86,17 @@ _load_watchlist()
 def bias_embed(bias: DailyBias) -> discord.Embed:
     color = 0x00CC66 if bias.direction == "BULLISH" else 0xFF4444
     emoji = "\U0001f7e2" if bias.direction == "BULLISH" else "\U0001f534"
+    trend_emoji = "\U0001f7e2" if bias.trend == "BULLISH" else "\U0001f534"
+    prev_emoji = "\U0001f7e2" if bias.short_term == "BULLISH" else "\U0001f534"
+    aligned = "Yes" if bias.aligned else "No"
+
     embed = discord.Embed(title=f"{emoji} Daily Bias: {bias.direction}", color=color)
     embed.add_field(name="Ticker", value=bias.ticker, inline=True)
-    embed.add_field(name="Close", value=f"${bias.current_price}", inline=True)
-    embed.add_field(name="50 SMA", value=f"${bias.sma_value}", inline=True)
+    embed.add_field(name="Prev Day", value=f"{prev_emoji} {bias.short_term} (${bias.prev_open} -> ${bias.prev_close})", inline=True)
+    embed.add_field(name="50 SMA Trend", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     embed.add_field(name="Distance", value=f"{bias.distance_pct}%", inline=True)
-    embed.add_field(name="Strength", value=bias.strength, inline=True)
-    embed.set_footer(text="Based on 50-period SMA on the daily timeframe")
+    embed.add_field(name="Aligned", value=aligned, inline=True)
+    embed.set_footer(text="Bias based on previous day candle direction | Trend from 50 SMA")
     return embed
 
 

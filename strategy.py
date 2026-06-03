@@ -21,10 +21,14 @@ ET = pytz.timezone("US/Eastern")
 @dataclass
 class DailyBias:
     ticker: str
-    direction: str
+    direction: str  # combined bias: "BULLISH" or "BEARISH"
+    trend: str  # long-term 50 SMA: "BULLISH" or "BEARISH"
+    short_term: str  # previous day candle: "BULLISH" or "BEARISH"
     current_price: float
     sma_value: float
     distance_pct: float
+    prev_open: float
+    prev_close: float
 
     @property
     def strength(self) -> str:
@@ -35,6 +39,10 @@ class DailyBias:
             return "Moderate"
         else:
             return "Strong"
+
+    @property
+    def aligned(self) -> bool:
+        return self.trend == self.short_term
 
 
 @dataclass
@@ -149,14 +157,30 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
     sma_val = float(latest["SMA"])
     close_val = float(latest["close"])
     distance_pct = ((close_val - sma_val) / sma_val) * 100
-    direction = "BULLISH" if close_val > sma_val else "BEARISH"
+
+    # Long-term trend: price vs 50 SMA
+    trend = "BULLISH" if close_val > sma_val else "BEARISH"
+
+    # Short-term bias: previous day's candle direction
+    prev = daily.iloc[-2] if len(daily) >= 2 else latest
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+    short_term = "BULLISH" if prev_close > prev_open else "BEARISH"
+
+    # Combined: use short-term direction as the trading bias
+    # Long-term trend is kept as context but short-term drives signals
+    direction = short_term
 
     return DailyBias(
         ticker=ticker,
         direction=direction,
+        trend=trend,
+        short_term=short_term,
         current_price=round(close_val, 2),
         sma_value=round(sma_val, 2),
         distance_pct=round(distance_pct, 2),
+        prev_open=round(prev_open, 2),
+        prev_close=round(prev_close, 2),
     )
 
 
