@@ -21,10 +21,11 @@ ET = pytz.timezone("US/Eastern")
 @dataclass
 class DailyBias:
     ticker: str
-    direction: str  # combined bias: "BULLISH" or "BEARISH"
-    trend: str  # long-term 50 SMA: "BULLISH" or "BEARISH"
-    short_term: str  # previous day candle: "BULLISH" or "BEARISH"
-    multi_day: str  # 5-day trend: "BULLISH", "BEARISH", or "NEUTRAL"
+    direction: str  # trading bias set from first candle + gap
+    trend: str  # long-term 50 SMA
+    gap_direction: str  # "GAP_UP", "GAP_DOWN", or "FLAT"
+    gap_pct: float
+    multi_day: str  # 5-day trend
     current_price: float
     sma_value: float
     distance_pct: float
@@ -32,7 +33,7 @@ class DailyBias:
     prev_close: float
     prev_high: float
     prev_low: float
-    green_days: int  # out of last 5
+    green_days: int
     red_days: int
     rsi: float | None
 
@@ -45,10 +46,6 @@ class DailyBias:
             return "Moderate"
         else:
             return "Strong"
-
-    @property
-    def aligned(self) -> bool:
-        return self.trend == self.short_term
 
     @property
     def rsi_signal(self) -> str:
@@ -136,6 +133,22 @@ class TradeOutcome:
     timestamp: str
 
 
+@dataclass
+class DirectionForecast:
+    ticker: str
+    direction: str  # "BULLISH", "BEARISH", or "NEUTRAL"
+    confidence: float  # 0-100
+    timestamp: str
+    current_price: float
+    vwap: float | None
+    rsi_30m: float | None
+    ema_direction: str | None
+    macd_direction: str | None
+    divergence: str | None  # "BULLISH_DIV", "BEARISH_DIV", or None
+    signals: dict = field(default_factory=dict)
+    weights: dict = field(default_factory=dict)
+
+
 class StrategyState:
     """Tracks the live state of the first-candle strategy throughout the session."""
 
@@ -155,6 +168,7 @@ class StrategyState:
         self.trade_outcome: TradeOutcome | None = None
         self.filter_cooldown_until: datetime | None = None
         self.filtered_signals: list[FilteredSignal] = []
+        self.last_forecast_time: datetime | None = None
 
     def reset(self, today: str | None = None):
         self.__init__()
@@ -163,7 +177,7 @@ class StrategyState:
 
 # ── Core strategy functions ─────────────────────────────────
 
-async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | None:
+async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: float | None = None) -> DailyBias | None:
     daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
     if daily.empty or len(daily) < SMA_PERIOD:
         return None
@@ -174,18 +188,28 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
     close_val = float(latest["close"])
     distance_pct = ((close_val - sma_val) / sma_val) * 100
 
-    # Long-term trend: price vs 50 SMA
     trend = "BULLISH" if close_val > sma_val else "BEARISH"
 
-    # Short-term bias: previous day's candle direction
     prev = daily.iloc[-2] if len(daily) >= 2 else latest
     prev_open = float(prev["open"])
     prev_close = float(prev["close"])
     prev_high = float(prev["high"])
     prev_low = float(prev["low"])
-    short_term = "BULLISH" if prev_close > prev_open else "BEARISH"
 
-    # Multi-day trend: count green/red days in last 5
+    # Gap analysis: today's open vs yesterday's close
+    if today_open is not None and prev_close > 0:
+        gap_pct = round(((today_open - prev_close) / prev_close) * 100, 2)
+        if gap_pct > 0.1:
+            gap_direction = "GAP_UP"
+        elif gap_pct < -0.1:
+            gap_direction = "GAP_DOWN"
+        else:
+            gap_direction = "FLAT"
+    else:
+        gap_pct = 0.0
+        gap_direction = "FLAT"
+
+    # Multi-day trend
     last_5 = daily.tail(5)
     green_days = int((last_5["close"].astype(float) > last_5["open"].astype(float)).sum())
     red_days = 5 - green_days
@@ -196,17 +220,22 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
     else:
         multi_day = "NEUTRAL"
 
-    # Daily RSI (14-period)
     rsi = _compute_rsi(daily["close"].astype(float))
 
-    # Combined bias: use short-term direction
-    direction = short_term
+    # Direction is initially set from gap; gets overridden by first candle later
+    if gap_direction == "GAP_UP":
+        direction = "BULLISH"
+    elif gap_direction == "GAP_DOWN":
+        direction = "BEARISH"
+    else:
+        direction = trend
 
     return DailyBias(
         ticker=ticker,
         direction=direction,
         trend=trend,
-        short_term=short_term,
+        gap_direction=gap_direction,
+        gap_pct=gap_pct,
         multi_day=multi_day,
         current_price=round(close_val, 2),
         sma_value=round(sma_val, 2),
@@ -219,6 +248,29 @@ async def get_daily_bias(client: MarketDataClient, ticker: str) -> DailyBias | N
         red_days=red_days,
         rsi=round(rsi, 1) if rsi is not None else None,
     )
+
+
+def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) -> None:
+    """Override bias direction using first candle + gap + RSI."""
+    fc_bullish = first_candle.close_price > first_candle.open_price
+
+    # RSI contrarian: overbought flips bias bearish, oversold flips bullish
+    if bias.rsi is not None and bias.rsi >= 70:
+        bias.direction = "BEARISH"
+        return
+    if bias.rsi is not None and bias.rsi <= 30:
+        bias.direction = "BULLISH"
+        return
+
+    # First candle direction is primary, gap confirms
+    if fc_bullish and bias.gap_direction != "GAP_DOWN":
+        bias.direction = "BULLISH"
+    elif not fc_bullish and bias.gap_direction != "GAP_UP":
+        bias.direction = "BEARISH"
+    elif fc_bullish:
+        bias.direction = "BULLISH"
+    else:
+        bias.direction = "BEARISH"
 
 
 def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
@@ -679,3 +731,177 @@ async def _build_signal_or_filtered(
         state.filtered_signals.append(fs)
         state.filter_cooldown_until = datetime.now(ET) + timedelta(minutes=FILTER_COOLDOWN_MINUTES)
         return fs
+
+
+# ── 30-min forecast ─────────────────────────────────────────
+
+def _detect_divergence(closes: pd.Series, rsi_values: pd.Series, lookback: int = 5) -> str | None:
+    """Detect RSI divergence over the last N bars."""
+    if len(closes) < lookback or len(rsi_values) < lookback:
+        return None
+
+    recent_closes = closes.iloc[-lookback:]
+    recent_rsi = rsi_values.iloc[-lookback:]
+
+    price_higher = recent_closes.iloc[-1] > recent_closes.iloc[0]
+    rsi_lower = recent_rsi.iloc[-1] < recent_rsi.iloc[0]
+
+    price_lower = recent_closes.iloc[-1] < recent_closes.iloc[0]
+    rsi_higher = recent_rsi.iloc[-1] > recent_rsi.iloc[0]
+
+    if price_higher and rsi_lower:
+        return "BEARISH_DIV"
+    if price_lower and rsi_higher:
+        return "BULLISH_DIV"
+    return None
+
+
+async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> DirectionForecast | None:
+    """Compute a weighted directional forecast from 30-min candle data."""
+    data = await client.fetch_candles(ticker, interval="30", count=50)
+    if data.empty or len(data) < 15:
+        return None
+
+    closes = data["close"].astype(float)
+    highs = data["high"].astype(float)
+    lows = data["low"].astype(float)
+    opens = data["open"].astype(float)
+    volumes = data["volume"].astype(float)
+
+    current_price = round(float(closes.iloc[-1]), 2)
+    now_str = datetime.now(ET).strftime("%I:%M %p ET")
+
+    # Indicator weights (based on backtest: RSI 55.2%, EMA 54.7%, VWAP 53%, MACD 52.7%)
+    indicator_weights = {
+        "RSI": 3.0,
+        "EMA": 2.5,
+        "VWAP": 2.0,
+        "MACD": 2.0,
+        "MACD_Mom": 0.5,
+        "Divergence": 3.0,
+        "Volume": 1.0,
+        "Momentum": 1.0,
+    }
+
+    signals = {}
+    weights = {}
+
+    # RSI
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_val = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else None
+
+    if rsi_val is not None:
+        if rsi_val > 60:
+            signals["RSI"] = "BULLISH"
+        elif rsi_val < 40:
+            signals["RSI"] = "BEARISH"
+        else:
+            signals["RSI"] = "NEUTRAL"
+        weights["RSI"] = indicator_weights["RSI"]
+
+    # EMA 9/21
+    ema9 = closes.ewm(span=9, adjust=False).mean()
+    ema21 = closes.ewm(span=21, adjust=False).mean()
+    ema9_val = float(ema9.iloc[-1])
+    ema21_val = float(ema21.iloc[-1])
+    ema_dir = "BULLISH" if ema9_val > ema21_val else "BEARISH"
+    signals["EMA"] = ema_dir
+    weights["EMA"] = indicator_weights["EMA"]
+
+    # VWAP
+    today = datetime.now(ET).date()
+    timestamps = pd.to_datetime(data["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
+    else:
+        timestamps = timestamps.dt.tz_convert(ET)
+    today_mask = timestamps.dt.date == today
+    today_data = data[today_mask.values]
+    vwap_val = compute_vwap(today_data)
+    if vwap_val is not None:
+        signals["VWAP"] = "BULLISH" if current_price > vwap_val else "BEARISH"
+        weights["VWAP"] = indicator_weights["VWAP"]
+
+    # MACD
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    macd_hist = macd - macd_signal
+    macd_val = float(macd_hist.iloc[-1])
+    macd_dir = "BULLISH" if macd_val > 0 else "BEARISH"
+    signals["MACD"] = macd_dir
+    weights["MACD"] = indicator_weights["MACD"]
+
+    # MACD momentum
+    if len(macd_hist) >= 2:
+        macd_prev = float(macd_hist.iloc[-2])
+        signals["MACD_Mom"] = "BULLISH" if macd_val > macd_prev else "BEARISH"
+        weights["MACD_Mom"] = indicator_weights["MACD_Mom"]
+
+    # Divergence detection (INVERTED: backtest showed divergence at 44.4%,
+    # meaning it's actually a continuation signal — invert for 55.6% accuracy)
+    divergence = _detect_divergence(closes, rsi_series) if rsi_val is not None else None
+    if divergence == "BULLISH_DIV":
+        signals["Divergence"] = "BEARISH"
+        weights["Divergence"] = indicator_weights["Divergence"]
+    elif divergence == "BEARISH_DIV":
+        signals["Divergence"] = "BULLISH"
+        weights["Divergence"] = indicator_weights["Divergence"]
+
+    # Volume trend
+    if len(volumes) >= 6:
+        recent_avg = volumes.iloc[-3:].mean()
+        prior_avg = volumes.iloc[-6:-3].mean()
+        if prior_avg > 0:
+            vol_ratio = recent_avg / prior_avg
+            if vol_ratio > 1.3:
+                # High volume — direction follows current candle
+                last_dir = "BULLISH" if closes.iloc[-1] > opens.iloc[-1] else "BEARISH"
+                signals["Volume"] = last_dir
+                weights["Volume"] = indicator_weights["Volume"]
+
+    # Momentum
+    if len(closes) >= 3:
+        mom = float(closes.iloc[-1] - closes.iloc[-3])
+        signals["Momentum"] = "BULLISH" if mom > 0 else "BEARISH"
+        weights["Momentum"] = indicator_weights["Momentum"]
+
+    # Weighted vote
+    bull_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BULLISH")
+    bear_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BEARISH")
+    total_weight = bull_score + bear_score
+
+    if total_weight == 0:
+        direction = "NEUTRAL"
+        confidence = 50.0
+    else:
+        confidence = round(max(bull_score, bear_score) / total_weight * 100, 1)
+        if bull_score > bear_score:
+            direction = "BULLISH"
+        elif bear_score > bull_score:
+            direction = "BEARISH"
+        else:
+            direction = "NEUTRAL"
+            confidence = 50.0
+
+    return DirectionForecast(
+        ticker=ticker,
+        direction=direction,
+        confidence=confidence,
+        timestamp=now_str,
+        current_price=current_price,
+        vwap=vwap_val,
+        rsi_30m=round(rsi_val, 1) if rsi_val else None,
+        ema_direction=ema_dir,
+        macd_direction=macd_dir,
+        divergence=divergence,
+        signals=signals,
+        weights=weights,
+    )
