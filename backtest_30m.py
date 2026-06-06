@@ -143,11 +143,11 @@ def generate_signals(row, prev_row) -> dict:
     elif pd.notna(row.get("Lower_Wick_Pct")) and row["Lower_Wick_Pct"] > 60:
         signals["Rejection"] = "GREEN"
 
-    # Divergence
+    # Divergence (INVERTED: backtest showed 44.4%, so invert for 55.6%)
     if row.get("Divergence") == "BULLISH_DIV":
-        signals["Divergence"] = "GREEN"
-    elif row.get("Divergence") == "BEARISH_DIV":
         signals["Divergence"] = "RED"
+    elif row.get("Divergence") == "BEARISH_DIV":
+        signals["Divergence"] = "GREEN"
 
     return signals
 
@@ -157,11 +157,11 @@ INDICATOR_WEIGHTS = {
     "EMA_Cross": 2.5,
     "VWAP": 2.0,
     "MACD": 2.0,
-    "MACD_Mom": 1.5,
-    "Divergence": 4.0,
+    "MACD_Mom": 0.5,
+    "Divergence": 3.0,
     "Vol_Spike": 1.0,
     "Momentum": 1.0,
-    "Candle": 0.5,
+    "Candle": 0.0,
     "Rejection": 1.5,
 }
 

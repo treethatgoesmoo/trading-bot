@@ -777,8 +777,8 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> Directi
         "EMA": 2.5,
         "VWAP": 2.0,
         "MACD": 2.0,
-        "MACD_Mom": 1.5,
-        "Divergence": 4.0,
+        "MACD_Mom": 0.5,
+        "Divergence": 3.0,
         "Volume": 1.0,
         "Momentum": 1.0,
     }
@@ -845,13 +845,14 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> Directi
         signals["MACD_Mom"] = "BULLISH" if macd_val > macd_prev else "BEARISH"
         weights["MACD_Mom"] = indicator_weights["MACD_Mom"]
 
-    # Divergence detection
+    # Divergence detection (INVERTED: backtest showed divergence at 44.4%,
+    # meaning it's actually a continuation signal — invert for 55.6% accuracy)
     divergence = _detect_divergence(closes, rsi_series) if rsi_val is not None else None
     if divergence == "BULLISH_DIV":
-        signals["Divergence"] = "BULLISH"
+        signals["Divergence"] = "BEARISH"
         weights["Divergence"] = indicator_weights["Divergence"]
     elif divergence == "BEARISH_DIV":
-        signals["Divergence"] = "BEARISH"
+        signals["Divergence"] = "BULLISH"
         weights["Divergence"] = indicator_weights["Divergence"]
 
     # Volume trend
