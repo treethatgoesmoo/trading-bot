@@ -83,6 +83,18 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(5).mean()
 
+    # Divergence detection (RSI vs price over 5 bars)
+    df["Divergence"] = None
+    for i in range(5, len(df)):
+        price_higher = float(c.iloc[i]) > float(c.iloc[i-5])
+        rsi_lower = float(df["RSI"].iloc[i]) < float(df["RSI"].iloc[i-5]) if pd.notna(df["RSI"].iloc[i]) and pd.notna(df["RSI"].iloc[i-5]) else False
+        price_lower = float(c.iloc[i]) < float(c.iloc[i-5])
+        rsi_higher = float(df["RSI"].iloc[i]) > float(df["RSI"].iloc[i-5]) if pd.notna(df["RSI"].iloc[i]) and pd.notna(df["RSI"].iloc[i-5]) else False
+        if price_higher and rsi_lower:
+            df.iloc[i, df.columns.get_loc("Divergence")] = "BEARISH_DIV"
+        elif price_lower and rsi_higher:
+            df.iloc[i, df.columns.get_loc("Divergence")] = "BULLISH_DIV"
+
     return df
 
 
@@ -131,20 +143,36 @@ def generate_signals(row, prev_row) -> dict:
     elif pd.notna(row.get("Lower_Wick_Pct")) and row["Lower_Wick_Pct"] > 60:
         signals["Rejection"] = "GREEN"
 
+    # Divergence
+    if row.get("Divergence") == "BULLISH_DIV":
+        signals["Divergence"] = "GREEN"
+    elif row.get("Divergence") == "BEARISH_DIV":
+        signals["Divergence"] = "RED"
+
     return signals
 
 
+INDICATOR_WEIGHTS = {
+    "RSI": 3.0,
+    "EMA_Cross": 2.5,
+    "VWAP": 2.0,
+    "MACD": 2.0,
+    "MACD_Mom": 1.5,
+    "Divergence": 4.0,
+    "Vol_Spike": 1.0,
+    "Momentum": 1.0,
+    "Candle": 0.5,
+    "Rejection": 1.5,
+}
+
+
 def predict_next(signals: dict) -> str:
-    """Simple majority vote prediction from signals."""
-    votes = {"GREEN": 0, "RED": 0}
-    for name, val in signals.items():
-        if val == "GREEN":
-            votes["GREEN"] += 1
-        elif val == "RED":
-            votes["RED"] += 1
-    if votes["GREEN"] > votes["RED"]:
+    """Weighted prediction from signals."""
+    bull_score = sum(INDICATOR_WEIGHTS.get(k, 1.0) for k, v in signals.items() if v == "GREEN")
+    bear_score = sum(INDICATOR_WEIGHTS.get(k, 1.0) for k, v in signals.items() if v == "RED")
+    if bull_score > bear_score:
         return "GREEN"
-    elif votes["RED"] > votes["GREEN"]:
+    elif bear_score > bull_score:
         return "RED"
     return "NEUTRAL"
 

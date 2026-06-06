@@ -23,14 +23,21 @@ from config import (
     FILTER_COOLDOWN_MINUTES,
     TRADE_TRACKING_END_HOUR,
     TRADE_TRACKING_END_MINUTE,
+    FORECAST_INTERVAL_MINUTES,
+    FORECAST_START_HOUR,
+    FORECAST_START_MINUTE,
+    FORECAST_END_HOUR,
+    FORECAST_END_MINUTE,
 )
 from strategy import (
     get_daily_bias,
+    set_bias_from_first_candle,
     get_first_candle_range,
     get_premarket_levels,
     check_for_setup,
     check_trade_outcome,
     compute_atr,
+    compute_30m_forecast,
     StrategyState,
     DailyBias,
     FirstCandleRange,
@@ -38,6 +45,7 @@ from strategy import (
     TradeSignal,
     FilteredSignal,
     TradeOutcome,
+    DirectionForecast,
 )
 from market_data import MarketDataClient, is_market_open
 
@@ -108,18 +116,58 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     color = 0x00CC66 if bias.direction == "BULLISH" else 0xFF4444
     emoji = "\U0001f7e2" if bias.direction == "BULLISH" else "\U0001f534"
     trend_emoji = "\U0001f7e2" if bias.trend == "BULLISH" else "\U0001f534"
-    prev_emoji = "\U0001f7e2" if bias.short_term == "BULLISH" else "\U0001f534"
+    gap_emoji = "\U0001f7e2" if bias.gap_direction == "GAP_UP" else ("\U0001f534" if bias.gap_direction == "GAP_DOWN" else "\U0001f7e1")
     md_emoji = "\U0001f7e2" if bias.multi_day == "BULLISH" else ("\U0001f534" if bias.multi_day == "BEARISH" else "\U0001f7e1")
 
     embed = discord.Embed(title=f"{emoji} Daily Bias: {bias.direction}", color=color)
     embed.add_field(name="Ticker", value=bias.ticker, inline=True)
-    embed.add_field(name="Prev Day", value=f"{prev_emoji} {bias.short_term} (${bias.prev_open} -> ${bias.prev_close})", inline=True)
+    embed.add_field(name="Gap", value=f"{gap_emoji} {bias.gap_direction} ({bias.gap_pct:+.2f}%)", inline=True)
     embed.add_field(name="Prev Day Range", value=f"${bias.prev_low} - ${bias.prev_high}", inline=True)
     embed.add_field(name="5-Day Trend", value=f"{md_emoji} {bias.multi_day} ({bias.green_days}G / {bias.red_days}R)", inline=True)
     embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
     embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
-    embed.set_footer(text="Bias: prev day direction | Filters: RSI, 5-day trend, prev day S/R")
+    embed.set_footer(text="Bias: first candle direction + gap + RSI contrarian")
+    return embed
+
+
+def forecast_embed(fc: DirectionForecast) -> discord.Embed:
+    if fc.direction == "BULLISH":
+        color, emoji = 0x00CC66, "\U0001f7e2"
+    elif fc.direction == "BEARISH":
+        color, emoji = 0xFF4444, "\U0001f534"
+    else:
+        color, emoji = 0xFFAA00, "\U0001f7e1"
+
+    embed = discord.Embed(
+        title=f"{emoji} 30-Min Forecast: {fc.direction} {fc.ticker}",
+        color=color,
+    )
+    embed.add_field(name="Confidence", value=f"{fc.confidence}%", inline=True)
+    embed.add_field(name="Price", value=f"${fc.current_price}", inline=True)
+    if fc.vwap:
+        pos = "above" if fc.current_price > fc.vwap else "below"
+        embed.add_field(name="VWAP", value=f"${fc.vwap} ({pos})", inline=True)
+    if fc.rsi_30m:
+        embed.add_field(name="RSI", value=f"{fc.rsi_30m}", inline=True)
+    if fc.ema_direction:
+        embed.add_field(name="EMA 9/21", value=fc.ema_direction, inline=True)
+    if fc.macd_direction:
+        embed.add_field(name="MACD", value=fc.macd_direction, inline=True)
+    if fc.divergence:
+        div_str = "Bearish divergence" if fc.divergence == "BEARISH_DIV" else "Bullish divergence"
+        embed.add_field(name="Divergence", value=f"⚠️ {div_str}", inline=True)
+
+    # Signal breakdown
+    sig_lines = []
+    for name, val in fc.signals.items():
+        w = fc.weights.get(name, 0)
+        icon = "\U0001f7e2" if val == "BULLISH" else ("\U0001f534" if val == "BEARISH" else "\U0001f7e1")
+        sig_lines.append(f"{icon} {name} (w:{w})")
+    if sig_lines:
+        embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
+
+    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next 30 min outlook")
     return embed
 
 
@@ -486,11 +534,12 @@ async def cmd_test(ctx, ticker: str = None):
     except Exception as exc:
         await ctx.send(f"ATR error: {exc}")
 
-    # Step 2: Daily bias
+    # Step 2: Daily bias (with first candle direction + gap)
     await ctx.send("Fetching daily bias...")
     try:
-        bias = await get_daily_bias(client, resolved)
+        bias = await get_daily_bias(client, resolved, today_open=fc.open_price)
         if bias:
+            set_bias_from_first_candle(bias, fc)
             await ctx.send(embed=bias_embed(bias))
         else:
             await ctx.send("Could not fetch daily bias.")
@@ -498,6 +547,17 @@ async def cmd_test(ctx, ticker: str = None):
     except Exception as exc:
         await ctx.send(f"Bias error: {exc}")
         return
+
+    # Step 2.5: 30-min forecast
+    await ctx.send("Computing 30-min forecast...")
+    try:
+        forecast = await compute_30m_forecast(client, resolved)
+        if forecast:
+            await ctx.send(embed=forecast_embed(forecast))
+        else:
+            await ctx.send("Could not compute forecast (insufficient data).")
+    except Exception as exc:
+        await ctx.send(f"Forecast error: {exc}")
 
     # Step 3: Check for setup (using a temporary state so we don't affect the live one)
     await ctx.send("Checking for break-and-retest setup...")
@@ -621,6 +681,28 @@ async def market_monitor():
             except Exception as exc:
                 logger.exception("[%s] [%s] Trade tracking error: %s", time_str, ticker, exc)
 
+    # 30-min directional forecasts (run throughout the trading day)
+    forecast_start = now.replace(hour=FORECAST_START_HOUR, minute=FORECAST_START_MINUTE, second=0, microsecond=0)
+    forecast_end = now.replace(hour=FORECAST_END_HOUR, minute=FORECAST_END_MINUTE, second=0, microsecond=0)
+    if forecast_start <= now < forecast_end and now.minute % FORECAST_INTERVAL_MINUTES < 2:
+        for ticker in list(active_tickers):
+            st = states.get(ticker)
+            if st is None:
+                continue
+            if st.last_forecast_time and (now - st.last_forecast_time).total_seconds() < (FORECAST_INTERVAL_MINUTES * 60 - 30):
+                continue
+            try:
+                fc = await compute_30m_forecast(client, ticker)
+                if fc:
+                    st.last_forecast_time = now
+                    logger.info("[%s] [%s] 30m Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
+                                time_str, ticker, fc.direction, fc.confidence,
+                                fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
+                    if channel:
+                        await channel.send(embed=forecast_embed(fc))
+            except Exception as exc:
+                logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
+
     if past_monitoring:
         return
 
@@ -698,15 +780,17 @@ async def market_monitor():
                         logger.info("[%s] [%s] ATR check passed: $%.2f <= %.1fx $%.2f",
                                     time_str, ticker, st.first_candle.range_size, ATR_OVEREXTENDED_MULT, atr)
 
-            # Step 2: Get daily bias
+            # Step 2: Get daily bias + set direction from first candle
             if st.first_candle is not None and st.daily_bias is None:
                 logger.info("[%s] [%s] Fetching daily bias...", time_str, ticker)
-                bias = await get_daily_bias(client, ticker)
+                bias = await get_daily_bias(client, ticker, today_open=st.first_candle.open_price)
                 if bias:
+                    set_bias_from_first_candle(bias, st.first_candle)
                     st.daily_bias = bias
-                    logger.info("[%s] [%s] Daily bias set: %s (close=$%s sma=$%s dist=%s%%)",
-                                time_str, ticker, bias.direction, bias.current_price,
-                                bias.sma_value, bias.distance_pct)
+                    logger.info("[%s] [%s] Daily bias set: %s (gap=%s %+.2f%% | fc=%s | rsi=%s)",
+                                time_str, ticker, bias.direction, bias.gap_direction,
+                                bias.gap_pct, st.first_candle.candle_type,
+                                bias.rsi if bias.rsi else "N/A")
                     await channel.send(embed=bias_embed(bias))
                 else:
                     logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
