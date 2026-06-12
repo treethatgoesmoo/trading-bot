@@ -46,6 +46,62 @@ def load_forecasts(date_str: str) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
+                  user_direction: str | None, user: str) -> None:
+    """Record a user's agree/disagree vote on a forecast."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    date_str = forecast_time_iso[:10]
+    path = os.path.join(DATA_DIR, f"votes-{date_str}.jsonl")
+    entry = {
+        "ticker": ticker,
+        "forecast_time": forecast_time_iso,
+        "bot_direction": bot_direction,
+        "user_direction": user_direction,
+        "user": user,
+        "voted_at": datetime.now(ET).isoformat(),
+    }
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def log_trade_decision(ticker: str, signal_info: dict, decision: str, user: str) -> None:
+    """Record a user's Take/Skip/Modify decision on a trade signal."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    now = datetime.now(ET)
+    path = os.path.join(DATA_DIR, f"trade_decisions-{now.strftime('%Y-%m-%d')}.jsonl")
+    entry = {
+        "ticker": ticker,
+        "decision": decision,
+        "user": user,
+        "time": now.isoformat(),
+        **signal_info,
+    }
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int, int]:
+    """Score user votes against actual outcomes. Returns (correct, total)."""
+    path = os.path.join(DATA_DIR, f"votes-{date_str}.jsonl")
+    if not os.path.exists(path):
+        return 0, 0
+    with open(path) as f:
+        votes = [json.loads(line) for line in f if line.strip()]
+
+    actual_by_time = {r["time"]: r["actual"] for r in results if r.get("actual")}
+    correct = total = 0
+    for vote in votes:
+        if vote["ticker"] != ticker or not vote.get("user_direction"):
+            continue
+        actual = actual_by_time.get(vote["forecast_time"])
+        if actual is None:
+            continue
+        total += 1
+        if vote["user_direction"] == actual:
+            correct += 1
+    return correct, total
+
+
 async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] | None:
     """Compare each of today's forecasts against the actual next-30-min move.
 
