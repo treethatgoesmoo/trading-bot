@@ -48,6 +48,7 @@ from strategy import (
     DirectionForecast,
 )
 from market_data import MarketDataClient, is_market_open
+from forecast_tracker import log_forecast, evaluate_forecasts
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -168,6 +169,42 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
         embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
 
     embed.set_footer(text=f"Forecast at {fc.timestamp} | Next 30 min outlook")
+    return embed
+
+
+def forecast_results_embed(ticker: str, date_str: str, results: list[dict]) -> discord.Embed:
+    scored = [r for r in results if r.get("correct") is not None]
+    correct = sum(1 for r in scored if r["correct"])
+    total = len(scored)
+    accuracy = correct / total * 100 if total else 0
+
+    if accuracy >= 60:
+        color = 0x00CC66
+    elif accuracy >= 45:
+        color = 0xFFAA00
+    else:
+        color = 0xFF4444
+
+    embed = discord.Embed(
+        title=f"\U0001f4c8 Forecast Report Card — {ticker} ({date_str})",
+        color=color,
+    )
+    embed.add_field(name="Accuracy", value=f"{correct}/{total} ({accuracy:.0f}%)", inline=True)
+
+    lines = []
+    for r in results:
+        ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+        if r.get("correct") is None:
+            icon = "\U0001f7e1"
+        elif r["correct"]:
+            icon = "✅"
+        else:
+            icon = "❌"
+        lines.append(f"{icon} {ftime}: {r['direction']} ({r['confidence']}%) -> {r['actual']} ({r['move']:+.2f})")
+    if lines:
+        embed.add_field(name="Forecasts", value="\n".join(lines[:20]), inline=False)
+
+    embed.set_footer(text=f"Saved to data/results-{date_str}.json | Feed this back for tuning")
     return embed
 
 
@@ -656,6 +693,19 @@ async def market_monitor():
                 st.active_trade = None
                 if channel:
                     await channel.send(f"**{ticker}** trade expired at market close — no target or stop hit.")
+
+            # Evaluate today's forecasts against actual outcomes (once per day)
+            if not st.forecast_eval_done:
+                st.forecast_eval_done = True
+                try:
+                    results = await evaluate_forecasts(client, ticker, today_str)
+                    if results:
+                        logger.info("[%s] [%s] Forecast evaluation: %d forecasts scored, saved to data/results-%s.json",
+                                    time_str, ticker, len(results), today_str)
+                        if channel:
+                            await channel.send(embed=forecast_results_embed(ticker, today_str, results))
+                except Exception as exc:
+                    logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
         if past_monitoring:
             return
 
@@ -695,6 +745,7 @@ async def market_monitor():
                 fc = await compute_30m_forecast(client, ticker)
                 if fc:
                     st.last_forecast_time = now
+                    log_forecast(ticker, fc, now)
                     logger.info("[%s] [%s] 30m Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                 time_str, ticker, fc.direction, fc.confidence,
                                 fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
@@ -819,6 +870,14 @@ async def market_monitor():
 @market_monitor.before_loop
 async def before_monitor():
     await bot.wait_until_ready()
+
+
+@market_monitor.error
+async def monitor_error(exc):
+    """An unhandled exception kills a tasks.loop permanently — log and restart it."""
+    logger.exception("Market monitor loop crashed: %s — restarting in 30s", exc)
+    await asyncio.sleep(30)
+    market_monitor.restart()
 
 
 async def run_bot():

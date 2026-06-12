@@ -169,6 +169,7 @@ class StrategyState:
         self.filter_cooldown_until: datetime | None = None
         self.filtered_signals: list[FilteredSignal] = []
         self.last_forecast_time: datetime | None = None
+        self.forecast_eval_done: bool = False
 
     def reset(self, today: str | None = None):
         self.__init__()
