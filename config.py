@@ -43,6 +43,11 @@ FIRST_CANDLE_READY_MINUTE = 35  # 9:35 AM ET — first 5-min candle is complete
 MONITORING_END_HOUR = 11        # Stop monitoring at 11:00 AM ET
 MONITORING_END_MINUTE = 0
 
+# Economic events (Kalshi public market-data API — no key required)
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
+ECON_EVENTS_ENABLED = os.getenv("ECON_EVENTS_ENABLED", "1") not in ("0", "false", "False", "")
+ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
+
 # Polling
 POLL_INTERVAL_SECONDS = 60  # How often to check for setups
 
