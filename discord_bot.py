@@ -23,6 +23,8 @@ from config import (
     FILTER_COOLDOWN_MINUTES,
     TRADE_TRACKING_END_HOUR,
     TRADE_TRACKING_END_MINUTE,
+    ECON_EVENTS_ENABLED,
+    ECON_LOOKAHEAD_DAYS,
     FORECAST_INTERVAL_MINUTES,
     FORECAST_START_HOUR,
     FORECAST_START_MINUTE,
@@ -48,6 +50,7 @@ from strategy import (
     DirectionForecast,
 )
 from market_data import MarketDataClient, is_market_open
+from economic_events import fetch_events, EconEvent
 from forecast_tracker import (
     log_forecast,
     evaluate_forecasts,
@@ -58,6 +61,9 @@ from forecast_tracker import (
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
+
+# Tracks the day the economic-event briefing was last posted (once per day).
+_econ_briefing_date: str | None = None
 
 WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), ".watchlist.json")
 
@@ -346,6 +352,53 @@ def daily_summary_embed(today_str: str) -> discord.Embed:
         )
 
     return embed
+
+
+def economic_events_embed(events: list[EconEvent]) -> discord.Embed:
+    """Morning briefing of upcoming market-moving macro events (Kalshi-implied odds)."""
+    has_today = any(e.is_today for e in events)
+    embed = discord.Embed(
+        title="\U0001f4c5 Economic Calendar — Major Movers",
+        color=0xE74C3C if has_today else 0x5865F2,
+    )
+
+    if not events:
+        embed.description = f"No major economic releases in the next {ECON_LOOKAHEAD_DAYS} days."
+        embed.set_footer(text="Source: Kalshi economic markets")
+        return embed
+
+    if has_today:
+        embed.description = "⚠️ A major economic release is scheduled **today** — expect volatility."
+
+    for e in events:
+        date_str = e.release_dt.strftime("%a %b %d · %I:%M %p ET")
+        today_tag = "  \U0001f534 **TODAY**" if e.is_today else ""
+        lines = [f"\U0001f5d3️ {date_str}{today_tag}", f"\U0001f4ca {e.consensus}"]
+        # For Fed-style mutually-exclusive events, show the runner-up for context.
+        if e.mutually_exclusive and len(e.top_outcomes) > 1:
+            runner = e.top_outcomes[1]
+            lines.append(f"↳ then {runner.label} ({runner.prob:.0%})")
+        embed.add_field(name=f"{e.emoji} {e.name}", value="\n".join(lines), inline=False)
+
+    embed.set_footer(text="Kalshi-implied odds · kalshi.com — not financial advice")
+    return embed
+
+
+async def maybe_post_econ_briefing(channel, today_str: str) -> None:
+    """Post the economic-event briefing once per trading day. Best-effort."""
+    global _econ_briefing_date
+    if not ECON_EVENTS_ENABLED or channel is None:
+        return
+    if _econ_briefing_date == today_str:
+        return
+    _econ_briefing_date = today_str  # set first so a failure doesn't retry every poll
+    try:
+        events = await fetch_events()
+        logger.info("Economic briefing: %d upcoming event(s) within %d days",
+                    len(events), ECON_LOOKAHEAD_DAYS)
+        await channel.send(embed=economic_events_embed(events))
+    except Exception as exc:
+        logger.warning("Economic briefing failed: %s", exc)
 
 
 # ── Interactive components ──────────────────────────────────
@@ -743,6 +796,18 @@ async def cmd_watchlist(ctx):
     await ctx.send(f"**Watchlist:** {', '.join(active_tickers)}")
 
 
+@bot.command(name="events")
+async def cmd_events(ctx, days: int = None):
+    """Show upcoming major economic events (Kalshi). Usage: !events [days]"""
+    await ctx.send("Fetching economic calendar from Kalshi...")
+    try:
+        events = await fetch_events(lookahead_days=days)
+    except Exception as exc:
+        await ctx.send(f"Error fetching economic events: {exc}")
+        return
+    await ctx.send(embed=economic_events_embed(events))
+
+
 @bot.command(name="test")
 async def cmd_test(ctx, ticker: str = None):
     """Simulate the full strategy flow for a ticker. Usage: !test [ticker]"""
@@ -900,6 +965,7 @@ async def market_monitor():
                     f"**Monitoring started for {today_str}** | "
                     f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
                 )
+                await maybe_post_econ_briefing(channel, today_str)
             else:
                 logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
         elif now >= monitoring_cutoff:
@@ -1021,6 +1087,7 @@ async def market_monitor():
                     f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
                 )
                 logger.info("[%s] Monitoring started message posted", time_str)
+                await maybe_post_econ_briefing(channel, today_str)
 
     candle_ready_time = now.replace(hour=MARKET_OPEN_HOUR, minute=FIRST_CANDLE_READY_MINUTE, second=0, microsecond=0)
     past_first_candle = now >= candle_ready_time
