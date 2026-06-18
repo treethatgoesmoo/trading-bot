@@ -25,14 +25,21 @@ from config import (
     TRADE_TRACKING_END_MINUTE,
     ECON_EVENTS_ENABLED,
     ECON_LOOKAHEAD_DAYS,
+    FORECAST_INTERVAL_MINUTES,
+    FORECAST_START_HOUR,
+    FORECAST_START_MINUTE,
+    FORECAST_END_HOUR,
+    FORECAST_END_MINUTE,
 )
 from strategy import (
     get_daily_bias,
+    set_bias_from_first_candle,
     get_first_candle_range,
     get_premarket_levels,
     check_for_setup,
     check_trade_outcome,
     compute_atr,
+    compute_30m_forecast,
     StrategyState,
     DailyBias,
     FirstCandleRange,
@@ -40,9 +47,17 @@ from strategy import (
     TradeSignal,
     FilteredSignal,
     TradeOutcome,
+    DirectionForecast,
 )
 from market_data import MarketDataClient, is_market_open
 from economic_events import fetch_events, EconEvent
+from forecast_tracker import (
+    log_forecast,
+    evaluate_forecasts,
+    log_user_vote,
+    log_trade_decision,
+    evaluate_votes,
+)
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -114,18 +129,98 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     color = 0x00CC66 if bias.direction == "BULLISH" else 0xFF4444
     emoji = "\U0001f7e2" if bias.direction == "BULLISH" else "\U0001f534"
     trend_emoji = "\U0001f7e2" if bias.trend == "BULLISH" else "\U0001f534"
-    prev_emoji = "\U0001f7e2" if bias.short_term == "BULLISH" else "\U0001f534"
+    gap_emoji = "\U0001f7e2" if bias.gap_direction == "GAP_UP" else ("\U0001f534" if bias.gap_direction == "GAP_DOWN" else "\U0001f7e1")
     md_emoji = "\U0001f7e2" if bias.multi_day == "BULLISH" else ("\U0001f534" if bias.multi_day == "BEARISH" else "\U0001f7e1")
 
     embed = discord.Embed(title=f"{emoji} Daily Bias: {bias.direction}", color=color)
     embed.add_field(name="Ticker", value=bias.ticker, inline=True)
-    embed.add_field(name="Prev Day", value=f"{prev_emoji} {bias.short_term} (${bias.prev_open} -> ${bias.prev_close})", inline=True)
+    embed.add_field(name="Gap", value=f"{gap_emoji} {bias.gap_direction} ({bias.gap_pct:+.2f}%)", inline=True)
     embed.add_field(name="Prev Day Range", value=f"${bias.prev_low} - ${bias.prev_high}", inline=True)
     embed.add_field(name="5-Day Trend", value=f"{md_emoji} {bias.multi_day} ({bias.green_days}G / {bias.red_days}R)", inline=True)
     embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
     embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
-    embed.set_footer(text="Bias: prev day direction | Filters: RSI, 5-day trend, prev day S/R")
+    embed.set_footer(text="Bias: first candle direction + gap + RSI contrarian")
+    return embed
+
+
+def forecast_embed(fc: DirectionForecast) -> discord.Embed:
+    if fc.direction == "BULLISH":
+        color, emoji = 0x00CC66, "\U0001f7e2"
+    elif fc.direction == "BEARISH":
+        color, emoji = 0xFF4444, "\U0001f534"
+    else:
+        color, emoji = 0xFFAA00, "\U0001f7e1"
+
+    embed = discord.Embed(
+        title=f"{emoji} 30-Min Forecast: {fc.direction} {fc.ticker}",
+        color=color,
+    )
+    embed.add_field(name="Confidence", value=f"{fc.confidence}%", inline=True)
+    embed.add_field(name="Price", value=f"${fc.current_price}", inline=True)
+    if fc.vwap:
+        pos = "above" if fc.current_price > fc.vwap else "below"
+        embed.add_field(name="VWAP", value=f"${fc.vwap} ({pos})", inline=True)
+    if fc.rsi_30m:
+        embed.add_field(name="RSI", value=f"{fc.rsi_30m}", inline=True)
+    if fc.ema_direction:
+        embed.add_field(name="EMA 9/21", value=fc.ema_direction, inline=True)
+    if fc.macd_direction:
+        embed.add_field(name="MACD", value=fc.macd_direction, inline=True)
+    if fc.divergence:
+        div_str = "Bearish divergence" if fc.divergence == "BEARISH_DIV" else "Bullish divergence"
+        embed.add_field(name="Divergence", value=f"⚠️ {div_str}", inline=True)
+
+    # Signal breakdown
+    sig_lines = []
+    for name, val in fc.signals.items():
+        w = fc.weights.get(name, 0)
+        icon = "\U0001f7e2" if val == "BULLISH" else ("\U0001f534" if val == "BEARISH" else "\U0001f7e1")
+        sig_lines.append(f"{icon} {name} (w:{w})")
+    if sig_lines:
+        embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
+
+    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next 30 min outlook")
+    return embed
+
+
+def forecast_results_embed(ticker: str, date_str: str, results: list[dict],
+                           user_score: tuple[int, int] | None = None) -> discord.Embed:
+    scored = [r for r in results if r.get("correct") is not None]
+    correct = sum(1 for r in scored if r["correct"])
+    total = len(scored)
+    accuracy = correct / total * 100 if total else 0
+
+    if accuracy >= 60:
+        color = 0x00CC66
+    elif accuracy >= 45:
+        color = 0xFFAA00
+    else:
+        color = 0xFF4444
+
+    embed = discord.Embed(
+        title=f"\U0001f4c8 Forecast Report Card — {ticker} ({date_str})",
+        color=color,
+    )
+    embed.add_field(name="Bot Accuracy", value=f"{correct}/{total} ({accuracy:.0f}%)", inline=True)
+    if user_score and user_score[1] > 0:
+        u_correct, u_total = user_score
+        embed.add_field(name="Your Calls", value=f"{u_correct}/{u_total} ({u_correct / u_total * 100:.0f}%)", inline=True)
+
+    lines = []
+    for r in results:
+        ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+        if r.get("correct") is None:
+            icon = "\U0001f7e1"
+        elif r["correct"]:
+            icon = "✅"
+        else:
+            icon = "❌"
+        lines.append(f"{icon} {ftime}: {r['direction']} ({r['confidence']}%) -> {r['actual']} ({r['move']:+.2f})")
+    if lines:
+        embed.add_field(name="Forecasts", value="\n".join(lines[:10]), inline=False)
+
+    embed.set_footer(text=f"Saved to data/results-{date_str}.json | Click View Details for full breakdown")
     return embed
 
 
@@ -306,6 +401,212 @@ async def maybe_post_econ_briefing(channel, today_str: str) -> None:
         logger.warning("Economic briefing failed: %s", exc)
 
 
+# ── Interactive components ──────────────────────────────────
+
+class ForecastView(discord.ui.View):
+    """Agree/Disagree buttons on a forecast — votes are scored at end of day."""
+
+    def __init__(self, ticker: str, forecast: DirectionForecast, forecast_time_iso: str):
+        super().__init__(timeout=4 * 3600)
+        self.ticker = ticker
+        self.forecast = forecast
+        self.forecast_time_iso = forecast_time_iso
+
+    @discord.ui.button(label="👍 Agree", style=discord.ButtonStyle.success)
+    async def agree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
+                      self.forecast.direction, interaction.user.name)
+        await interaction.response.send_message(
+            f"Logged: you agree with **{self.forecast.direction}** on {self.ticker}. Scored at 4 PM.",
+            ephemeral=True)
+
+    @discord.ui.button(label="👎 Disagree", style=discord.ButtonStyle.danger)
+    async def disagree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.forecast.direction == "BULLISH":
+            user_dir = "BEARISH"
+        elif self.forecast.direction == "BEARISH":
+            user_dir = "BULLISH"
+        else:
+            user_dir = None
+        log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
+                      user_dir, interaction.user.name)
+        if user_dir:
+            msg = f"Logged: you disagree — your call is **{user_dir}** on {self.ticker}. Scored at 4 PM."
+        else:
+            msg = "Logged your disagree on a NEUTRAL forecast (not scored)."
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+class ModifyTradeModal(discord.ui.Modal):
+    """Edit entry/stop/target on the active trade."""
+
+    def __init__(self, ticker: str):
+        super().__init__(title=f"Modify {ticker} Trade")
+        self.ticker = ticker
+        st = states.get(ticker)
+        trade = st.active_trade if st else None
+        self.entry = discord.ui.TextInput(label="Entry", default=str(trade.entry_price) if trade else "")
+        self.stop = discord.ui.TextInput(label="Stop Loss", default=str(trade.stop_loss) if trade else "")
+        self.target = discord.ui.TextInput(label="Target", default=str(trade.target) if trade else "")
+        self.add_item(self.entry)
+        self.add_item(self.stop)
+        self.add_item(self.target)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        st = states.get(self.ticker)
+        if not st or not st.active_trade:
+            await interaction.response.send_message("No active trade to modify.", ephemeral=True)
+            return
+        try:
+            st.active_trade.entry_price = round(float(self.entry.value), 2)
+            st.active_trade.stop_loss = round(float(self.stop.value), 2)
+            st.active_trade.target = round(float(self.target.value), 2)
+        except ValueError:
+            await interaction.response.send_message("Invalid number — trade unchanged.", ephemeral=True)
+            return
+        log_trade_decision(self.ticker, {
+            "entry": st.active_trade.entry_price,
+            "stop": st.active_trade.stop_loss,
+            "target": st.active_trade.target,
+        }, "MODIFIED", interaction.user.name)
+        await interaction.response.send_message(
+            f"**{self.ticker}** trade updated: entry ${st.active_trade.entry_price}, "
+            f"stop ${st.active_trade.stop_loss}, target ${st.active_trade.target}. "
+            f"Outcome tracking will use the new levels.")
+
+
+class TradeSignalView(discord.ui.View):
+    """Take/Skip/Modify buttons on a trade alert."""
+
+    def __init__(self, signal: TradeSignal):
+        super().__init__(timeout=4 * 3600)
+        self.signal = signal
+
+    def _info(self) -> dict:
+        return {"direction": self.signal.direction, "entry": self.signal.entry_price,
+                "stop": self.signal.stop_loss, "target": self.signal.target}
+
+    @discord.ui.button(label="✅ Take Trade", style=discord.ButtonStyle.success)
+    async def take(self, interaction: discord.Interaction, button: discord.ui.Button):
+        log_trade_decision(self.signal.ticker, self._info(), "TAKEN", interaction.user.name)
+        await interaction.response.send_message(
+            f"Logged: trade TAKEN — {self.signal.ticker} {self.signal.direction} @ ${self.signal.entry_price}.",
+            ephemeral=True)
+
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        log_trade_decision(self.signal.ticker, self._info(), "SKIPPED", interaction.user.name)
+        await interaction.response.send_message(
+            f"Logged: signal SKIPPED on {self.signal.ticker}.", ephemeral=True)
+
+    @discord.ui.button(label="✏️ Modify", style=discord.ButtonStyle.primary)
+    async def modify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModifyTradeModal(self.signal.ticker))
+
+
+class ReportDetailsView(discord.ui.View):
+    """View Details button on the daily forecast report card."""
+
+    def __init__(self, ticker: str, date_str: str, results: list[dict]):
+        super().__init__(timeout=86400)
+        self.ticker = ticker
+        self.date_str = date_str
+        self.results = results
+
+    @discord.ui.button(label="🔎 View Details", style=discord.ButtonStyle.primary)
+    async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title=f"Forecast Details — {self.ticker} ({self.date_str})",
+            color=0x5865F2,
+        )
+        lines = []
+        for r in self.results:
+            ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+            if r.get("correct") is None:
+                icon = "\U0001f7e1"
+            elif r["correct"]:
+                icon = "✅"
+            else:
+                icon = "❌"
+            sigs = " ".join(f"{k}={v[:4]}" for k, v in r.get("signals", {}).items())
+            lines.append(f"{icon} **{ftime}** {r['direction']} ({r['confidence']}%) -> {r['actual']} ({r['move']:+.2f})\n   {sigs}")
+        for i in range(0, len(lines), 10):
+            embed.add_field(name=f"Forecasts {i + 1}-{min(i + 10, len(lines))}",
+                            value="\n".join(lines[i:i + 10])[:1024], inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class MenuView(discord.ui.View):
+    """Persistent control panel with buttons for common commands."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.selected_ticker = active_tickers[0] if active_tickers else "SPY"
+        if active_tickers:
+            select = discord.ui.Select(
+                placeholder=f"Ticker (default: {self.selected_ticker})",
+                options=[discord.SelectOption(label=t) for t in active_tickers[:25]],
+                custom_id="menu:ticker",
+            )
+            select.callback = self._on_ticker
+            self.add_item(select)
+
+    async def _on_ticker(self, interaction: discord.Interaction):
+        self.selected_ticker = interaction.data["values"][0]
+        await interaction.response.send_message(
+            f"Menu ticker set to **{self.selected_ticker}**", ephemeral=True)
+
+    @discord.ui.button(label="🔮 Forecast", style=discord.ButtonStyle.primary, custom_id="menu:forecast", row=1)
+    async def btn_forecast(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await _send_forecast(interaction.channel, self.selected_ticker)
+
+    @discord.ui.button(label="🧪 Test", style=discord.ButtonStyle.primary, custom_id="menu:test", row=1)
+    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await _run_test(interaction.channel, self.selected_ticker)
+
+    @discord.ui.button(label="📊 Status", style=discord.ButtonStyle.secondary, custom_id="menu:status", row=1)
+    async def btn_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_status_embed())
+
+    @discord.ui.button(label="🧭 Bias", style=discord.ButtonStyle.secondary, custom_id="menu:bias", row=2)
+    async def btn_bias(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = states.get(self.selected_ticker)
+        if st and st.daily_bias:
+            await interaction.response.send_message(embed=bias_embed(st.daily_bias))
+        else:
+            await interaction.response.send_message(
+                f"No bias set for {self.selected_ticker} yet — it's computed after the first "
+                f"5-min candle (9:35 AM ET). Use 🧪 Test for a dry run.", ephemeral=True)
+
+    @discord.ui.button(label="📦 Range", style=discord.ButtonStyle.secondary, custom_id="menu:range", row=2)
+    async def btn_range(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = states.get(self.selected_ticker)
+        if st and st.first_candle:
+            await interaction.response.send_message(embed=range_embed(st.first_candle))
+        else:
+            await interaction.response.send_message(
+                f"No first candle set for {self.selected_ticker} yet (available after 9:35 AM ET).",
+                ephemeral=True)
+
+    @discord.ui.button(label="📋 Watchlist", style=discord.ButtonStyle.secondary, custom_id="menu:watchlist", row=2)
+    async def btn_watchlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            f"**Watchlist:** {', '.join(active_tickers)}", ephemeral=True)
+
+
+async def _send_forecast(dest, ticker: str):
+    """Compute, log, and post an on-demand 30-min forecast with vote buttons."""
+    fc = await compute_30m_forecast(client, ticker)
+    if fc:
+        now = datetime.now(ET)
+        log_forecast(ticker, fc, now)
+        await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, now.isoformat()))
+    else:
+        await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
+
+
 # ── Bot events ──────────────────────────────────────────────
 
 @bot.event
@@ -317,6 +618,9 @@ async def on_ready():
     logger.info("Data sources: TwelveData=%s Finnhub=%s yfinance=always",
                 "configured" if client.twelvedata_limiter else "not set",
                 "configured" if client.finnhub_limiter else "not set")
+    if not getattr(bot, "_menu_view_registered", False):
+        bot.add_view(MenuView())
+        bot._menu_view_registered = True
     if not market_monitor.is_running():
         market_monitor.start()
         logger.info("Market monitor loop started (every %ds)", POLL_INTERVAL_SECONDS)
@@ -390,9 +694,7 @@ async def cmd_range(ctx, ticker: str = None):
         await ctx.send(embed=bias_embed(bias))
 
 
-@bot.command(name="status")
-async def cmd_status(ctx):
-    """Show current bot status for all tickers."""
+def build_status_embed() -> discord.Embed:
     now = datetime.now(ET)
     market = "OPEN" if is_market_open() else "CLOSED"
     monitoring = "Active" if market_monitor.is_running() else "Idle"
@@ -445,8 +747,13 @@ async def cmd_status(ctx):
         sources.append("Finnhub: not configured")
     sources.append("yfinance: fallback ready")
     embed.add_field(name="Data Sources", value="\n".join(sources), inline=False)
+    return embed
 
-    await ctx.send(embed=embed)
+
+@bot.command(name="status")
+async def cmd_status(ctx):
+    """Show current bot status for all tickers."""
+    await ctx.send(embed=build_status_embed())
 
 
 @bot.command(name="add")
@@ -508,7 +815,33 @@ async def cmd_test(ctx, ticker: str = None):
     if resolved is None:
         await ctx.send(f"Specify a ticker: `!test <{'|'.join(active_tickers)}>`")
         return
+    await _run_test(ctx, resolved)
 
+
+@bot.command(name="menu")
+async def cmd_menu(ctx):
+    """Show the interactive control panel."""
+    embed = discord.Embed(
+        title="🤖 Trading Bot Control Panel",
+        description="Pick a ticker from the dropdown, then use the buttons.",
+        color=0x5865F2,
+    )
+    await ctx.send(embed=embed, view=MenuView())
+
+
+@bot.command(name="forecast")
+async def cmd_forecast(ctx, ticker: str = None):
+    """Get an on-demand 30-min forecast. Usage: !forecast [ticker]"""
+    resolved = _resolve_ticker(ticker)
+    if resolved is None:
+        await ctx.send(f"Specify a ticker: `!forecast <{'|'.join(active_tickers)}>`")
+        return
+    await ctx.send(f"Computing 30-min forecast for {resolved}...")
+    await _send_forecast(ctx, resolved)
+
+
+async def _run_test(ctx, resolved: str):
+    """Full strategy dry run. ctx is anything with an async send() (Context or channel)."""
     await ctx.send(f"**Running full strategy test for {resolved}...**")
 
     # Step 0: Pre-market levels
@@ -551,11 +884,12 @@ async def cmd_test(ctx, ticker: str = None):
     except Exception as exc:
         await ctx.send(f"ATR error: {exc}")
 
-    # Step 2: Daily bias
+    # Step 2: Daily bias (with first candle direction + gap)
     await ctx.send("Fetching daily bias...")
     try:
-        bias = await get_daily_bias(client, resolved)
+        bias = await get_daily_bias(client, resolved, today_open=fc.open_price)
         if bias:
+            set_bias_from_first_candle(bias, fc)
             await ctx.send(embed=bias_embed(bias))
         else:
             await ctx.send("Could not fetch daily bias.")
@@ -563,6 +897,17 @@ async def cmd_test(ctx, ticker: str = None):
     except Exception as exc:
         await ctx.send(f"Bias error: {exc}")
         return
+
+    # Step 2.5: 30-min forecast
+    await ctx.send("Computing 30-min forecast...")
+    try:
+        forecast = await compute_30m_forecast(client, resolved)
+        if forecast:
+            await ctx.send(embed=forecast_embed(forecast))
+        else:
+            await ctx.send("Could not compute forecast (insufficient data).")
+    except Exception as exc:
+        await ctx.send(f"Forecast error: {exc}")
 
     # Step 3: Check for setup (using a temporary state so we don't affect the live one)
     await ctx.send("Checking for break-and-retest setup...")
@@ -662,6 +1007,23 @@ async def market_monitor():
                 st.active_trade = None
                 if channel:
                     await channel.send(f"**{ticker}** trade expired at market close — no target or stop hit.")
+
+            # Evaluate today's forecasts against actual outcomes (once per day)
+            if not st.forecast_eval_done:
+                st.forecast_eval_done = True
+                try:
+                    results = await evaluate_forecasts(client, ticker, today_str)
+                    if results:
+                        user_score = evaluate_votes(ticker, today_str, results)
+                        logger.info("[%s] [%s] Forecast evaluation: %d forecasts scored, saved to data/results-%s.json",
+                                    time_str, ticker, len(results), today_str)
+                        if channel:
+                            await channel.send(
+                                embed=forecast_results_embed(ticker, today_str, results, user_score),
+                                view=ReportDetailsView(ticker, today_str, results),
+                            )
+                except Exception as exc:
+                    logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
         if past_monitoring:
             return
 
@@ -686,6 +1048,29 @@ async def market_monitor():
                     await channel.send(embed=outcome_embed(outcome))
             except Exception as exc:
                 logger.exception("[%s] [%s] Trade tracking error: %s", time_str, ticker, exc)
+
+    # 30-min directional forecasts (run throughout the trading day)
+    forecast_start = now.replace(hour=FORECAST_START_HOUR, minute=FORECAST_START_MINUTE, second=0, microsecond=0)
+    forecast_end = now.replace(hour=FORECAST_END_HOUR, minute=FORECAST_END_MINUTE, second=0, microsecond=0)
+    if forecast_start <= now < forecast_end and now.minute % FORECAST_INTERVAL_MINUTES < 2:
+        for ticker in list(active_tickers):
+            st = states.get(ticker)
+            if st is None:
+                continue
+            if st.last_forecast_time and (now - st.last_forecast_time).total_seconds() < (FORECAST_INTERVAL_MINUTES * 60 - 30):
+                continue
+            try:
+                fc = await compute_30m_forecast(client, ticker)
+                if fc:
+                    st.last_forecast_time = now
+                    log_forecast(ticker, fc, now)
+                    logger.info("[%s] [%s] 30m Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
+                                time_str, ticker, fc.direction, fc.confidence,
+                                fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
+                    if channel:
+                        await channel.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, now.isoformat()))
+            except Exception as exc:
+                logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
 
     if past_monitoring:
         return
@@ -765,15 +1150,17 @@ async def market_monitor():
                         logger.info("[%s] [%s] ATR check passed: $%.2f <= %.1fx $%.2f",
                                     time_str, ticker, st.first_candle.range_size, ATR_OVEREXTENDED_MULT, atr)
 
-            # Step 2: Get daily bias
+            # Step 2: Get daily bias + set direction from first candle
             if st.first_candle is not None and st.daily_bias is None:
                 logger.info("[%s] [%s] Fetching daily bias...", time_str, ticker)
-                bias = await get_daily_bias(client, ticker)
+                bias = await get_daily_bias(client, ticker, today_open=st.first_candle.open_price)
                 if bias:
+                    set_bias_from_first_candle(bias, st.first_candle)
                     st.daily_bias = bias
-                    logger.info("[%s] [%s] Daily bias set: %s (close=$%s sma=$%s dist=%s%%)",
-                                time_str, ticker, bias.direction, bias.current_price,
-                                bias.sma_value, bias.distance_pct)
+                    logger.info("[%s] [%s] Daily bias set: %s (gap=%s %+.2f%% | fc=%s | rsi=%s)",
+                                time_str, ticker, bias.direction, bias.gap_direction,
+                                bias.gap_pct, st.first_candle.candle_type,
+                                bias.rsi if bias.rsi else "N/A")
                     await channel.send(embed=bias_embed(bias))
                 else:
                     logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
@@ -786,7 +1173,7 @@ async def market_monitor():
                     logger.info("[%s] [%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s | %s",
                                 time_str, ticker, result.direction, result.entry_price,
                                 result.stop_loss, result.target, filter_str)
-                    await channel.send("@everyone", embed=signal_embed(result))
+                    await channel.send("@everyone", embed=signal_embed(result), view=TradeSignalView(result))
                 elif isinstance(result, FilteredSignal):
                     failed = ", ".join(f"{f.name}: {f.reason}" for f in result.failed_filters)
                     logger.info("[%s] [%s] Setup FILTERED: %s | Failed: %s | Cooldown %dm",
@@ -802,6 +1189,14 @@ async def market_monitor():
 @market_monitor.before_loop
 async def before_monitor():
     await bot.wait_until_ready()
+
+
+@market_monitor.error
+async def monitor_error(exc):
+    """An unhandled exception kills a tasks.loop permanently — log and restart it."""
+    logger.exception("Market monitor loop crashed: %s — restarting in 30s", exc)
+    await asyncio.sleep(30)
+    market_monitor.restart()
 
 
 async def run_bot():
