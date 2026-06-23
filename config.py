@@ -66,6 +66,10 @@ RSI_DIV_LOOKBACK = 40  # bars to scan for divergence / failure-swing pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
 RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
 
+# Auto-commit captured history (data/) to git after market close
+GIT_AUTOCOMMIT_ENABLED = os.getenv("GIT_AUTOCOMMIT_ENABLED", "1") not in ("0", "false", "False", "")
+GIT_AUTOCOMMIT_PUSH = os.getenv("GIT_AUTOCOMMIT_PUSH", "1") not in ("0", "false", "False", "")
+
 # Polling
 POLL_INTERVAL_SECONDS = 60  # How often to check for setups
 

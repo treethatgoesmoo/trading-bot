@@ -32,6 +32,8 @@ from config import (
     FORECAST_END_MINUTE,
     RSI_WATCH_ENABLED,
     RSI_WATCH_INTERVAL_SECONDS,
+    GIT_AUTOCOMMIT_ENABLED,
+    GIT_AUTOCOMMIT_PUSH,
 )
 from strategy import (
     get_daily_bias,
@@ -68,12 +70,15 @@ import analytics
 import dashboard as dashboard_gen
 from rsi_watcher import RSIWatcher, RSIAlert, TF_LABEL
 from forecast_tracker import _append_jsonl as _append_data
+from git_sync import commit_data_history
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
 
 # Tracks the day the economic-event briefing was last posted (once per day).
 _econ_briefing_date: str | None = None
+# Tracks the day the captured history was last committed to git (once per day).
+_history_commit_date: str | None = None
 
 WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), ".watchlist.json")
 
@@ -414,6 +419,19 @@ async def maybe_post_econ_briefing(channel, today_str: str) -> None:
         await channel.send(embed=economic_events_embed(events))
     except Exception as exc:
         logger.warning("Economic briefing failed: %s", exc)
+
+
+async def maybe_commit_history(channel, today_str: str) -> None:
+    """Commit the day's captured history to git once per trading day (after close)."""
+    global _history_commit_date
+    if not GIT_AUTOCOMMIT_ENABLED or _history_commit_date == today_str:
+        return
+    _history_commit_date = today_str  # set first so a failure doesn't retry every poll
+    message = f"Capture trading history for {today_str}"
+    changed, detail = await asyncio.to_thread(commit_data_history, message, GIT_AUTOCOMMIT_PUSH)
+    logger.info("History auto-commit (%s): %s", today_str, detail)
+    if changed and channel:
+        await channel.send(f"\U0001f4be History saved to git — {detail} ({today_str}).")
 
 
 _RSI_KIND_LABEL = {
@@ -972,6 +990,17 @@ async def cmd_dashboard(ctx, days: int = None):
         await ctx.send(msg)
 
 
+@bot.command(name="commit")
+async def cmd_commit(ctx):
+    """Manually commit & push the captured history (data/) to git now."""
+    await ctx.send("Committing captured history to git...")
+    today_str = datetime.now(ET).strftime("%Y-%m-%d")
+    changed, detail = await asyncio.to_thread(
+        commit_data_history, f"Manual history capture for {today_str}", GIT_AUTOCOMMIT_PUSH)
+    icon = "\U0001f4be" if changed else "ℹ️"
+    await ctx.send(f"{icon} {detail}.")
+
+
 @bot.command(name="rsi")
 async def cmd_rsi(ctx, ticker: str = None):
     """Show current 5m/15m RSI and run the reversal watcher. Usage: !rsi [ticker]"""
@@ -1234,6 +1263,10 @@ async def market_monitor():
                             )
                 except Exception as exc:
                     logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
+
+        # Archive the day's captured history to git (once, after evaluation)
+        await maybe_commit_history(channel, today_str)
+
         if past_monitoring:
             return
 
