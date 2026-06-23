@@ -7,3 +7,5 @@ logs/bot.log
 logs/
 .bot.pid
 .watchlist.json
+data/
+dashboard.html

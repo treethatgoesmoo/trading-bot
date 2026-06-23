@@ -55,6 +55,17 @@ KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com
 ECON_EVENTS_ENABLED = os.getenv("ECON_EVENTS_ENABLED", "1") not in ("0", "false", "False", "")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
+# RSI reversal watcher (real-time alerts on 5m + 15m)
+RSI_WATCH_ENABLED = os.getenv("RSI_WATCH_ENABLED", "1") not in ("0", "false", "False", "")
+RSI_PERIOD = 14
+RSI_OB_WARN = 70.0     # overbought warning
+RSI_OB_EXTREME = 80.0  # overbought extreme
+RSI_OS_WARN = 30.0     # oversold warning
+RSI_OS_EXTREME = 20.0  # oversold extreme
+RSI_DIV_LOOKBACK = 40  # bars to scan for divergence / failure-swing pivots
+RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
+RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
+
 # Polling
 POLL_INTERVAL_SECONDS = 60  # How often to check for setups
 

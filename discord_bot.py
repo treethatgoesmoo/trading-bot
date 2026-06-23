@@ -30,6 +30,8 @@ from config import (
     FORECAST_START_MINUTE,
     FORECAST_END_HOUR,
     FORECAST_END_MINUTE,
+    RSI_WATCH_ENABLED,
+    RSI_WATCH_INTERVAL_SECONDS,
 )
 from strategy import (
     get_daily_bias,
@@ -57,7 +59,15 @@ from forecast_tracker import (
     log_user_vote,
     log_trade_decision,
     evaluate_votes,
+    log_trade_outcome,
+    log_bias,
+    log_filters,
+    evaluate_bias,
 )
+import analytics
+import dashboard as dashboard_gen
+from rsi_watcher import RSIWatcher, RSIAlert, TF_LABEL
+from forecast_tracker import _append_jsonl as _append_data
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -74,6 +84,10 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 active_tickers: list[str] = list(TICKERS)
 states: dict[str, StrategyState] = {t: StrategyState() for t in active_tickers}
 client = MarketDataClient()
+
+# RSI reversal watchers (one per ticker) + throttle timestamp for the watch loop.
+rsi_watchers: dict[str, RSIWatcher] = {}
+_rsi_last_run: datetime | None = None
 
 
 def _get_version() -> str:
@@ -121,6 +135,7 @@ def _save_watchlist():
 
 
 _load_watchlist()
+rsi_watchers = {t: RSIWatcher(t) for t in active_tickers}
 
 
 # ── Embed builders ──────────────────────────────────────────
@@ -399,6 +414,63 @@ async def maybe_post_econ_briefing(channel, today_str: str) -> None:
         await channel.send(embed=economic_events_embed(events))
     except Exception as exc:
         logger.warning("Economic briefing failed: %s", exc)
+
+
+_RSI_KIND_LABEL = {
+    "THRESHOLD": "RSI Threshold",
+    "DIVERGENCE": "RSI Divergence",
+    "FAILURE_SWING": "RSI Failure Swing",
+}
+
+
+def rsi_alert_embed(alert: RSIAlert) -> discord.Embed:
+    """A reversal-watcher ping for a single RSI signal."""
+    if alert.direction == "BULLISH":
+        color, arrow = 0x00CC66, "⬆️"
+    else:
+        color, arrow = 0xFF4444, "⬇️"
+    tier = f" [{alert.tier.upper()}]" if alert.tier else ""
+    kind = _RSI_KIND_LABEL.get(alert.kind, alert.kind)
+    title = f"\U0001f514 {arrow} {kind}{tier} — {alert.ticker} ({TF_LABEL[alert.timeframe]})"
+    embed = discord.Embed(title=title, color=color)
+    embed.add_field(name="Signal", value=alert.message, inline=False)
+    embed.add_field(name="RSI", value=f"{alert.rsi}", inline=True)
+    embed.add_field(name="Implied", value=f"{alert.direction} reversal ({alert.stage})", inline=True)
+    if alert.confirmed:
+        embed.add_field(name="Confirmation", value="✅ 5m + 15m agree", inline=True)
+    embed.set_footer(text="RSI reversal watcher — confirm with price action before acting")
+    return embed
+
+
+async def run_rsi_watch(channel) -> None:
+    """Poll every watched ticker's RSI on 5m+15m and post any reversal pings."""
+    if not RSI_WATCH_ENABLED:
+        return
+    for ticker in list(active_tickers):
+        watcher = rsi_watchers.get(ticker)
+        if watcher is None:
+            watcher = rsi_watchers[ticker] = RSIWatcher(ticker)
+        try:
+            alerts = await watcher.check(client)
+        except Exception as exc:
+            logger.warning("[%s] RSI watch error: %s", ticker, exc)
+            continue
+        for alert in alerts:
+            logger.info("[%s] RSI alert: %s %s %s (%s) conf=%s | %s",
+                        ticker, alert.timeframe, alert.kind, alert.direction,
+                        alert.rsi, alert.confirmed, alert.message)
+            try:
+                _append_data("rsi_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
+                    "ticker": ticker, "time": datetime.now(ET).isoformat(),
+                    "timeframe": alert.timeframe, "kind": alert.kind,
+                    "direction": alert.direction, "stage": alert.stage,
+                    "tier": alert.tier, "rsi": alert.rsi, "confirmed": alert.confirmed,
+                })
+            except Exception:
+                pass
+            if channel:
+                content = "\U0001f514 **Confirmed RSI reversal**" if alert.confirmed else None
+                await channel.send(content, embed=rsi_alert_embed(alert))
 
 
 # ── Interactive components ──────────────────────────────────
@@ -768,6 +840,7 @@ async def cmd_add(ctx, ticker: str = None):
         return
     active_tickers.append(upper)
     states[upper] = StrategyState()
+    rsi_watchers[upper] = RSIWatcher(upper)
     today_str = datetime.now(ET).strftime("%Y-%m-%d")
     states[upper].trading_day = today_str
     _save_watchlist()
@@ -786,6 +859,7 @@ async def cmd_remove(ctx, ticker: str = None):
         return
     active_tickers.remove(upper)
     del states[upper]
+    rsi_watchers.pop(upper, None)
     _save_watchlist()
     await ctx.send(f"❌ Removed **{upper}** from watchlist. Now tracking: {', '.join(active_tickers)}")
 
@@ -806,6 +880,136 @@ async def cmd_events(ctx, days: int = None):
         await ctx.send(f"Error fetching economic events: {exc}")
         return
     await ctx.send(embed=economic_events_embed(events))
+
+
+def stats_embed(report: dict) -> discord.Embed:
+    """Compact in-chat performance summary built from analytics.build_report()."""
+    fc, bias, trades = report["forecast"], report["bias"], report["trades"]
+    lo, hi = report["date_range"]
+    n_days = len(report["dates"])
+
+    if not n_days:
+        embed = discord.Embed(
+            title="\U0001f4ca Performance Stats",
+            description="No history yet — run the bot through a trading day first.",
+            color=0x95A5A6,
+        )
+        return embed
+
+    acc = fc["accuracy"]
+    color = 0x00CC66 if acc >= 55 else (0xFFAA00 if acc >= 45 else 0xFF4444)
+    embed = discord.Embed(
+        title="\U0001f4ca Performance Stats",
+        description=f"{lo} → {hi} · {n_days} day(s) · {fc['total']} forecasts",
+        color=color,
+    )
+    embed.add_field(
+        name="Forecast Accuracy",
+        value=f"**{acc:.0f}%** ({fc['correct']}/{fc['scored']}) · avg conf {fc['avg_confidence']:.0f}%",
+        inline=False,
+    )
+    if bias["scored"]:
+        embed.add_field(name="Bias Accuracy",
+                        value=f"{bias['accuracy']:.0f}% ({bias['correct']}/{bias['scored']} days)", inline=True)
+    if trades["wins"] + trades["losses"]:
+        embed.add_field(name="Trade Win Rate",
+                        value=f"{trades['win_rate']:.0f}% ({trades['wins']}W/{trades['losses']}L) · {trades['total_pnl']:+.2f} · {trades['avg_r']:+.2f}R",
+                        inline=True)
+
+    inds = report["indicators"]
+    if inds:
+        best = inds[:3]
+        worst = [r for r in reversed(inds) if r["accuracy"] < 50][:3]
+        best_str = "\n".join(f"\U0001f7e2 {r['indicator']}: {r['accuracy']:.0f}% (n={r['n']})" for r in best)
+        embed.add_field(name="Best Indicators", value=best_str or "—", inline=False)
+        if worst:
+            worst_str = "\n".join(f"\U0001f534 {r['indicator']}: {r['accuracy']:.0f}% (n={r['n']})" for r in worst)
+            embed.add_field(name="Underperforming (<50%)", value=worst_str, inline=False)
+
+    flt = report["filters"]
+    if flt["setups"]:
+        embed.add_field(name="Setups Blocked by Filters",
+                        value=f"{flt['blocked']}/{flt['setups']} ({flt['block_rate']:.0f}%)", inline=False)
+
+    embed.set_footer(text="!dashboard for the full HTML report")
+    return embed
+
+
+@bot.command(name="stats")
+async def cmd_stats(ctx, days: int = None):
+    """Show performance stats across history. Usage: !stats [days]"""
+    try:
+        report = await asyncio.to_thread(analytics.build_report, days)
+    except Exception as exc:
+        await ctx.send(f"Error building stats: {exc}")
+        return
+    await ctx.send(embed=stats_embed(report))
+
+
+@bot.command(name="dashboard")
+async def cmd_dashboard(ctx, days: int = None):
+    """Generate the full HTML performance dashboard. Usage: !dashboard [days]"""
+    await ctx.send("Generating dashboard...")
+
+    def _generate() -> tuple[str, dict]:
+        report = analytics.build_report(days=days)
+        with open(dashboard_gen.OUT_PATH, "w", encoding="utf-8") as f:
+            f.write(dashboard_gen.render(report))
+        return dashboard_gen.OUT_PATH, report
+
+    try:
+        path, report = await asyncio.to_thread(_generate)
+    except Exception as exc:
+        await ctx.send(f"Error generating dashboard: {exc}")
+        return
+
+    fc = report["forecast"]
+    msg = (f"\U0001f4c8 Dashboard written to `{path}`\n"
+           f"{len(report['dates'])} day(s) · {fc['scored']} scored forecasts · {fc['accuracy']:.0f}% accuracy")
+    try:
+        await ctx.send(msg, file=discord.File(path))
+    except Exception:
+        await ctx.send(msg)
+
+
+@bot.command(name="rsi")
+async def cmd_rsi(ctx, ticker: str = None):
+    """Show current 5m/15m RSI and run the reversal watcher. Usage: !rsi [ticker]"""
+    resolved = _resolve_ticker(ticker)
+    if resolved is None:
+        await ctx.send(f"Specify a ticker: `!rsi <{'|'.join(active_tickers)}>`")
+        return
+    from rsi_watcher import rsi_series, TIMEFRAMES
+    import pandas as pd
+
+    lines = []
+    watcher = rsi_watchers.get(resolved) or RSIWatcher(resolved)
+    posted = 0
+    for tf in TIMEFRAMES:
+        try:
+            df = await client.fetch_candles(resolved, interval=tf, count=120)
+            r = rsi_series(df["close"].astype(float), watcher.period)
+            val = r.iloc[-1]
+            zone = ("overbought" if val >= 70 else "oversold" if val <= 30 else "neutral")
+            lines.append(f"**{TF_LABEL[tf]}**: RSI {val:.1f} ({zone})")
+        except Exception as exc:
+            lines.append(f"**{TF_LABEL[tf]}**: error — {exc}")
+
+    embed = discord.Embed(title=f"📈 RSI — {resolved}", color=0x3498DB,
+                          description="\n".join(lines))
+    embed.set_footer(text="Live watcher pings on threshold/divergence/failure-swing reversals")
+    await ctx.send(embed=embed)
+
+    # Also surface any live signal right now.
+    try:
+        alerts = await watcher.check(client)
+        for alert in alerts:
+            await ctx.send(embed=rsi_alert_embed(alert))
+            posted += 1
+    except Exception:
+        pass
+    if not posted:
+        await ctx.send("No active RSI reversal signal at the moment.")
 
 
 @bot.command(name="test")
@@ -953,6 +1157,7 @@ async def market_monitor():
         logger.info("[%s] New trading day detected (%s) — resetting state for all tickers", time_str, today_str)
         for ticker in active_tickers:
             states[ticker].reset(today_str)
+            rsi_watchers.setdefault(ticker, RSIWatcher(ticker)).reset()
 
         # Only send "Monitoring started" if we're within the monitoring window (market open to end)
         market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
@@ -1005,12 +1210,17 @@ async def market_monitor():
                     timestamp=now.strftime("%I:%M %p ET"),
                 )
                 st.active_trade = None
+                log_trade_outcome(st.trade_outcome, now)
                 if channel:
                     await channel.send(f"**{ticker}** trade expired at market close — no target or stop hit.")
 
-            # Evaluate today's forecasts against actual outcomes (once per day)
+            # Evaluate today's forecasts + bias against actual outcomes (once per day)
             if not st.forecast_eval_done:
                 st.forecast_eval_done = True
+                try:
+                    await evaluate_bias(client, ticker, today_str)
+                except Exception as exc:
+                    logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
                 try:
                     results = await evaluate_forecasts(client, ticker, today_str)
                     if results:
@@ -1045,6 +1255,7 @@ async def market_monitor():
                     logger.info("[%s] [%s] Trade %s: %s entry=$%s exit=$%s pnl=$%s",
                                 time_str, ticker, outcome.result, outcome.direction,
                                 outcome.entry_price, outcome.exit_price, outcome.pnl)
+                    log_trade_outcome(outcome, now)
                     await channel.send(embed=outcome_embed(outcome))
             except Exception as exc:
                 logger.exception("[%s] [%s] Trade tracking error: %s", time_str, ticker, exc)
@@ -1071,6 +1282,13 @@ async def market_monitor():
                         await channel.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, now.isoformat()))
             except Exception as exc:
                 logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
+
+    # RSI reversal watcher — runs all session, throttled, pings on detection
+    global _rsi_last_run
+    if (RSI_WATCH_ENABLED and is_market_open() and
+            (_rsi_last_run is None or (now - _rsi_last_run).total_seconds() >= RSI_WATCH_INTERVAL_SECONDS)):
+        _rsi_last_run = now
+        await run_rsi_watch(channel)
 
     if past_monitoring:
         return
@@ -1161,6 +1379,7 @@ async def market_monitor():
                                 time_str, ticker, bias.direction, bias.gap_direction,
                                 bias.gap_pct, st.first_candle.candle_type,
                                 bias.rsi if bias.rsi else "N/A")
+                    log_bias(bias, now)
                     await channel.send(embed=bias_embed(bias))
                 else:
                     logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
@@ -1173,11 +1392,13 @@ async def market_monitor():
                     logger.info("[%s] [%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s | %s",
                                 time_str, ticker, result.direction, result.entry_price,
                                 result.stop_loss, result.target, filter_str)
+                    log_filters(ticker, result.direction, result.filters, fired=True, now=now)
                     await channel.send("@everyone", embed=signal_embed(result), view=TradeSignalView(result))
                 elif isinstance(result, FilteredSignal):
                     failed = ", ".join(f"{f.name}: {f.reason}" for f in result.failed_filters)
                     logger.info("[%s] [%s] Setup FILTERED: %s | Failed: %s | Cooldown %dm",
                                 time_str, ticker, result.direction, failed, FILTER_COOLDOWN_MINUTES)
+                    log_filters(ticker, result.direction, result.filters, fired=False, now=now)
                     await channel.send(embed=filtered_embed(result))
                 else:
                     logger.debug("[%s] [%s] No setup detected", time_str, ticker)
