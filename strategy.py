@@ -178,8 +178,12 @@ class StrategyState:
 
 # ── Core strategy functions ─────────────────────────────────
 
-async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: float | None = None) -> DailyBias | None:
-    daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
+async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: float | None = None,
+                         daily: pd.DataFrame | None = None) -> DailyBias | None:
+    # `daily` may be supplied pre-fetched (e.g. by the backfill replay) so the
+    # same logic runs as-of a historical day; otherwise fetch the latest.
+    if daily is None:
+        daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
     if daily.empty or len(daily) < SMA_PERIOD:
         return None
 
@@ -757,11 +761,20 @@ def _detect_divergence(closes: pd.Series, rsi_values: pd.Series, lookback: int =
     return None
 
 
-async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> DirectionForecast | None:
-    """Compute a weighted directional forecast from 30-min candle data."""
-    data = await client.fetch_candles(ticker, interval="30", count=50)
+async def compute_30m_forecast(client: MarketDataClient, ticker: str,
+                               data: pd.DataFrame | None = None,
+                               asof: datetime | None = None) -> DirectionForecast | None:
+    """Compute a weighted directional forecast from 30-min candle data.
+
+    `data`/`asof` may be supplied by the backfill replay so the identical
+    computation runs on a historical window as-of a past timestamp.
+    """
+    if data is None:
+        data = await client.fetch_candles(ticker, interval="30", count=50)
     if data.empty or len(data) < 15:
         return None
+
+    ref_now = asof or datetime.now(ET)
 
     closes = data["close"].astype(float)
     highs = data["high"].astype(float)
@@ -770,7 +783,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> Directi
     volumes = data["volume"].astype(float)
 
     current_price = round(float(closes.iloc[-1]), 2)
-    now_str = datetime.now(ET).strftime("%I:%M %p ET")
+    now_str = ref_now.strftime("%I:%M %p ET")
 
     # Indicator weights (based on backtest: RSI 55.2%, EMA 54.7%, VWAP 53%, MACD 52.7%)
     indicator_weights = {
@@ -816,7 +829,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str) -> Directi
     weights["EMA"] = indicator_weights["EMA"]
 
     # VWAP
-    today = datetime.now(ET).date()
+    today = ref_now.date()
     timestamps = pd.to_datetime(data["timestamp"])
     if timestamps.dt.tz is None:
         timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
