@@ -61,8 +61,12 @@ class RSIAlert:
 @dataclass
 class _TFState:
     band: str | None = None
-    last_div_key: tuple | None = None
-    last_fs_key: tuple | None = None
+    # Dedup keyed by the *bar timestamp* of the pivot (stable as the window
+    # slides), per direction — so a given divergence/failure-swing pings once.
+    last_bear_div_ts: object = None
+    last_bull_div_ts: object = None
+    last_bear_fs_ts: object = None
+    last_bull_fs_ts: object = None
     primed: bool = False         # seen at least one bar (avoids startup ping)
 
 
@@ -101,7 +105,16 @@ class RSIWatcher:
         self.os, self.os_x = cfg.RSI_OS_WARN, cfg.RSI_OS_EXTREME
         self.div_lookback = cfg.RSI_DIV_LOOKBACK
         self.order = cfg.RSI_PIVOT_ORDER
+        self.div_directions = cfg.RSI_DIVERGENCE_DIRECTIONS  # both | bullish | bearish | off
         self._state: dict[str, _TFState] = {tf: _TFState() for tf in TIMEFRAMES}
+
+    def _div_enabled(self, direction: str) -> bool:
+        mode = (self.div_directions or "both").lower()
+        if mode == "off":
+            return False
+        if mode == "both":
+            return True
+        return mode == direction.lower()
 
     def reset(self) -> None:
         self._state = {tf: _TFState() for tf in TIMEFRAMES}
@@ -118,12 +131,14 @@ class RSIWatcher:
         cur = rsi.iloc[-1]
         if np.isnan(cur):
             return []
+        times = (df["timestamp"].reset_index(drop=True)
+                 if "timestamp" in df.columns else pd.Series(range(len(closes))))
         st = self._state[timeframe]
         alerts: list[RSIAlert] = []
 
         alerts += self._threshold(timeframe, st, cur)
-        alerts += self._divergence(timeframe, st, closes, rsi, cur)
-        alerts += self._failure_swing(timeframe, st, rsi, cur)
+        alerts += self._divergence(timeframe, st, closes, rsi, times, cur)
+        alerts += self._failure_swing(timeframe, st, rsi, times, cur)
         return alerts
 
     def _threshold(self, tf: str, st: _TFState, cur: float) -> list[RSIAlert]:
@@ -160,8 +175,9 @@ class RSIWatcher:
         return out
 
     def _divergence(self, tf: str, st: _TFState, closes: pd.Series,
-                    rsi: pd.Series, cur: float) -> list[RSIAlert]:
+                    rsi: pd.Series, times: pd.Series, cur: float) -> list[RSIAlert]:
         window = min(self.div_lookback, len(closes))
+        offset = len(closes) - window
         c = closes.iloc[-window:].to_numpy()
         r = rsi.iloc[-window:].to_numpy()
         if np.isnan(r).all():
@@ -169,34 +185,35 @@ class RSIWatcher:
         p_highs, p_lows = _pivots(c, self.order)
 
         # Bearish: last two price swing highs rising, RSI at those highs falling.
-        if len(p_highs) >= 2:
+        if self._div_enabled("bearish") and len(p_highs) >= 2:
             a, b = p_highs[-2], p_highs[-1]
             if c[b] > c[a] and r[b] < r[a] and not np.isnan(r[b]):
-                key = ("bear", b)
-                if st.last_div_key != key:
-                    st.last_div_key = key
+                ts = times.iloc[offset + b]
+                if st.last_bear_div_ts != ts:
+                    st.last_bear_div_ts = ts
                     return [RSIAlert(self.ticker, tf, "DIVERGENCE", "BEARISH", "reversal",
                                      round(cur, 1),
                                      f"Bearish divergence — price higher high, RSI lower high ({r[a]:.0f}→{r[b]:.0f})")]
         # Bullish: last two price swing lows falling, RSI at those lows rising.
-        if len(p_lows) >= 2:
+        if self._div_enabled("bullish") and len(p_lows) >= 2:
             a, b = p_lows[-2], p_lows[-1]
             if c[b] < c[a] and r[b] > r[a] and not np.isnan(r[b]):
-                key = ("bull", b)
-                if st.last_div_key != key:
-                    st.last_div_key = key
+                ts = times.iloc[offset + b]
+                if st.last_bull_div_ts != ts:
+                    st.last_bull_div_ts = ts
                     return [RSIAlert(self.ticker, tf, "DIVERGENCE", "BULLISH", "reversal",
                                      round(cur, 1),
                                      f"Bullish divergence — price lower low, RSI higher low ({r[a]:.0f}→{r[b]:.0f})")]
         return []
 
-    def _failure_swing(self, tf: str, st: _TFState, rsi: pd.Series, cur: float) -> list[RSIAlert]:
+    def _failure_swing(self, tf: str, st: _TFState, rsi: pd.Series,
+                       times: pd.Series, cur: float) -> list[RSIAlert]:
         window = min(self.div_lookback, len(rsi))
+        offset = len(rsi) - window
         r = rsi.iloc[-window:].to_numpy()
-        if np.isnan(r).any():
-            r = r[~np.isnan(r)]
         if len(r) < 2 * self.order + 3:
             return []
+        # NaNs (RSI warm-up) never register as pivots, so alignment is preserved.
         highs, lows = _pivots(r, self.order)
 
         # Bearish failure swing: peak1>OB, trough, lower peak2 (<peak1), now break below trough.
@@ -206,9 +223,9 @@ class RSIWatcher:
             if troughs and r[p1] > self.ob and r[p2] < r[p1]:
                 fail = r[troughs[-1]]
                 if cur < fail:
-                    key = ("bear", p2, troughs[-1])
-                    if st.last_fs_key != key:
-                        st.last_fs_key = key
+                    ts = times.iloc[offset + troughs[-1]]
+                    if st.last_bear_fs_ts != ts:
+                        st.last_bear_fs_ts = ts
                         return [RSIAlert(self.ticker, tf, "FAILURE_SWING", "BEARISH", "reversal",
                                          round(cur, 1),
                                          f"Bearish failure swing — RSI broke below {fail:.0f} after a lower high")]
@@ -219,9 +236,9 @@ class RSIWatcher:
             if peaks and r[t1] < self.os and r[t2] > r[t1]:
                 fail = r[peaks[-1]]
                 if cur > fail:
-                    key = ("bull", t2, peaks[-1])
-                    if st.last_fs_key != key:
-                        st.last_fs_key = key
+                    ts = times.iloc[offset + peaks[-1]]
+                    if st.last_bull_fs_ts != ts:
+                        st.last_bull_fs_ts = ts
                         return [RSIAlert(self.ticker, tf, "FAILURE_SWING", "BULLISH", "reversal",
                                          round(cur, 1),
                                          f"Bullish failure swing — RSI broke above {fail:.0f} after a higher low")]

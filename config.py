@@ -64,6 +64,8 @@ RSI_OS_WARN = 30.0     # oversold warning
 RSI_OS_EXTREME = 20.0  # oversold extreme
 RSI_DIV_LOOKBACK = 40  # bars to scan for divergence / failure-swing pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
+# Which divergence directions to alert on: both | bullish | bearish | off
+RSI_DIVERGENCE_DIRECTIONS = os.getenv("RSI_DIVERGENCE_DIRECTIONS", "both").lower()
 RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
 
 # VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
