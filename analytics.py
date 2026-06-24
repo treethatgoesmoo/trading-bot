@@ -23,6 +23,7 @@ import forecast_tracker as ft
 INDICATOR_WEIGHTS = {
     "RSI": 3.0, "EMA": 2.5, "VWAP": 2.0, "MACD": 2.0,
     "MACD_Mom": 0.5, "Divergence": 3.0, "Volume": 1.0, "Momentum": 1.0,
+    "VIX": 2.0,
 }
 
 DIRECTIONAL = ("BULLISH", "BEARISH")

@@ -34,6 +34,7 @@ from config import (
     RSI_WATCH_INTERVAL_SECONDS,
     GIT_AUTOCOMMIT_ENABLED,
     GIT_AUTOCOMMIT_PUSH,
+    VIX_WATCH_ENABLED,
 )
 from strategy import (
     get_daily_bias,
@@ -71,6 +72,7 @@ import dashboard as dashboard_gen
 from rsi_watcher import RSIWatcher, RSIAlert, TF_LABEL
 from forecast_tracker import _append_jsonl as _append_data
 from git_sync import commit_data_history
+import vix as vix_mod
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -93,6 +95,9 @@ client = MarketDataClient()
 # RSI reversal watchers (one per ticker) + throttle timestamp for the watch loop.
 rsi_watchers: dict[str, RSIWatcher] = {}
 _rsi_last_run: datetime | None = None
+
+# Single market-wide VIX spike watcher (VIX is not per-ticker).
+vix_watcher = vix_mod.VixWatcher()
 
 
 def _get_version() -> str:
@@ -489,6 +494,46 @@ async def run_rsi_watch(channel) -> None:
             if channel:
                 content = "\U0001f514 **Confirmed RSI reversal**" if alert.confirmed else None
                 await channel.send(content, embed=rsi_alert_embed(alert))
+
+
+def vix_alert_embed(alert) -> discord.Embed:
+    """A VIX regime-cross or spike ping (risk-off / calming)."""
+    if alert.direction == "BULLISH":
+        color, arrow = 0x00CC66, "⬆️"   # SPY tailwind
+    else:
+        color, arrow = 0xFF4444, "⬇️"   # SPY headwind
+    label = "Spike" if alert.kind == "SPIKE" else "Regime"
+    embed = discord.Embed(title=f"\U0001f4c9 VIX {label} — {alert.level:.1f}", color=color)
+    embed.add_field(name="Signal", value=alert.message, inline=False)
+    embed.add_field(name="VIX", value=f"{alert.level:.1f}", inline=True)
+    if alert.change_pct:
+        embed.add_field(name="Move", value=f"{alert.change_pct:+.1f}%", inline=True)
+    embed.add_field(name="SPY implication", value=f"{arrow} {alert.direction}", inline=True)
+    embed.set_footer(text="VIX is inverse to SPY — confirm with price action")
+    return embed
+
+
+async def run_vix_watch(channel) -> None:
+    """Poll VIX for regime crossings / spikes and post any risk pings."""
+    if not VIX_WATCH_ENABLED:
+        return
+    try:
+        alerts = await vix_watcher.check()
+    except Exception as exc:
+        logger.warning("VIX watch error: %s", exc)
+        return
+    for alert in alerts:
+        logger.info("VIX alert: %s %s level=%s move=%s | %s",
+                    alert.kind, alert.direction, alert.level, alert.change_pct, alert.message)
+        try:
+            _append_data("vix_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
+                "time": datetime.now(ET).isoformat(), "kind": alert.kind,
+                "direction": alert.direction, "level": alert.level, "change_pct": alert.change_pct,
+            })
+        except Exception:
+            pass
+        if channel:
+            await channel.send(embed=vix_alert_embed(alert))
 
 
 # ── Interactive components ──────────────────────────────────
@@ -1041,6 +1086,25 @@ async def cmd_rsi(ctx, ticker: str = None):
         await ctx.send("No active RSI reversal signal at the moment.")
 
 
+@bot.command(name="vix")
+async def cmd_vix(ctx):
+    """Show the current VIX level, daily change, and regime."""
+    snap = await vix_mod.get_snapshot()
+    if snap is None:
+        await ctx.send("Could not fetch VIX right now.")
+        return
+    regime_color = {"CALM": 0x00CC66, "NORMAL": 0x00CC66, "ELEVATED": 0xFFAA00,
+                    "HIGH": 0xFF6600, "FEAR": 0xFF4444}.get(snap.regime, 0x95A5A6)
+    arrow = "⬆️" if snap.change > 0 else ("⬇️" if snap.change < 0 else "➡️")
+    embed = discord.Embed(title=f"\U0001f4c9 VIX {snap.level:.2f} — {snap.regime}", color=regime_color)
+    embed.add_field(name="Daily change", value=f"{arrow} {snap.change:+.2f} ({snap.change_pct:+.2f}%)", inline=True)
+    embed.add_field(name="Intraday", value=snap.direction, inline=True)
+    spy_lean = "SPY tailwind" if snap.direction == "FALLING" else ("SPY headwind" if snap.direction == "RISING" else "neutral")
+    embed.add_field(name="Inverse read", value=spy_lean, inline=True)
+    embed.set_footer(text="VIX is inverse to SPY · feeds the 30-min forecast + spike alerts")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="test")
 async def cmd_test(ctx, ticker: str = None):
     """Simulate the full strategy flow for a ticker. Usage: !test [ticker]"""
@@ -1187,6 +1251,7 @@ async def market_monitor():
         for ticker in active_tickers:
             states[ticker].reset(today_str)
             rsi_watchers.setdefault(ticker, RSIWatcher(ticker)).reset()
+        vix_watcher.reset()
 
         # Only send "Monitoring started" if we're within the monitoring window (market open to end)
         market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
@@ -1316,12 +1381,14 @@ async def market_monitor():
             except Exception as exc:
                 logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
 
-    # RSI reversal watcher — runs all session, throttled, pings on detection
+    # RSI + VIX watchers — run all session, throttled, ping on detection
     global _rsi_last_run
-    if (RSI_WATCH_ENABLED and is_market_open() and
+    if (is_market_open() and
             (_rsi_last_run is None or (now - _rsi_last_run).total_seconds() >= RSI_WATCH_INTERVAL_SECONDS)):
         _rsi_last_run = now
-        await run_rsi_watch(channel)
+        if RSI_WATCH_ENABLED:
+            await run_rsi_watch(channel)
+        await run_vix_watch(channel)
 
     if past_monitoring:
         return

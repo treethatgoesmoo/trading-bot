@@ -13,7 +13,9 @@ from config import (
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
+    VIX_FORECAST_WEIGHT,
 )
+import vix
 
 ET = pytz.timezone("US/Eastern")
 
@@ -795,6 +797,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         "Divergence": 3.0,
         "Volume": 1.0,
         "Momentum": 1.0,
+        "VIX": VIX_FORECAST_WEIGHT,
     }
 
     signals = {}
@@ -886,6 +889,18 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         mom = float(closes.iloc[-1] - closes.iloc[-3])
         signals["Momentum"] = "BULLISH" if mom > 0 else "BEARISH"
         weights["Momentum"] = indicator_weights["Momentum"]
+
+    # VIX (inverse): rising VIX -> SPY bearish, falling -> bullish.
+    # Live only — skipped when replaying historical data (asof set) since the
+    # backfill can't align a historical VIX series.
+    if asof is None:
+        try:
+            vix_sig = await vix.forecast_signal()
+            if vix_sig:
+                signals["VIX"] = vix_sig
+                weights["VIX"] = indicator_weights["VIX"]
+        except Exception:
+            pass
 
     # Weighted vote
     bull_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BULLISH")
