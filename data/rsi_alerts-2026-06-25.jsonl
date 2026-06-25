@@ -1,0 +1,4 @@
+{"ticker": "SPY", "time": "2026-06-25T09:31:46.648324-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BEARISH", "stage": "watch", "tier": "warning", "rsi": 77.0, "confirmed": false}
+{"ticker": "SPY", "time": "2026-06-25T09:31:46.941934-04:00", "timeframe": "15", "kind": "DIVERGENCE", "direction": "BULLISH", "stage": "reversal", "tier": null, "rsi": 62.9, "confirmed": false}
+{"ticker": "SPY", "time": "2026-06-25T09:42:45.606811-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BEARISH", "stage": "reversal", "tier": null, "rsi": 63.4, "confirmed": false}
+{"ticker": "SPY", "time": "2026-06-25T10:17:45.887127-04:00", "timeframe": "15", "kind": "DIVERGENCE", "direction": "BULLISH", "stage": "reversal", "tier": null, "rsi": 47.9, "confirmed": false}
