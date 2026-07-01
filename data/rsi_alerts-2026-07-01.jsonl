@@ -1,0 +1,9 @@
+{"ticker": "SPY", "time": "2026-07-01T09:31:46.868868-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BULLISH", "stage": "watch", "tier": "warning", "rsi": 26.8, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T09:35:45.655664-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BULLISH", "stage": "watch", "tier": "extreme", "rsi": 19.9, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T09:46:45.925381-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BULLISH", "stage": "reversal", "tier": null, "rsi": 30.3, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T11:30:48.655525-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BEARISH", "stage": "watch", "tier": "warning", "rsi": 71.5, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T11:34:45.856220-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BEARISH", "stage": "reversal", "tier": null, "rsi": 65.7, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T11:46:46.449178-04:00", "timeframe": "15", "kind": "DIVERGENCE", "direction": "BEARISH", "stage": "reversal", "tier": null, "rsi": 64.3, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T13:57:59.606622-04:00", "timeframe": "5", "kind": "DIVERGENCE", "direction": "BULLISH", "stage": "reversal", "tier": null, "rsi": 42.0, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T14:21:48.237378-04:00", "timeframe": "5", "kind": "DIVERGENCE", "direction": "BULLISH", "stage": "reversal", "tier": null, "rsi": 40.7, "confirmed": false}
+{"ticker": "SPY", "time": "2026-07-01T15:58:45.909034-04:00", "timeframe": "5", "kind": "THRESHOLD", "direction": "BULLISH", "stage": "watch", "tier": "warning", "rsi": 29.0, "confirmed": false}
