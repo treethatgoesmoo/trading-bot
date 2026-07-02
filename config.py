@@ -76,7 +76,7 @@ VIX_FEAR = 30.0
 VIX_SPIKE_PCT = 5.0           # intraday % surge that triggers a spike alert
 VIX_SPIKE_WINDOW_BARS = 3     # over this many 5-min bars (~15 min)
 VIX_SPIKE_COOLDOWN_SEC = 900  # min seconds between spike alerts
-VIX_SIGNAL_DEADBAND_PCT = 0.3  # VIX 30m move below this is treated as neutral
+VIX_SIGNAL_DEADBAND_PCT = 0.3  # VIX move (last two 30m bars) below this is treated as neutral
 VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
 
 # Auto-commit captured history (data/) to git after market close

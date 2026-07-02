@@ -55,6 +55,7 @@ from strategy import (
     DirectionForecast,
 )
 from market_data import MarketDataClient, is_market_open
+import market_calendar
 from economic_events import fetch_events, EconEvent
 from forecast_tracker import (
     log_forecast,
@@ -1232,13 +1233,26 @@ async def _run_test(ctx, resolved: str):
 
 # ── Background monitor ──────────────────────────────────────
 
+async def _post_monitoring_started(channel, now, today_str: str) -> None:
+    """Announce the monitoring window and post the econ briefing (once per day)."""
+    for ticker in active_tickers:
+        states[ticker].monitoring_started_posted = True
+    market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+    monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
+    await channel.send(
+        f"**Monitoring started for {today_str}** | "
+        f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
+    )
+    await maybe_post_econ_briefing(channel, today_str)
+
+
 @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
 async def market_monitor():
     now = datetime.now(ET)
     time_str = now.strftime("%Y-%m-%d %I:%M:%S %p ET")
 
-    if now.weekday() >= 5:
-        logger.debug("[%s] Weekend — skipping", time_str)
+    if not market_calendar.is_trading_day(now.date()):
+        logger.debug("[%s] Weekend/market holiday — skipping", time_str)
         return
 
     today_str = now.strftime("%Y-%m-%d")
@@ -1257,15 +1271,11 @@ async def market_monitor():
         market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
         if market_open_time <= now < monitoring_cutoff:
-            for ticker in active_tickers:
-                states[ticker].monitoring_started_posted = True
             if channel:
-                await channel.send(
-                    f"**Monitoring started for {today_str}** | "
-                    f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
-                )
-                await maybe_post_econ_briefing(channel, today_str)
+                await _post_monitoring_started(channel, now, today_str)
             else:
+                for ticker in active_tickers:
+                    states[ticker].monitoring_started_posted = True
                 logger.error("[%s] Channel %s not found — cannot send messages", time_str, ALERT_CHANNEL_ID)
         elif now >= monitoring_cutoff:
             for ticker in active_tickers:
@@ -1274,8 +1284,12 @@ async def market_monitor():
         else:
             logger.info("[%s] Bot started before market open — will post when market opens", time_str)
 
-    # Trade tracking continues until market close
-    tracking_cutoff = now.replace(hour=TRADE_TRACKING_END_HOUR, minute=TRADE_TRACKING_END_MINUTE, second=0, microsecond=0)
+    # Trade tracking continues until session close (13:00 ET on half-days)
+    session_close = market_calendar.session_close(now)
+    tracking_cutoff = min(
+        now.replace(hour=TRADE_TRACKING_END_HOUR, minute=TRADE_TRACKING_END_MINUTE, second=0, microsecond=0),
+        session_close,
+    )
     past_tracking_cutoff = now >= tracking_cutoff
 
     # Stop signal monitoring after the cutoff, but track open trades
@@ -1360,7 +1374,10 @@ async def market_monitor():
 
     # 30-min directional forecasts (run throughout the trading day)
     forecast_start = now.replace(hour=FORECAST_START_HOUR, minute=FORECAST_START_MINUTE, second=0, microsecond=0)
-    forecast_end = now.replace(hour=FORECAST_END_HOUR, minute=FORECAST_END_MINUTE, second=0, microsecond=0)
+    forecast_end = min(
+        now.replace(hour=FORECAST_END_HOUR, minute=FORECAST_END_MINUTE, second=0, microsecond=0),
+        session_close,
+    )
     if forecast_start <= now < forecast_end and now.minute % FORECAST_INTERVAL_MINUTES < 2:
         for ticker in list(active_tickers):
             st = states.get(ticker)
@@ -1398,14 +1415,8 @@ async def market_monitor():
         market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
         if market_open_time <= now < monitoring_cutoff:
-            first_state.monitoring_started_posted = True
-            if channel:
-                await channel.send(
-                    f"**Monitoring started for {today_str}** | "
-                    f"{', '.join(active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
-                )
-                logger.info("[%s] Monitoring started message posted", time_str)
-                await maybe_post_econ_briefing(channel, today_str)
+            await _post_monitoring_started(channel, now, today_str)
+            logger.info("[%s] Monitoring started message posted", time_str)
 
     candle_ready_time = now.replace(hour=MARKET_OPEN_HOUR, minute=FIRST_CANDLE_READY_MINUTE, second=0, microsecond=0)
     past_first_candle = now >= candle_ready_time

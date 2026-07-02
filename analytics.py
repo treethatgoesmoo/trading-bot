@@ -17,16 +17,16 @@ from datetime import datetime
 
 import forecast_tracker as ft
 
-# Reference weights used by strategy.compute_30m_forecast (kept in sync manually).
-# Shown alongside accuracy so an indicator that's heavily weighted but inaccurate
-# stands out as a tuning target.
-INDICATOR_WEIGHTS = {
-    "RSI": 3.0, "EMA": 2.5, "VWAP": 2.0, "MACD": 2.0,
-    "MACD_Mom": 0.5, "Divergence": 3.0, "Volume": 1.0, "Momentum": 1.0,
-    "VIX": 2.0,
-}
-
 DIRECTIONAL = ("BULLISH", "BEARISH")
+
+
+def _effective_weights() -> dict:
+    """The weights strategy.compute_30m_forecast actually uses right now
+    (defaults + any live-tuned overrides from data/indicator_weights.json).
+    Shown alongside accuracy so an indicator that's heavily weighted but
+    inaccurate stands out as a tuning target."""
+    from strategy import INDICATOR_WEIGHTS, _weight_overrides
+    return {**INDICATOR_WEIGHTS, **_weight_overrides()}
 
 
 def _pct(correct: int, total: int) -> float:
@@ -94,6 +94,7 @@ def per_indicator_accuracy(results: list[dict]) -> list[dict]:
             if signal in DIRECTIONAL:
                 agg[name]["n"] += 1
                 agg[name]["correct"] += (signal == actual)
+    weights = _effective_weights()
     rows = []
     for name, a in agg.items():
         rows.append({
@@ -101,7 +102,7 @@ def per_indicator_accuracy(results: list[dict]) -> list[dict]:
             "n": a["n"],
             "correct": a["correct"],
             "accuracy": _pct(a["correct"], a["n"]),
-            "weight": INDICATOR_WEIGHTS.get(name),
+            "weight": weights.get(name),
         })
     rows.sort(key=lambda x: x["accuracy"], reverse=True)
     return rows

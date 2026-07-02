@@ -21,11 +21,15 @@ it pings on the *event*, not every poll while RSI stays elevated.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import pytz
 
 import config as cfg
+
+ET = pytz.timezone("US/Eastern")
 
 TIMEFRAMES = ("5", "15")
 TF_LABEL = {"5": "5m", "15": "15m"}
@@ -68,6 +72,7 @@ class _TFState:
     last_bear_fs_ts: object = None
     last_bull_fs_ts: object = None
     primed: bool = False         # seen at least one bar (avoids startup ping)
+    last_bar_boundary: object = None  # last bar boundary fetched (skip re-fetches mid-bar)
 
 
 def _band(rsi: float, ob: float, ob_x: float, os: float, os_x: float) -> str:
@@ -246,14 +251,27 @@ class RSIWatcher:
 
     # ── Orchestration ────────────────────────────────────────────────────
 
-    async def check(self, client) -> list[RSIAlert]:
-        """Fetch both timeframes, evaluate, and flag cross-timeframe agreement."""
+    async def check(self, client, now: datetime | None = None) -> list[RSIAlert]:
+        """Fetch both timeframes, evaluate, and flag cross-timeframe agreement.
+
+        Each timeframe is fetched at most once per bar: RSI on a 5m/15m chart
+        only changes when a new bar prints, so re-fetching between boundaries
+        just spends API budget on identical data (~6x savings vs every poll).
+        """
+        now = now or datetime.now(ET)
         all_alerts: list[RSIAlert] = []
         for tf in TIMEFRAMES:
+            minutes = int(tf)
+            boundary = now.replace(minute=(now.minute // minutes) * minutes,
+                                   second=0, microsecond=0)
+            st = self._state[tf]
+            if st.last_bar_boundary == boundary:
+                continue
             try:
                 df = await client.fetch_candles(self.ticker, interval=tf, count=120)
             except Exception:
-                continue
+                continue  # boundary not recorded — retried next poll
+            st.last_bar_boundary = boundary
             all_alerts.extend(self.evaluate(tf, df))
 
         # Confirm: a direction seen on both 5m and 15m this cycle.
