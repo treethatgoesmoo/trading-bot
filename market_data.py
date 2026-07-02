@@ -18,6 +18,7 @@ import pytz
 import yfinance as yf
 
 import config as cfg
+import market_calendar
 from rate_limiter import AsyncTokenBucket, DailyBudgetLimiter
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,9 @@ INTERVAL_MAP = {
 
 YFINANCE_PERIOD = {
     "1":  "1d",
-    "5":  "1d",
+    # 5-min data must cover several sessions: compute_atr needs 15+ regular-hours
+    # bars, which "1d" can't provide early in the day.
+    "5":  "5d",
     "15": "5d",
     "30": "5d",
     "D":  "6mo",
@@ -291,9 +294,4 @@ class MarketDataClient:
 # ── Convenience helpers used by strategy.py ──────────────────────────────
 
 def is_market_open() -> bool:
-    now = datetime.now(ET)
-    if now.weekday() >= 5:
-        return False
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return market_open <= now <= market_close
+    return market_calendar.is_market_open(datetime.now(ET))

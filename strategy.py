@@ -1,4 +1,7 @@
 import asyncio
+import json
+import logging
+import os
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
@@ -7,17 +10,64 @@ import pytz
 import yfinance as yf
 
 from market_data import MarketDataClient
+from rsi_watcher import rsi_series, _pivots
 from config import (
     SMA_PERIOD, RISK_REWARD_RATIO,
     RVOL_THRESHOLD, RVOL_LOOKBACK,
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
+    RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     VIX_FORECAST_WEIGHT,
 )
 import vix
 
+logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
+
+# Default 30-min forecast indicator weights (from the original backtest:
+# RSI 55.2%, EMA 54.7%, VWAP 53%, MACD 52.7%). Overridable live via
+# data/indicator_weights.json — see tune_weights.py.
+INDICATOR_WEIGHTS = {
+    "RSI": 3.0,
+    "EMA": 2.5,
+    "VWAP": 2.0,
+    "MACD": 2.0,
+    "MACD_Mom": 0.5,
+    # Modest default: the detector switched to pivot-based divergence (see
+    # _detect_divergence), so the old endpoint-compare backtest no longer
+    # justifies a top-tier weight. Retune from live results with tune_weights.py.
+    "Divergence": 1.5,
+    "Volume": 1.0,
+    "Momentum": 1.0,
+    "VIX": VIX_FORECAST_WEIGHT,
+}
+
+_WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "data", "indicator_weights.json")
+_weights_cache: tuple[float, dict] | None = None
+
+
+def _weight_overrides() -> dict:
+    """Tuned per-indicator weights from data/indicator_weights.json, if present.
+
+    Written by tune_weights.py --write; reloaded automatically on file change.
+    """
+    global _weights_cache
+    try:
+        mtime = os.path.getmtime(_WEIGHTS_FILE)
+    except OSError:
+        return {}
+    if _weights_cache is None or _weights_cache[0] != mtime:
+        try:
+            with open(_WEIGHTS_FILE) as f:
+                data = json.load(f)
+            overrides = {k: float(v) for k, v in data.get("weights", data).items()}
+            _weights_cache = (mtime, overrides)
+            logger.info("Loaded indicator weight overrides: %s", overrides)
+        except Exception as exc:
+            logger.warning("Failed to load %s: %s", _WEIGHTS_FILE, exc)
+            return {}
+    return _weights_cache[1]
 
 
 @dataclass
@@ -283,14 +333,7 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
 def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    val = float(rsi.iloc[-1])
+    val = float(rsi_series(closes, period).iloc[-1])
     return val if not np.isnan(val) else None
 
 
@@ -527,15 +570,16 @@ def _apply_filters(
             filters.append(FilterStatus(name="Prev Day", passed=True,
                 reason=f"Inside prev range ${bias.prev_low}-${bias.prev_high} (neutral)"))
 
-    # Daily RSI — warn but don't block
+    # Daily RSI — warn but don't block: passed stays True so an extreme daily
+    # RSI can't veto the signal; the reason text carries the caution.
     if state.daily_bias is not None and state.daily_bias.rsi is not None:
         rsi = state.daily_bias.rsi
         if direction == "LONG" and rsi >= 70:
-            filters.append(FilterStatus(name="RSI", passed=False,
-                reason=f"RSI {rsi} >= 70 (overbought — risky to go long)"))
+            filters.append(FilterStatus(name="RSI", passed=True,
+                reason=f"RSI {rsi} >= 70 (overbought — caution on longs)"))
         elif direction == "SHORT" and rsi <= 30:
-            filters.append(FilterStatus(name="RSI", passed=False,
-                reason=f"RSI {rsi} <= 30 (oversold — risky to go short)"))
+            filters.append(FilterStatus(name="RSI", passed=True,
+                reason=f"RSI {rsi} <= 30 (oversold — caution on shorts)"))
         else:
             filters.append(FilterStatus(name="RSI", passed=True,
                 reason=f"RSI {rsi} ({state.daily_bias.rsi_signal})"))
@@ -703,18 +747,24 @@ async def _build_signal_or_filtered(
     timestamp: str,
     candles_1m: pd.DataFrame,
 ) -> TradeSignal | FilteredSignal:
+    # If a timeframe fetch fails its filter is skipped, not failed — but record
+    # the skip so the filter log shows what was actually checked.
     candles_5m = None
     candles_15m = None
+    skipped: list[FilterStatus] = []
     try:
         candles_5m = await client.fetch_candles(ticker, interval="5", count=100)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[%s] 5m candle fetch failed — EMA 5m filter skipped: %s", ticker, exc)
+        skipped.append(FilterStatus(name="EMA 5m", passed=True, reason="data unavailable — filter skipped"))
     try:
         candles_15m = await client.fetch_candles(ticker, interval="15", count=100)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[%s] 15m candle fetch failed — EMA 15m filter skipped: %s", ticker, exc)
+        skipped.append(FilterStatus(name="EMA 15m", passed=True, reason="data unavailable — filter skipped"))
 
     filters = _apply_filters(state, direction, entry_price, candles_1m, candles_5m, candles_15m)
+    filters.extend(skipped)
     all_passed = all(f.passed for f in filters)
 
     if all_passed:
@@ -742,24 +792,31 @@ async def _build_signal_or_filtered(
 
 # ── 30-min forecast ─────────────────────────────────────────
 
-def _detect_divergence(closes: pd.Series, rsi_values: pd.Series, lookback: int = 5) -> str | None:
-    """Detect RSI divergence over the last N bars."""
-    if len(closes) < lookback or len(rsi_values) < lookback:
+def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
+                       lookback: int = RSI_DIV_LOOKBACK,
+                       order: int = RSI_PIVOT_ORDER) -> str | None:
+    """Pivot-based RSI divergence (same detection as rsi_watcher).
+
+    Bearish: the last two price swing highs rise while RSI at those highs falls.
+    Bullish: the last two price swing lows fall while RSI at those lows rises.
+    """
+    window = min(lookback, len(closes))
+    if window < 2 * order + 3:
         return None
+    c = closes.iloc[-window:].to_numpy()
+    r = rsi_values.iloc[-window:].to_numpy()
+    if np.isnan(r).all():
+        return None
+    p_highs, p_lows = _pivots(c, order)
 
-    recent_closes = closes.iloc[-lookback:]
-    recent_rsi = rsi_values.iloc[-lookback:]
-
-    price_higher = recent_closes.iloc[-1] > recent_closes.iloc[0]
-    rsi_lower = recent_rsi.iloc[-1] < recent_rsi.iloc[0]
-
-    price_lower = recent_closes.iloc[-1] < recent_closes.iloc[0]
-    rsi_higher = recent_rsi.iloc[-1] > recent_rsi.iloc[0]
-
-    if price_higher and rsi_lower:
-        return "BEARISH_DIV"
-    if price_lower and rsi_higher:
-        return "BULLISH_DIV"
+    if len(p_highs) >= 2:
+        a, b = p_highs[-2], p_highs[-1]
+        if c[b] > c[a] and r[b] < r[a] and not np.isnan(r[b]):
+            return "BEARISH_DIV"
+    if len(p_lows) >= 2:
+        a, b = p_lows[-2], p_lows[-1]
+        if c[b] < c[a] and r[b] > r[a] and not np.isnan(r[b]):
+            return "BULLISH_DIV"
     return None
 
 
@@ -787,31 +844,15 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     current_price = round(float(closes.iloc[-1]), 2)
     now_str = ref_now.strftime("%I:%M %p ET")
 
-    # Indicator weights (based on backtest: RSI 55.2%, EMA 54.7%, VWAP 53%, MACD 52.7%)
-    indicator_weights = {
-        "RSI": 3.0,
-        "EMA": 2.5,
-        "VWAP": 2.0,
-        "MACD": 2.0,
-        "MACD_Mom": 0.5,
-        "Divergence": 3.0,
-        "Volume": 1.0,
-        "Momentum": 1.0,
-        "VIX": VIX_FORECAST_WEIGHT,
-    }
+    # Defaults + live-tuned overrides (data/indicator_weights.json)
+    indicator_weights = {**INDICATOR_WEIGHTS, **_weight_overrides()}
 
     signals = {}
     weights = {}
 
     # RSI
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi_val = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else None
+    rsi_vals = rsi_series(closes, 14)
+    rsi_val = float(rsi_vals.iloc[-1]) if not np.isnan(rsi_vals.iloc[-1]) else None
 
     if rsi_val is not None:
         if rsi_val > 60:
@@ -862,14 +903,15 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         signals["MACD_Mom"] = "BULLISH" if macd_val > macd_prev else "BEARISH"
         weights["MACD_Mom"] = indicator_weights["MACD_Mom"]
 
-    # Divergence detection (INVERTED: backtest showed divergence at 44.4%,
-    # meaning it's actually a continuation signal — invert for 55.6% accuracy)
-    divergence = _detect_divergence(closes, rsi_series) if rsi_val is not None else None
+    # Divergence — pivot-based reversal signal, voted at face value.
+    # (The old endpoint-compare detector was inverted per its backtest; that
+    # inversion doesn't carry over to the pivot detector.)
+    divergence = _detect_divergence(closes, rsi_vals) if rsi_val is not None else None
     if divergence == "BULLISH_DIV":
-        signals["Divergence"] = "BEARISH"
+        signals["Divergence"] = "BULLISH"
         weights["Divergence"] = indicator_weights["Divergence"]
     elif divergence == "BEARISH_DIV":
-        signals["Divergence"] = "BULLISH"
+        signals["Divergence"] = "BEARISH"
         weights["Divergence"] = indicator_weights["Divergence"]
 
     # Volume trend
@@ -902,23 +944,21 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         except Exception:
             pass
 
-    # Weighted vote
+    # Weighted vote. Confidence is the margin of the winning side over ALL
+    # reporting indicators (NEUTRAL votes included in the denominator), scaled
+    # to 50-100 — so two lone agreeing signals can't print 100% while the rest
+    # of the ensemble abstains.
     bull_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BULLISH")
     bear_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BEARISH")
-    total_weight = bull_score + bear_score
+    total_weight = sum(weights.values())
 
-    if total_weight == 0:
+    if total_weight == 0 or bull_score == bear_score:
         direction = "NEUTRAL"
         confidence = 50.0
     else:
-        confidence = round(max(bull_score, bear_score) / total_weight * 100, 1)
-        if bull_score > bear_score:
-            direction = "BULLISH"
-        elif bear_score > bull_score:
-            direction = "BEARISH"
-        else:
-            direction = "NEUTRAL"
-            confidence = 50.0
+        direction = "BULLISH" if bull_score > bear_score else "BEARISH"
+        margin = abs(bull_score - bear_score) / total_weight
+        confidence = round(50.0 + 50.0 * margin, 1)
 
     return DirectionForecast(
         ticker=ticker,
@@ -927,7 +967,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         timestamp=now_str,
         current_price=current_price,
         vwap=vwap_val,
-        rsi_30m=round(rsi_val, 1) if rsi_val else None,
+        rsi_30m=round(rsi_val, 1) if rsi_val is not None else None,
         ema_direction=ema_dir,
         macd_direction=macd_dir,
         divergence=divergence,

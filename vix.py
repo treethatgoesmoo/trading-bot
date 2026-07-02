@@ -85,7 +85,9 @@ async def get_snapshot() -> VixSnapshot | None:
 
 
 async def forecast_signal() -> str | None:
-    """VIX 30-min momentum -> SPY signal (inverse). Returns BULLISH/BEARISH/None."""
+    """VIX momentum over the last two 30-min bars (~30-60 min depending on how
+    much of the current bar has formed) -> SPY signal (inverse).
+    Returns BULLISH/BEARISH/None."""
     df = await _fetch("30m", "5d")
     if df is None or len(df) < 4:
         return None

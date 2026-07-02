@@ -17,6 +17,14 @@ ET = pytz.timezone("US/Eastern")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
+def _write_atomic(path: str, text: str) -> None:
+    """Write via temp file + rename so a crash mid-write can't corrupt history."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
 def log_forecast(ticker: str, forecast, now: datetime) -> None:
     """Append a forecast to today's JSONL file."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -164,9 +172,7 @@ async def evaluate_bias(client, ticker: str, date_str: str) -> None:
             changed = True
     if changed:
         path = os.path.join(DATA_DIR, f"bias-{date_str}.jsonl")
-        with open(path, "w") as f:
-            for e in entries:
-                f.write(json.dumps(e) + "\n")
+        _write_atomic(path, "".join(json.dumps(e) + "\n" for e in entries))
 
 
 def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
@@ -272,7 +278,6 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
                 existing = []
         existing = [r for r in existing if r.get("ticker") != ticker]
         existing.extend(results)
-        with open(out_path, "w") as f:
-            json.dump(existing, f, indent=2)
+        _write_atomic(out_path, json.dumps(existing, indent=2))
 
     return results
