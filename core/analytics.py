@@ -15,7 +15,9 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
-import forecast_tracker as ft
+# Feature trackers are imported lazily (function-local) where possible to keep
+# core free of import-time dependencies on feature packages.
+from zero_dte import tracker as ft
 
 DIRECTIONAL = ("BULLISH", "BEARISH")
 
@@ -25,7 +27,7 @@ def _effective_weights() -> dict:
     (defaults + any live-tuned overrides from data/indicator_weights.json).
     Shown alongside accuracy so an indicator that's heavily weighted but
     inaccurate stands out as a tuning target."""
-    from strategy import INDICATOR_WEIGHTS, _weight_overrides
+    from zero_dte.strategy import INDICATOR_WEIGHTS, _weight_overrides
     return {**INDICATOR_WEIGHTS, **_weight_overrides()}
 
 
@@ -38,7 +40,8 @@ def _pct(correct: int, total: int) -> float:
 def all_dates() -> list[str]:
     """Union of every date for which we have any data file, sorted ascending."""
     seen: set[str] = set()
-    for kind in ("results", "forecasts", "bias", "outcomes", "filters"):
+    for kind in ("results", "forecasts", "bias", "outcomes", "filters",
+                 "swing_signals", "swing_outcomes"):
         seen.update(ft.available_dates(kind))
     return sorted(seen)
 
@@ -213,6 +216,72 @@ def filter_stats(filters: list[dict]) -> dict:
             "block_rate": _pct(blocked, setups), "by_filter": rows}
 
 
+def _swing_effective_weights() -> dict:
+    from swing.strategy import SWING_INDICATOR_WEIGHTS, _swing_weight_overrides
+    return {**SWING_INDICATOR_WEIGHTS, **_swing_weight_overrides()}
+
+
+def swing_report(days: int | None = None) -> dict:
+    """Aggregate swing signals and graded outcomes (swing_signals/swing_outcomes)."""
+    sig_dates = ft.available_dates("swing_signals")
+    out_dates = ft.available_dates("swing_outcomes")
+    if days is not None and days > 0:
+        sig_dates = sig_dates[-days:]
+        out_dates = out_dates[-days:]
+    signals = [e for d in sig_dates for e in ft.load_jsonl("swing_signals", d)]
+    outcomes = [e for d in out_dates for e in ft.load_jsonl("swing_outcomes", d)]
+
+    wins = sum(1 for o in outcomes if o.get("win"))
+    graded = len(outcomes)
+    moves = [o["move_pct"] for o in outcomes if o.get("move_pct") is not None]
+    opt_pnls = [o["option"]["pnl_pct"] for o in outcomes if o.get("option")]
+
+    by_dir = {}
+    for d in ("CALL", "PUT"):
+        sub = [o for o in outcomes if o["direction"] == d]
+        w = sum(1 for o in sub if o.get("win"))
+        by_dir[d] = {"n": len(sub), "wins": w, "win_rate": _pct(w, len(sub))}
+
+    by_ticker = _group_accuracy(
+        [{"correct": o.get("win", False), "ticker": o["ticker"]} for o in outcomes],
+        lambda r: r["ticker"],
+    )
+
+    # Per-indicator accuracy: each signal's vote dict vs the graded actual move.
+    agg = defaultdict(lambda: {"n": 0, "correct": 0})
+    for o in outcomes:
+        actual = o.get("actual")
+        if actual not in DIRECTIONAL:
+            continue
+        for name, sig in (o.get("signals") or {}).items():
+            if sig in DIRECTIONAL:
+                agg[name]["n"] += 1
+                agg[name]["correct"] += (sig == actual)
+    weights = _swing_effective_weights()
+    indicators = [{
+        "indicator": name, "n": a["n"], "correct": a["correct"],
+        "accuracy": _pct(a["correct"], a["n"]), "weight": weights.get(name),
+    } for name, a in agg.items()]
+    indicators.sort(key=lambda x: x["accuracy"], reverse=True)
+
+    resolutions = defaultdict(int)
+    for o in outcomes:
+        resolutions[o.get("resolution", "?")] += 1
+
+    return {
+        "signals": len(signals),
+        "graded": graded,
+        "wins": wins,
+        "win_rate": _pct(wins, graded),
+        "avg_move": round(sum(moves) / len(moves), 2) if moves else 0.0,
+        "avg_option_pnl": round(sum(opt_pnls) / len(opt_pnls), 1) if opt_pnls else None,
+        "by_direction": by_dir,
+        "by_ticker": sorted(by_ticker, key=lambda x: x["key"]),
+        "resolutions": dict(resolutions),
+        "indicators": indicators,
+    }
+
+
 # ── Top-level report ─────────────────────────────────────────────────────
 
 def build_report(days: int | None = None) -> dict:
@@ -234,4 +303,5 @@ def build_report(days: int | None = None) -> dict:
         "bias": bias_stats(data["bias"]),
         "trades": trade_stats(data["outcomes"]),
         "filters": filter_stats(data["filters"]),
+        "swing": swing_report(days),
     }

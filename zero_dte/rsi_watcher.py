@@ -28,6 +28,7 @@ import pandas as pd
 import pytz
 
 import config as cfg
+from core.indicators import rsi_series, pivots as _pivots
 
 ET = pytz.timezone("US/Eastern")
 
@@ -36,17 +37,6 @@ TF_LABEL = {"5": "5m", "15": "15m"}
 
 # Band ranks for detecting threshold transitions.
 _RANK = {"extreme_os": 0, "os": 1, "mid": 2, "ob": 3, "extreme_ob": 4}
-
-
-def rsi_series(closes: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder's RSI as a full series (same math as strategy._compute_rsi)."""
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
 
 
 @dataclass
@@ -85,19 +75,6 @@ def _band(rsi: float, ob: float, ob_x: float, os: float, os_x: float) -> str:
     if rsi <= os:
         return "os"
     return "mid"
-
-
-def _pivots(vals: np.ndarray, order: int) -> tuple[list[int], list[int]]:
-    """Indices of local maxima and minima (strict over a +/- order window)."""
-    highs, lows = [], []
-    n = len(vals)
-    for i in range(order, n - order):
-        w = vals[i - order:i + order + 1]
-        if vals[i] == w.max() and vals[i] > vals[i - 1]:
-            highs.append(i)
-        if vals[i] == w.min() and vals[i] < vals[i - 1]:
-            lows.append(i)
-    return highs, lows
 
 
 class RSIWatcher:

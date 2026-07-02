@@ -28,8 +28,8 @@ import pytz
 import yfinance as yf
 
 import config as cfg
-import forecast_tracker as ft
-from strategy import (
+from zero_dte import tracker as ft
+from zero_dte.strategy import (
     compute_30m_forecast,
     get_daily_bias,
     set_bias_from_first_candle,
