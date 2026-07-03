@@ -18,8 +18,8 @@ import pytz
 import yfinance as yf
 
 import config as cfg
-import market_calendar
-from rate_limiter import AsyncTokenBucket, DailyBudgetLimiter
+from core import market_calendar
+from core.rate_limiter import AsyncTokenBucket, DailyBudgetLimiter
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -59,7 +59,9 @@ YFINANCE_PERIOD = {
     "5":  "5d",
     "15": "5d",
     "30": "5d",
-    "D":  "6mo",
+    # Daily must cover the swing feature's 300-bar window (SMA200 + 52w high);
+    # callers get the tail(count) they asked for either way.
+    "D":  "2y",
 }
 
 

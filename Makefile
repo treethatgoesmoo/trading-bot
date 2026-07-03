@@ -53,6 +53,11 @@ VERBOSE ?=
 backtest:
 	python backtest.py $(DATE) $(TICKER) $(if $(VERBOSE),--verbose)
 
+# Backtest the swing options strategy (usage: make backtest-swing START=2023-01-01)
+START ?= 2023-01-01
+backtest-swing:
+	python backtest_swing.py --start $(START) $(if $(VERBOSE),--verbose)
+
 # Show today's log
 logs:
 	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -100 {} || echo "No log file found."
@@ -63,5 +68,5 @@ tail:
 
 # Remove cached files
 clean:
-	rm -rf __pycache__ .bot.pid
+	rm -rf __pycache__ core/__pycache__ zero_dte/__pycache__ swing/__pycache__ bot/__pycache__ .bot.pid
 	@echo "Cleaned."

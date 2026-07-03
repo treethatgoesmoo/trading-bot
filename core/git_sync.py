@@ -14,14 +14,25 @@ import logging
 import os
 import subprocess
 
+from core.paths import ROOT as REPO_DIR
+
 logger = logging.getLogger(__name__)
-REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=REPO_DIR, capture_output=True, text=True, timeout=timeout,
     )
+
+
+def get_version() -> str:
+    """branch@shortsha of the running checkout, for status displays."""
+    try:
+        commit = _git("rev-parse", "--short", "HEAD").stdout.strip()
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        return f"{branch}@{commit}" if commit else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def commit_data_history(message: str, push: bool = True) -> tuple[bool, str]:

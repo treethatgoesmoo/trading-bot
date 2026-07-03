@@ -13,16 +13,15 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
+from core.paths import DATA_DIR
+from core.tracking import (
+    write_atomic as _write_atomic,
+    append_jsonl as _append_jsonl,
+    load_jsonl,
+    available_dates,
+)
+
 ET = pytz.timezone("US/Eastern")
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-
-
-def _write_atomic(path: str, text: str) -> None:
-    """Write via temp file + rename so a crash mid-write can't corrupt history."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
 
 
 def log_forecast(ticker: str, forecast, now: datetime) -> None:
@@ -50,24 +49,6 @@ def load_forecasts(date_str: str) -> list[dict]:
     return load_jsonl("forecasts", date_str)
 
 
-# ── Generic JSONL helpers ────────────────────────────────────────────────
-
-def _append_jsonl(kind: str, date_str: str, entry: dict) -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    path = os.path.join(DATA_DIR, f"{kind}-{date_str}.jsonl")
-    with open(path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
-def load_jsonl(kind: str, date_str: str) -> list[dict]:
-    """Load a per-day JSONL file (forecasts, bias, outcomes, filters, votes)."""
-    path = os.path.join(DATA_DIR, f"{kind}-{date_str}.jsonl")
-    if not os.path.exists(path):
-        return []
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
 def load_results(date_str: str) -> list[dict]:
     """Load the evaluated-forecast results for a day (results-YYYY-MM-DD.json)."""
     path = os.path.join(DATA_DIR, f"results-{date_str}.json")
@@ -78,20 +59,6 @@ def load_results(date_str: str) -> list[dict]:
             return json.load(f)
     except Exception:
         return []
-
-
-def available_dates(kind: str = "results") -> list[str]:
-    """Sorted list of dates (YYYY-MM-DD) for which a given data file exists."""
-    if not os.path.isdir(DATA_DIR):
-        return []
-    prefix = f"{kind}-"
-    dates = []
-    for fname in os.listdir(DATA_DIR):
-        if fname.startswith(prefix) and (fname.endswith(".jsonl") or fname.endswith(".json")):
-            stem = fname[len(prefix):].rsplit(".", 1)[0]
-            if len(stem) == 10 and stem[4] == "-" and stem[7] == "-":
-                dates.append(stem)
-    return sorted(dates)
 
 
 # ── Outcome / bias / filter persistence ──────────────────────────────────

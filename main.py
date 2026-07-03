@@ -16,7 +16,7 @@ import os
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
-from discord_bot import run_bot
+from bot.core import run_bot
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)

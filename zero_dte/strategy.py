@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 import pytz
 import yfinance as yf
 
-from market_data import MarketDataClient
-from rsi_watcher import rsi_series, _pivots
+from core.market_data import MarketDataClient
+from core.indicators import rsi_series, pivots as _pivots
+from core.paths import INDICATOR_WEIGHTS_FILE as _WEIGHTS_FILE
 from config import (
     SMA_PERIOD, RISK_REWARD_RATIO,
     RVOL_THRESHOLD, RVOL_LOOKBACK,
@@ -20,7 +21,7 @@ from config import (
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     VIX_FORECAST_WEIGHT,
 )
-import vix
+from core import vix
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -43,7 +44,6 @@ INDICATOR_WEIGHTS = {
     "VIX": VIX_FORECAST_WEIGHT,
 }
 
-_WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "data", "indicator_weights.json")
 _weights_cache: tuple[float, dict] | None = None
 
 
