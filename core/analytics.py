@@ -15,11 +15,22 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
-# Feature trackers are imported lazily (function-local) where possible to keep
-# core free of import-time dependencies on feature packages.
-from zero_dte import tracker as ft
+import pytz
 
+ET = pytz.timezone("US/Eastern")
 DIRECTIONAL = ("BULLISH", "BEARISH")
+
+# Feature trackers are imported lazily to keep core free of import-time
+# dependencies on feature packages (strict dependency direction).
+_ft_mod = None
+
+
+def _ft():
+    global _ft_mod
+    if _ft_mod is None:
+        from zero_dte import tracker
+        _ft_mod = tracker
+    return _ft_mod
 
 
 def _effective_weights() -> dict:
@@ -42,23 +53,23 @@ def all_dates() -> list[str]:
     seen: set[str] = set()
     for kind in ("results", "forecasts", "bias", "outcomes", "filters",
                  "swing_signals", "swing_outcomes"):
-        seen.update(ft.available_dates(kind))
+        seen.update(_ft().available_dates(kind))
     return sorted(seen)
 
 
 def _collect(dates: list[str]) -> dict:
     results, bias, outcomes, filters = [], [], [], []
     for d in dates:
-        for r in ft.load_results(d):
+        for r in _ft().load_results(d):
             r["date"] = d
             results.append(r)
-        for b in ft.load_jsonl("bias", d):
+        for b in _ft().load_jsonl("bias", d):
             b["date"] = d
             bias.append(b)
-        for o in ft.load_jsonl("outcomes", d):
+        for o in _ft().load_jsonl("outcomes", d):
             o["date"] = d
             outcomes.append(o)
-        for f in ft.load_jsonl("filters", d):
+        for f in _ft().load_jsonl("filters", d):
             f["date"] = d
             filters.append(f)
     return {"results": results, "bias": bias, "outcomes": outcomes, "filters": filters}
@@ -147,7 +158,8 @@ def _group_accuracy(results: list[dict], keyfn) -> list[dict]:
 def accuracy_by_hour(results: list[dict]) -> list[dict]:
     def hour(r):
         try:
-            return datetime.fromisoformat(r["time"]).strftime("%I:%M %p").lstrip("0")
+            # Stored times are UTC ISO (older files: ET-offset) — bucket in ET.
+            return datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p").lstrip("0")
         except Exception:
             return "?"
     rows = _group_accuracy(results, hour)
@@ -223,13 +235,13 @@ def _swing_effective_weights() -> dict:
 
 def swing_report(days: int | None = None) -> dict:
     """Aggregate swing signals and graded outcomes (swing_signals/swing_outcomes)."""
-    sig_dates = ft.available_dates("swing_signals")
-    out_dates = ft.available_dates("swing_outcomes")
+    sig_dates = _ft().available_dates("swing_signals")
+    out_dates = _ft().available_dates("swing_outcomes")
     if days is not None and days > 0:
         sig_dates = sig_dates[-days:]
         out_dates = out_dates[-days:]
-    signals = [e for d in sig_dates for e in ft.load_jsonl("swing_signals", d)]
-    outcomes = [e for d in out_dates for e in ft.load_jsonl("swing_outcomes", d)]
+    signals = [e for d in sig_dates for e in _ft().load_jsonl("swing_signals", d)]
+    outcomes = [e for d in out_dates for e in _ft().load_jsonl("swing_outcomes", d)]
 
     wins = sum(1 for o in outcomes if o.get("win"))
     graded = len(outcomes)

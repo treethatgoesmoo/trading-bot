@@ -17,8 +17,8 @@ from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
 from bot.core import run_bot
+from core.paths import LOGS_DIR as LOG_DIR
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

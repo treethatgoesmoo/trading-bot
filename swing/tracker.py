@@ -125,9 +125,14 @@ def _horizon_end(sig: dict) -> datetime.date:
     return end
 
 
-def _walk_forward(sig: dict, days: pd.DataFrame) -> tuple[str, str, float] | None:
+def _walk_forward(sig: dict, days: pd.DataFrame,
+                  asof=None) -> tuple[str, str, float] | None:
     """Replay daily candles from the signal date: did the underlying hit the
     target or the invalidation first? Same-day both -> stop wins (conservative).
+
+    `asof` (a date) lets the caller assert the horizon has already passed even
+    when no candle dated past it exists — a horizon landing on a holiday or
+    weekend otherwise never grades and the signal blocks its ticker forever.
 
     Returns (resolution, resolution_date, move_pct) or None if not resolvable yet.
     """
@@ -139,9 +144,11 @@ def _walk_forward(sig: dict, days: pd.DataFrame) -> tuple[str, str, float] | Non
     resolved = None
     last_close = None
     last_date = None
+    passed_horizon = asof is not None and asof > horizon_end
     for _, row in days.iterrows():
         d = row["date"]
         if d > horizon_end:
+            passed_horizon = True
             break
         high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
         last_close, last_date = close, d
@@ -166,12 +173,13 @@ def _walk_forward(sig: dict, days: pd.DataFrame) -> tuple[str, str, float] | Non
             else round((sig["target_pct"] if is_call else -sig["target_pct"]), 2)
         return res, d.strftime("%Y-%m-%d"), move_pct
 
-    if last_date is not None and last_date >= horizon_end:
+    horizon_reached = passed_horizon or (last_date is not None and last_date >= horizon_end)
+    if horizon_reached and last_close is not None:
         move_pct = round((last_close - entry) / entry * 100, 2)
         favorable = move_pct > 0 if is_call else move_pct < 0
         return ("EXPIRED_WIN" if favorable else "EXPIRED_LOSS"), last_date.strftime("%Y-%m-%d"), move_pct
 
-    return None  # horizon not reached yet
+    return None  # horizon not reached yet (or no candles inside it — widen the fetch)
 
 
 async def _option_pnl(sig: dict, move_pct: float, today) -> dict | None:
@@ -219,7 +227,9 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
         if not due and today < _horizon_end(sig):
             continue
         try:
-            df = await client.fetch_candles(sig["ticker"], interval="D", count=40)
+            # 90 bars ≈ 4 months: keeps signals gradable even after a long
+            # outage (a 40-bar window couldn't reach back past ~8 weeks).
+            df = await client.fetch_candles(sig["ticker"], interval="D", count=90)
         except Exception as exc:
             logger.warning("[%s] Grading fetch failed: %s", sig["ticker"], exc)
             continue
@@ -236,7 +246,7 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
         if days.empty:
             continue
 
-        result = _walk_forward(sig, days)
+        result = _walk_forward(sig, days, asof=today)
         if result is None:
             continue
         resolution, resolution_date, move_pct = result
@@ -261,7 +271,7 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
             "score": sig["score"],
             "resolution": resolution,
             "resolution_date": resolution_date,
-            "graded_at": now_et.isoformat(),
+            "graded_at": now_et.astimezone(pytz.UTC).isoformat(),
             "move_pct": move_pct,
             "win": resolution in ("TARGET_HIT", "EXPIRED_WIN"),
             "option": option,

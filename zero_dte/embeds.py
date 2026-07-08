@@ -3,10 +3,12 @@
 from datetime import datetime
 
 import discord
+import pytz
 
-from config import ATR_OVEREXTENDED_MULT, FILTER_COOLDOWN_MINUTES
+from config import ATR_OVEREXTENDED_MULT, FILTER_COOLDOWN_MINUTES, FORECAST_INTERVAL_MINUTES
 from zero_dte.strategy import (
     DailyBias,
+    DayForecast,
     DirectionForecast,
     FilteredSignal,
     FirstCandleRange,
@@ -14,6 +16,8 @@ from zero_dte.strategy import (
     TradeOutcome,
     TradeSignal,
 )
+
+ET = pytz.timezone("US/Eastern")
 from zero_dte.rsi_watcher import RSIAlert, TF_LABEL
 
 
@@ -45,7 +49,7 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
         color, emoji = 0xFFAA00, "\U0001f7e1"
 
     embed = discord.Embed(
-        title=f"{emoji} 30-Min Forecast: {fc.direction} {fc.ticker}",
+        title=f"{emoji} {FORECAST_INTERVAL_MINUTES}-Min Forecast: {fc.direction} {fc.ticker}",
         color=color,
     )
     embed.add_field(name="Confidence", value=f"{fc.confidence}%", inline=True)
@@ -72,7 +76,30 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
     if sig_lines:
         embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
 
-    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next 30 min outlook")
+    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next {FORECAST_INTERVAL_MINUTES} min outlook")
+    return embed
+
+
+def day_forecast_embed(fc: DayForecast) -> discord.Embed:
+    if fc.direction == "BULLISH":
+        color, emoji = 0x00CC66, "\U0001f7e2"
+    elif fc.direction == "BEARISH":
+        color, emoji = 0xFF4444, "\U0001f534"
+    else:
+        color, emoji = 0xFFAA00, "\U0001f7e1"
+
+    embed = discord.Embed(
+        title=f"{emoji} \U0001f5fa️ Day Forecast — {fc.ticker}: {fc.direction}",
+        description=f"Bias strength: **{fc.strength}** · daily ATR ${fc.day_atr}",
+        color=color,
+    )
+    embed.add_field(name="Open", value=f"${fc.open_price}", inline=True)
+    embed.add_field(name="Projected High", value=f"~${fc.exp_high}", inline=True)
+    embed.add_field(name="Projected Low", value=f"~${fc.exp_low}", inline=True)
+    embed.add_field(name="Pivot", value=f"${fc.pivot}", inline=True)
+    embed.add_field(name="R1 / S1", value=f"${fc.r1} / ${fc.s1}", inline=True)
+    embed.add_field(name="Prev High / Low", value=f"${fc.prev_high} / ${fc.prev_low}", inline=True)
+    embed.set_footer(text=f"ATR-projected range at {fc.timestamp} — estimates, not levels to trade blindly")
     return embed
 
 
@@ -101,7 +128,7 @@ def forecast_results_embed(ticker: str, date_str: str, results: list[dict],
 
     lines = []
     for r in results:
-        ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+        ftime = datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p")
         if r.get("correct") is None:
             icon = "\U0001f7e1"
         elif r["correct"]:

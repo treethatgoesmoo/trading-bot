@@ -16,6 +16,7 @@ import pytz
 
 from config import (
     ALERT_CHANNEL_ID,
+    AUTO_TUNE_ENABLED,
     ECON_EVENTS_ENABLED,
     ECON_LOOKAHEAD_DAYS,
     GIT_AUTOCOMMIT_ENABLED,
@@ -23,10 +24,11 @@ from config import (
     GIT_AUTOCOMMIT_DELAY_MINUTES,
     MARKET_OPEN_HOUR,
     MARKET_OPEN_MINUTE,
+    STARTUP_CHANGELOG_ENABLED,
 )
 from core import analytics, market_calendar
 from core.economic_events import EconEvent, fetch_events
-from core.git_sync import commit_data_history
+from core.git_sync import commit_data_history, get_latest_change, get_version
 from core.market_data import MarketDataClient
 from core.paths import DASHBOARD_OUT
 
@@ -134,13 +136,38 @@ class SharedCog(commands.Cog, name="Shared"):
         self.client = client
         self._econ_briefing_date: str | None = None
         self._history_commit_date: str | None = None
+        self._tune_date: str | None = None
+        self._startup_notice_sent = False
 
     async def cog_load(self):
         self.housekeeping.start()
-        logger.info("Housekeeping loop started (econ briefing + git auto-commit)")
+        logger.info("Housekeeping loop started (econ briefing + nightly tune + git auto-commit)")
 
     async def cog_unload(self):
         self.housekeeping.cancel()
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Post the latest change once per process — so a restart (deploy)
+        shows what's now running. on_ready re-fires on reconnects; the flag
+        keeps this to the first."""
+        if self._startup_notice_sent or not STARTUP_CHANGELOG_ENABLED:
+            return
+        self._startup_notice_sent = True
+        channel = self.bot.get_channel(ALERT_CHANNEL_ID)
+        if channel is None:
+            return
+        try:
+            change = await asyncio.to_thread(get_latest_change)
+            embed = discord.Embed(title="\U0001f504 Bot restarted", color=0x5865F2)
+            embed.add_field(name="Version", value=get_version(), inline=True)
+            if change:
+                embed.add_field(name="Latest change", value=change["subject"][:1024], inline=False)
+                embed.add_field(name="Committed", value=f"{change['date']} · `{change['sha']}`", inline=True)
+            embed.set_footer(text="!status for live state · !stats for performance")
+            await channel.send(embed=embed)
+        except Exception as exc:
+            logger.warning("Startup notice failed: %s", exc)
 
     # ── Daily jobs ───────────────────────────────────────────────────────
 
@@ -158,6 +185,34 @@ class SharedCog(commands.Cog, name="Shared"):
             await channel.send(embed=economic_events_embed(events))
         except Exception as exc:
             logger.warning("Economic briefing failed: %s", exc)
+
+    async def maybe_tune_weights(self, channel, today_str: str) -> None:
+        """Nightly self-tune: refresh both weight files from graded history
+        (once per trading day, after close — before the git auto-commit so the
+        tuned weights land in the same history commit)."""
+        if not AUTO_TUNE_ENABLED or self._tune_date == today_str:
+            return
+        self._tune_date = today_str  # set first so a failure doesn't retry every poll
+
+        def _tune():
+            import tune_weights
+            import tune_swing_weights
+            return (tune_weights.retune(write=True),
+                    tune_swing_weights.retune(write=True))
+
+        try:
+            fc_payload, swing_payload = await asyncio.to_thread(_tune)
+        except Exception as exc:
+            logger.warning("Nightly weight tuning failed: %s", exc)
+            return
+        parts = []
+        if fc_payload:
+            parts.append(f"forecast weights ({sum(fc_payload['samples'].values())} graded votes over {fc_payload['days']} day(s))")
+        if swing_payload:
+            parts.append(f"swing weights ({sum(swing_payload['samples'].values())} graded votes)")
+        logger.info("Nightly retune: %s", " · ".join(parts) if parts else "no graded history yet")
+        if parts and channel:
+            await channel.send("\U0001f39b️ Nightly retune — " + " · ".join(parts) + ". Hot-reloaded live.")
 
     async def maybe_commit_history(self, channel, today_str: str) -> None:
         """Commit the day's captured history to git once per trading day (after close)."""
@@ -180,11 +235,18 @@ class SharedCog(commands.Cog, name="Shared"):
 
         market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         if now >= market_open:
-            await self.maybe_post_econ_briefing(channel, today_str)
+            # Only within the first 90 minutes: a bot restarted mid-afternoon
+            # (or at night) shouldn't post a stale "morning" briefing.
+            if now < market_open + timedelta(minutes=90):
+                await self.maybe_post_econ_briefing(channel, today_str)
+            elif self._econ_briefing_date != today_str:
+                self._econ_briefing_date = today_str  # window missed — skip silently
 
-        # Commit a few minutes after close so the features' EOD evaluations land first.
+        # After close: retune weights from the freshly graded day, then commit
+        # (a few minutes after close so the features' EOD evaluations land first).
         commit_time = market_calendar.session_close(now) + timedelta(minutes=GIT_AUTOCOMMIT_DELAY_MINUTES)
         if now >= commit_time:
+            await self.maybe_tune_weights(channel, today_str)
             await self.maybe_commit_history(channel, today_str)
 
     @housekeeping.before_loop

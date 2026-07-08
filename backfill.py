@@ -147,10 +147,23 @@ async def backfill_ticker(ticker: str, days: int,
     return n_fc, n_bias
 
 
-def _write(out: dict[str, dict[str, list]]) -> None:
-    """Write accumulated per-date data (write-once, so re-runs are idempotent)."""
+def _write(out: dict[str, dict[str, list]], force: bool = False) -> None:
+    """Write accumulated per-date data.
+
+    Refuses to touch dates that already have live-captured files — replaying
+    yfinance reconstructions over real history would silently corrupt the
+    tuning inputs (and the nightly auto-commit would make it permanent).
+    Pass --force to overwrite anyway.
+    """
     os.makedirs(ft.DATA_DIR, exist_ok=True)
+    skipped = []
     for ds, kinds in out.items():
+        paths = [os.path.join(ft.DATA_DIR, f"{name}-{ds}.jsonl") for name in ("forecasts", "bias") if name in kinds]
+        if "results" in kinds:
+            paths.append(os.path.join(ft.DATA_DIR, f"results-{ds}.json"))
+        if not force and any(os.path.exists(p) for p in paths):
+            skipped.append(ds)
+            continue
         for name in ("forecasts", "bias"):
             if name in kinds:
                 with open(os.path.join(ft.DATA_DIR, f"{name}-{ds}.jsonl"), "w") as f:
@@ -159,16 +172,23 @@ def _write(out: dict[str, dict[str, list]]) -> None:
         if "results" in kinds:
             with open(os.path.join(ft.DATA_DIR, f"results-{ds}.json"), "w") as f:
                 json.dump(kinds["results"], f, indent=2)
+    if skipped:
+        print(f"Skipped {len(skipped)} day(s) that already have live data "
+              f"(--force overwrites): {', '.join(sorted(skipped))}")
 
 
 async def main() -> None:
     args = sys.argv[1:]
     days = 30
+    force = "--force" in args
     tickers = []
     for a in args:
-        (tickers.append(a.upper()) if not a.isdigit() else None)
+        if a.startswith("-"):
+            continue
         if a.isdigit():
             days = int(a)
+        else:
+            tickers.append(a.upper())
     tickers = tickers or list(cfg.TICKERS)
 
     print(f"Backfilling {days} trading days for {', '.join(tickers)} ...")
@@ -179,7 +199,7 @@ async def main() -> None:
         print(f"  {t}: {fc} forecasts, {bias} bias days")
         totals = (totals[0] + fc, totals[1] + bias)
 
-    _write(out)
+    _write(out, force=force)
     print(f"Wrote {len(out)} day-files to {ft.DATA_DIR}")
     print(f"Total: {totals[0]} forecasts, {totals[1]} bias days")
     print("Now run:  python dashboard.py --open   (or !dashboard in Discord)")

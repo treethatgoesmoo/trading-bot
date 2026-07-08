@@ -110,7 +110,9 @@ def analyze(days: int = 5, ticker: str = "SPY"):
         else:
             g5 = r5 = 0
 
-        # Bot bias
+        # Prev-day momentum baseline — NOT the live bias model (that one is
+        # 50 SMA + gap + first candle + RSI, graded in data/bias-*.jsonl /
+        # !stats); this is a simple yardstick to compare days against.
         bot_bias = "BULLISH" if prev_dir == "GREEN" else "BEARISH"
         correct = (bot_bias == "BULLISH" and day_dir == "GREEN") or (bot_bias == "BEARISH" and day_dir == "RED")
 
@@ -133,7 +135,7 @@ def analyze(days: int = 5, ticker: str = "SPY"):
         print(f"              Range: ${box_high - box_low:.2f}")
         print(f"  Day:        O:${day_open:.2f} H:${day_high:.2f} L:${day_low:.2f} C:${day_close:.2f}")
         print(f"  Prev Day:   {prev_dir} | O:${prev_open:.2f} C:${prev_close:.2f} H:${prev_high:.2f} L:${prev_low:.2f}")
-        print(f"  Bot Bias:   {bot_bias} (prev was {prev_dir}) — {'✅ CORRECT' if correct else '❌ WRONG'}")
+        print(f"  Baseline:   {bot_bias} (prev-day momentum: {prev_dir}) — {'✅ CORRECT' if correct else '❌ WRONG'}")
         print(f"  5-Day:      {g5}G / {r5}R")
         if sma:
             print(f"  50 SMA:     ${sma:.2f} ({'above' if day_close > sma else 'below'})")
@@ -169,7 +171,7 @@ def analyze(days: int = 5, ticker: str = "SPY"):
             print(f"  Signal:     Broke below but bias BULLISH — missed short ⚠️")
 
     print(f"\n{'='*65}")
-    print(f"  SUMMARY: {results['correct']}/{results['total']} bias calls correct ({results['correct']/results['total']*100:.0f}%)" if results["total"] > 0 else "  No data")
+    print(f"  SUMMARY: {results['correct']}/{results['total']} prev-day-momentum baseline calls correct (live bias accuracy: see !stats) ({results['correct']/results['total']*100:.0f}%)" if results["total"] > 0 else "  No data")
     print(f"{'='*65}\n")
 
 

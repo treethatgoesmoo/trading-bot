@@ -12,3 +12,4 @@ dashboard.html
 # data/ is tracked: the bot commits each day's captured history here.
 # Ignore the generated dashboard and any scratch files, but keep the JSON history.
 data/dashboard.html
+.api_budget.json

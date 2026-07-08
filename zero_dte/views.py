@@ -7,6 +7,9 @@ instead of module globals so they work inside the cog-based bot.
 from datetime import datetime
 
 import discord
+import pytz
+
+ET = pytz.timezone("US/Eastern")
 
 from zero_dte.strategy import DirectionForecast, TradeSignal
 from zero_dte.tracker import log_trade_decision, log_user_vote
@@ -23,11 +26,16 @@ class ForecastView(discord.ui.View):
 
     @discord.ui.button(label="👍 Agree", style=discord.ButtonStyle.success)
     async def agree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # A NEUTRAL agreement isn't a directional call — log it unscored
+        # (actuals are only ever BULLISH/BEARISH, so scoring it guarantees a miss).
+        user_dir = self.forecast.direction if self.forecast.direction in ("BULLISH", "BEARISH") else None
         log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
-                      self.forecast.direction, interaction.user.name)
-        await interaction.response.send_message(
-            f"Logged: you agree with **{self.forecast.direction}** on {self.ticker}. Scored at 4 PM.",
-            ephemeral=True)
+                      user_dir, interaction.user.name)
+        if user_dir:
+            msg = f"Logged: you agree with **{user_dir}** on {self.ticker}. Scored at 4 PM."
+        else:
+            msg = "Logged your agree on a NEUTRAL forecast (not scored)."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(label="👎 Disagree", style=discord.ButtonStyle.danger)
     async def disagree(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -132,7 +140,7 @@ class ReportDetailsView(discord.ui.View):
         )
         lines = []
         for r in self.results:
-            ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+            ftime = datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p")
             if r.get("correct") is None:
                 icon = "\U0001f7e1"
             elif r["correct"]:
@@ -158,30 +166,38 @@ class MenuView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         tickers = cog.active_tickers
-        self.selected_ticker = tickers[0] if tickers else "SPY"
+        self.default_ticker = tickers[0] if tickers else "SPY"
+        # Selection is per-user: one persistent instance serves every old menu
+        # message after a restart, so a shared attribute would let one user's
+        # pick silently redirect another's buttons.
+        self._selected: dict[int, str] = {}
         if tickers:
             select = discord.ui.Select(
-                placeholder=f"Ticker (default: {self.selected_ticker})",
+                placeholder=f"Ticker (default: {self.default_ticker})",
                 options=[discord.SelectOption(label=t) for t in tickers[:25]],
                 custom_id="menu:ticker",
             )
             select.callback = self._on_ticker
             self.add_item(select)
 
+    def _ticker_for(self, interaction: discord.Interaction) -> str:
+        return self._selected.get(interaction.user.id, self.default_ticker)
+
     async def _on_ticker(self, interaction: discord.Interaction):
-        self.selected_ticker = interaction.data["values"][0]
+        choice = interaction.data["values"][0]
+        self._selected[interaction.user.id] = choice
         await interaction.response.send_message(
-            f"Menu ticker set to **{self.selected_ticker}**", ephemeral=True)
+            f"Menu ticker set to **{choice}** (for you)", ephemeral=True)
 
     @discord.ui.button(label="🔮 Forecast", style=discord.ButtonStyle.primary, custom_id="menu:forecast", row=1)
     async def btn_forecast(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self.cog.send_forecast(interaction.channel, self.selected_ticker)
+        await self.cog.send_forecast(interaction.channel, self._ticker_for(interaction))
 
     @discord.ui.button(label="🧪 Test", style=discord.ButtonStyle.primary, custom_id="menu:test", row=1)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self.cog.run_test(interaction.channel, self.selected_ticker)
+        await self.cog.run_test(interaction.channel, self._ticker_for(interaction))
 
     @discord.ui.button(label="📊 Status", style=discord.ButtonStyle.secondary, custom_id="menu:status", row=1)
     async def btn_status(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -190,23 +206,25 @@ class MenuView(discord.ui.View):
     @discord.ui.button(label="🧭 Bias", style=discord.ButtonStyle.secondary, custom_id="menu:bias", row=2)
     async def btn_bias(self, interaction: discord.Interaction, button: discord.ui.Button):
         from zero_dte.embeds import bias_embed
-        st = self.cog.states.get(self.selected_ticker)
+        ticker = self._ticker_for(interaction)
+        st = self.cog.states.get(ticker)
         if st and st.daily_bias:
             await interaction.response.send_message(embed=bias_embed(st.daily_bias))
         else:
             await interaction.response.send_message(
-                f"No bias set for {self.selected_ticker} yet — it's computed after the first "
+                f"No bias set for {ticker} yet — it's computed after the first "
                 f"5-min candle (9:35 AM ET). Use 🧪 Test for a dry run.", ephemeral=True)
 
     @discord.ui.button(label="📦 Range", style=discord.ButtonStyle.secondary, custom_id="menu:range", row=2)
     async def btn_range(self, interaction: discord.Interaction, button: discord.ui.Button):
         from zero_dte.embeds import range_embed
-        st = self.cog.states.get(self.selected_ticker)
+        ticker = self._ticker_for(interaction)
+        st = self.cog.states.get(ticker)
         if st and st.first_candle:
             await interaction.response.send_message(embed=range_embed(st.first_candle))
         else:
             await interaction.response.send_message(
-                f"No first candle set for {self.selected_ticker} yet (available after 9:35 AM ET).",
+                f"No first candle set for {ticker} yet (available after 9:35 AM ET).",
                 ephemeral=True)
 
     @discord.ui.button(label="📋 Watchlist", style=discord.ButtonStyle.secondary, custom_id="menu:watchlist", row=2)
@@ -222,4 +240,4 @@ class MenuView(discord.ui.View):
             return
         await interaction.response.defer()
         ctx = interaction.channel
-        await swing_cog.cmd_swing.callback(swing_cog, ctx, self.selected_ticker)
+        await swing_cog.cmd_swing.callback(swing_cog, ctx, self._ticker_for(interaction))

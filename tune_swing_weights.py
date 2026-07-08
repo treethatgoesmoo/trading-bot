@@ -61,6 +61,35 @@ def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float
     return weights
 
 
+def retune(days: int = 0, min_samples: int = 15, write: bool = False) -> dict | None:
+    """Compute (and optionally persist) tuned swing weights from graded
+    outcomes. Returns the payload dict, or None with no graded history yet.
+    Called by the CLI below and by the bot's nightly housekeeping cycle.
+    """
+    dates = available_dates("swing_outcomes")
+    if days > 0:
+        dates = dates[-days:]
+    if not dates:
+        return None
+    stats = indicator_stats(dates)
+    if not stats:
+        return None
+    payload = {
+        "generated": datetime.now(pytz.UTC).isoformat(),
+        "days": len(dates),
+        "date_range": [dates[0], dates[-1]],
+        "min_samples": min_samples,
+        "samples": {k: v["n"] for k, v in stats.items()},
+        "weights": suggest_weights(stats, min_samples),
+    }
+    if write:
+        tmp = SWING_WEIGHTS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, SWING_WEIGHTS_FILE)
+    return payload
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--days", type=int, default=0,
@@ -96,18 +125,7 @@ def main() -> None:
         print(f"{name:<14} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
 
     if args.write:
-        payload = {
-            "generated": datetime.now(ET).isoformat(),
-            "days": len(dates),
-            "date_range": [dates[0], dates[-1]],
-            "min_samples": args.min_samples,
-            "samples": {k: v["n"] for k, v in stats.items()},
-            "weights": suggested,
-        }
-        tmp = SWING_WEIGHTS_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, SWING_WEIGHTS_FILE)
+        retune(args.days, args.min_samples, write=True)
         print(f"\nWrote {SWING_WEIGHTS_FILE} -- the bot will pick it up on its next scan.")
     else:
         print("\nDry run -- pass --write to save data/swing_weights.json.")

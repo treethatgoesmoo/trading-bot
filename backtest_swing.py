@@ -74,9 +74,11 @@ def walk_forward(df: pd.DataFrame, i: int, direction: str, entry: float,
     target_move = entry * cfg.SWING_TARGET_MOVE_PCT / 100.0
     is_call = direction == "CALL"
     last_close = None
+    passed_horizon = False
     for j in range(i + 1, len(df)):
         d = dates.iloc[j]
         if d > horizon_end:
+            passed_horizon = True
             break
         high, low, close = float(df["high"].iloc[j]), float(df["low"].iloc[j]), float(df["close"].iloc[j])
         last_close = close
@@ -90,9 +92,11 @@ def walk_forward(df: pd.DataFrame, i: int, direction: str, entry: float,
                 return "INVALIDATED", round((invalidation - entry) / entry * 100, 2)
             if low <= entry - target_move:
                 return "TARGET_HIT", -cfg.SWING_TARGET_MOVE_PCT
-    if last_close is None or dates.iloc[min(len(df) - 1, i + 1)] > horizon_end:
+    # Only grade EXPIRED when the data actually extends past the horizon —
+    # signals near the end of history are unresolved, not expired (a 3-day-old
+    # signal graded off a truncated walk would skew the sweep).
+    if last_close is None or not passed_horizon:
         return None
-    # Horizon passed without target/stop (or data ended at horizon).
     move_pct = round((last_close - entry) / entry * 100, 2)
     favorable = move_pct > 0 if is_call else move_pct < 0
     return ("EXPIRED_WIN" if favorable else "EXPIRED_LOSS"), move_pct

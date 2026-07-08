@@ -10,7 +10,7 @@ import pytz
 import yfinance as yf
 
 from core.market_data import MarketDataClient
-from core.indicators import rsi_series, pivots as _pivots
+from core.indicators import rsi_series, pivots as _pivots, atr as _atr_series
 from core.paths import INDICATOR_WEIGHTS_FILE as _WEIGHTS_FILE
 from config import (
     SMA_PERIOD, RISK_REWARD_RATIO,
@@ -18,6 +18,7 @@ from config import (
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
+    FORECAST_INTERVAL_MINUTES,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     VIX_FORECAST_WEIGHT,
 )
@@ -151,7 +152,8 @@ class TradeSignal:
     target: float
     risk: float
     reward: float
-    timestamp: str
+    timestamp: str  # ET display string
+    created_at: str = ""  # UTC ISO — machine-comparable entry time
     filters: list[FilterStatus] = field(default_factory=list)
 
 
@@ -222,6 +224,7 @@ class StrategyState:
         self.filtered_signals: list[FilteredSignal] = []
         self.last_forecast_time: datetime | None = None
         self.forecast_eval_done: bool = False
+        self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
     def reset(self, today: str | None = None):
         self.__init__()
@@ -328,6 +331,75 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
         bias.direction = "BULLISH"
     else:
         bias.direction = "BEARISH"
+
+
+@dataclass
+class DayForecast:
+    """Morning outlook: bias direction plus an ATR-projected high/low band."""
+    ticker: str
+    direction: str
+    strength: str            # from DailyBias (SMA distance)
+    open_price: float
+    exp_high: float          # projected session high (estimate)
+    exp_low: float           # projected session low (estimate)
+    day_atr: float           # daily ATR(14)
+    pivot: float             # classic floor-trader pivots from prev day
+    r1: float
+    s1: float
+    prev_high: float
+    prev_low: float
+    timestamp: str           # ET display string
+
+
+async def compute_day_forecast(client: MarketDataClient, ticker: str,
+                               bias: DailyBias, first_candle: FirstCandleRange) -> DayForecast | None:
+    """Project today's likely high/low from the daily ATR, skewed by the bias.
+
+    The daily range tends toward ~1 ATR; with a directional bias more of it
+    lands on the bias side of the open. Pivots come from yesterday's OHLC.
+    """
+    daily = await client.fetch_candles(ticker, interval="D", count=ATR_PERIOD * 3)
+    if daily.empty or len(daily) < ATR_PERIOD + 2:
+        return None
+
+    # Completed days only — during the session providers include today's
+    # in-progress daily bar.
+    timestamps = pd.to_datetime(daily["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    today = datetime.now(ET).date()
+    daily = daily[(timestamps.dt.tz_convert(ET).dt.date < today).values]
+    if len(daily) < ATR_PERIOD + 1:
+        return None
+
+    day_atr = float(_atr_series(daily, ATR_PERIOD).iloc[-1])
+    if np.isnan(day_atr) or day_atr <= 0:
+        return None
+
+    open_price = first_candle.open_price
+    if bias.direction == "BULLISH":
+        up_share, down_share = 0.70, 0.30
+    elif bias.direction == "BEARISH":
+        up_share, down_share = 0.30, 0.70
+    else:
+        up_share = down_share = 0.50
+
+    pivot = (bias.prev_high + bias.prev_low + bias.prev_close) / 3
+    return DayForecast(
+        ticker=ticker,
+        direction=bias.direction,
+        strength=bias.strength,
+        open_price=round(open_price, 2),
+        exp_high=round(open_price + day_atr * up_share, 2),
+        exp_low=round(open_price - day_atr * down_share, 2),
+        day_atr=round(day_atr, 2),
+        pivot=round(pivot, 2),
+        r1=round(2 * pivot - bias.prev_low, 2),
+        s1=round(2 * pivot - bias.prev_high, 2),
+        prev_high=bias.prev_high,
+        prev_low=bias.prev_low,
+        timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
+    )
 
 
 def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
@@ -618,9 +690,21 @@ async def check_trade_outcome(state: StrategyState, client: MarketDataClient, ti
         return None
 
     trade = state.active_trade
-    data = await client.fetch_candles(ticker, interval="1", count=5)
+    data = await client.fetch_candles(ticker, interval="1", count=10)
     if data.empty:
         return None
+
+    # Only bars that started at/after entry count: on the first check most of
+    # the window predates the trade, and a pre-entry wick through the stop
+    # must not close it.
+    if trade.created_at:
+        entry_ts = pd.Timestamp(trade.created_at)
+        timestamps = pd.to_datetime(data["timestamp"])
+        if timestamps.dt.tz is None:
+            timestamps = timestamps.dt.tz_localize("UTC")
+        data = data[(timestamps >= entry_ts).values]
+        if data.empty:
+            return None
 
     for _, row in data.iterrows():
         high = float(row["high"])
@@ -682,10 +766,22 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
         state.filter_cooldown_until = None
 
     data = await client.fetch_candles(ticker, interval="1", count=200)
-    if data.empty or len(data) < 3:
+    if data.empty:
         return None
 
-    candles = data.tail(200)
+    # Only today's regular session counts: a 200-bar window reaches into the
+    # prior session, and after a gap yesterday's closes sit outside today's
+    # box — scanning them would spuriously arm broke_above/broke_below.
+    timestamps = pd.to_datetime(data["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
+    else:
+        timestamps = timestamps.dt.tz_convert(ET)
+    session_open = datetime.now(ET).replace(hour=9, minute=30, second=0, microsecond=0)
+    candles = data[(timestamps >= session_open).values]
+    if len(candles) < 3:
+        return None
+
     box_high = state.first_candle.high
     box_low = state.first_candle.low
     bias = state.daily_bias.direction
@@ -775,7 +871,9 @@ async def _build_signal_or_filtered(
             entry_price=round(entry_price, 2), stop_loss=round(stop_loss, 2),
             target=round(target, 2), risk=round(risk, 2),
             reward=round(risk * RISK_REWARD_RATIO, 2),
-            timestamp=timestamp, filters=filters,
+            timestamp=timestamp,
+            created_at=datetime.now(pytz.UTC).isoformat(),
+            filters=filters,
         )
         state.active_trade = signal
         return signal
@@ -823,13 +921,15 @@ def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
 async def compute_30m_forecast(client: MarketDataClient, ticker: str,
                                data: pd.DataFrame | None = None,
                                asof: datetime | None = None) -> DirectionForecast | None:
-    """Compute a weighted directional forecast from 30-min candle data.
+    """Compute a weighted directional forecast from intraday candle data.
 
+    Live cadence and candle interval come from FORECAST_INTERVAL_MINUTES
+    (default 15m; the function keeps its historical "30m" name).
     `data`/`asof` may be supplied by the backfill replay so the identical
     computation runs on a historical window as-of a past timestamp.
     """
     if data is None:
-        data = await client.fetch_candles(ticker, interval="30", count=50)
+        data = await client.fetch_candles(ticker, interval=str(FORECAST_INTERVAL_MINUTES), count=50)
     if data.empty or len(data) < 15:
         return None
 

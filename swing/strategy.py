@@ -283,6 +283,16 @@ async def scan_ticker(client: MarketDataClient, ticker: str) -> SwingSignal | No
     df = await client.fetch_candles(ticker, interval="D", count=300)
     if df is None or df.empty:
         return None
+    # evaluate_daily's contract is completed bars only. Normally we scan
+    # pre-open, but after a mid-session restart the frame ends with today's
+    # in-progress candle — drop it rather than sign an intraday print.
+    timestamps = pd.to_datetime(df["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    today = datetime.now(ET).date()
+    df = df[(timestamps.dt.tz_convert(ET).dt.date < today).values]
+    if df.empty:
+        return None
     vote = evaluate_daily(df)
     if vote is None:
         logger.info("[%s] Swing scan: not enough daily history (%d bars)", ticker, len(df))
