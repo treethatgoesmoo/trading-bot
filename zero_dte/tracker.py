@@ -1,9 +1,12 @@
 """Persist daily forecasts and evaluate them against actual price action.
 
 Forecasts are appended to data/forecasts-YYYY-MM-DD.jsonl as they fire.
-At end of day, each forecast is compared against the actual move over
-the following 30 minutes and results are written to
-data/results-YYYY-MM-DD.json for future analysis.
+At end of day, each forecast is compared against the actual move over the
+following forecast window (FORECAST_INTERVAL_MINUTES) and results are written
+to data/results-YYYY-MM-DD.json for future analysis.
+
+Stored timestamps are UTC ISO (project convention); the file date in each
+filename is the ET trading day. Consumers convert to ET for display.
 """
 
 import json
@@ -13,6 +16,7 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
+from config import FORECAST_INTERVAL_MINUTES
 from core.paths import DATA_DIR
 from core.tracking import (
     write_atomic as _write_atomic,
@@ -24,13 +28,14 @@ from core.tracking import (
 ET = pytz.timezone("US/Eastern")
 
 
-def log_forecast(ticker: str, forecast, now: datetime) -> None:
-    """Append a forecast to today's JSONL file."""
+def log_forecast(ticker: str, forecast, now: datetime) -> dict:
+    """Append a forecast to today's JSONL file. Returns the stored entry
+    (its `time` is the join key for user votes)."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    path = os.path.join(DATA_DIR, f"forecasts-{now.strftime('%Y-%m-%d')}.jsonl")
+    path = os.path.join(DATA_DIR, f"forecasts-{now.astimezone(ET).strftime('%Y-%m-%d')}.jsonl")
     entry = {
         "ticker": ticker,
-        "time": now.isoformat(),
+        "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": forecast.direction,
         "confidence": forecast.confidence,
         "price": forecast.current_price,
@@ -43,6 +48,7 @@ def log_forecast(ticker: str, forecast, now: datetime) -> None:
     }
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
+    return entry
 
 
 def load_forecasts(date_str: str) -> list[dict]:
@@ -67,9 +73,9 @@ def log_trade_outcome(outcome, now: datetime) -> None:
     """Persist a resolved trade (target hit / stopped / expired) for win-rate history."""
     risk = abs(outcome.entry_price - outcome.stop_loss)
     r_multiple = round(outcome.pnl / risk, 2) if risk else 0.0
-    _append_jsonl("outcomes", now.strftime("%Y-%m-%d"), {
+    _append_jsonl("outcomes", now.astimezone(ET).strftime("%Y-%m-%d"), {
         "ticker": outcome.ticker,
-        "time": now.isoformat(),
+        "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": outcome.direction,
         "result": outcome.result,            # TARGET_HIT | STOPPED_OUT | EXPIRED
         "entry_price": outcome.entry_price,
@@ -83,9 +89,9 @@ def log_trade_outcome(outcome, now: datetime) -> None:
 
 def log_bias(bias, now: datetime) -> None:
     """Persist the morning daily-bias call so its accuracy can be tracked over time."""
-    _append_jsonl("bias", now.strftime("%Y-%m-%d"), {
+    _append_jsonl("bias", now.astimezone(ET).strftime("%Y-%m-%d"), {
         "ticker": bias.ticker,
-        "time": now.isoformat(),
+        "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": bias.direction,
         "trend": bias.trend,
         "gap_direction": bias.gap_direction,
@@ -99,9 +105,9 @@ def log_bias(bias, now: datetime) -> None:
 
 def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime) -> None:
     """Persist the filter pass/fail breakdown for a setup (fired or filtered)."""
-    _append_jsonl("filters", now.strftime("%Y-%m-%d"), {
+    _append_jsonl("filters", now.astimezone(ET).strftime("%Y-%m-%d"), {
         "ticker": ticker,
-        "time": now.isoformat(),
+        "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": direction,
         "fired": fired,
         "filters": [{"name": f.name, "passed": f.passed, "reason": f.reason} for f in filters],
@@ -154,7 +160,7 @@ def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
         "bot_direction": bot_direction,
         "user_direction": user_direction,
         "user": user,
-        "voted_at": datetime.now(ET).isoformat(),
+        "voted_at": datetime.now(pytz.UTC).isoformat(),
     }
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -169,7 +175,7 @@ def log_trade_decision(ticker: str, signal_info: dict, decision: str, user: str)
         "ticker": ticker,
         "decision": decision,
         "user": user,
-        "time": now.isoformat(),
+        "time": now.astimezone(pytz.UTC).isoformat(),
         **signal_info,
     }
     with open(path, "a") as f:
@@ -187,7 +193,9 @@ def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int
     actual_by_time = {r["time"]: r["actual"] for r in results if r.get("actual")}
     correct = total = 0
     for vote in votes:
-        if vote["ticker"] != ticker or not vote.get("user_direction"):
+        # Only directional calls are scorable — an "agree" on a NEUTRAL
+        # forecast (older data) can never match a BULLISH/BEARISH actual.
+        if vote["ticker"] != ticker or vote.get("user_direction") not in ("BULLISH", "BEARISH"):
             continue
         actual = actual_by_time.get(vote["forecast_time"])
         if actual is None:
@@ -199,16 +207,19 @@ def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int
 
 
 async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] | None:
-    """Compare each of today's forecasts against the actual next-30-min move.
+    """Compare each of the day's forecasts against the actual next-window move.
 
-    A forecast made at 10:00 predicts the 10:00-10:30 candle: actual
-    direction is that candle's close vs the price at forecast time.
+    A forecast made at 10:00 predicts the next FORECAST_INTERVAL_MINUTES
+    candle: actual direction is that candle's close vs the price at forecast
+    time. Works for past dates too (restart catch-up) as long as the candle
+    window still covers them.
     """
     forecasts = [e for e in load_forecasts(date_str) if e["ticker"] == ticker]
     if not forecasts:
         return None
 
-    data = await client.fetch_candles(ticker, interval="30", count=50)
+    interval = FORECAST_INTERVAL_MINUTES
+    data = await client.fetch_candles(ticker, interval=str(interval), count=120)
     if data.empty:
         return None
 
@@ -224,6 +235,11 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
         mask = (timestamps >= ftime - pd.Timedelta(minutes=2)).values
         future = data[mask]
         if future.empty:
+            continue
+        # Provider data gaps must not grade a forecast against a candle far
+        # in its future (a whole day once went 1/12 this way) — skip instead.
+        candle_ts = timestamps[mask].iloc[0]
+        if (candle_ts - ftime).total_seconds() > (interval + 5) * 60:
             continue
         outcome_close = float(future.iloc[0]["close"])
         actual = "BULLISH" if outcome_close > entry["price"] else "BEARISH"

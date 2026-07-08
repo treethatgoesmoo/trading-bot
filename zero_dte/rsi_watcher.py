@@ -249,6 +249,15 @@ class RSIWatcher:
             except Exception:
                 continue  # boundary not recorded — retried next poll
             st.last_bar_boundary = boundary
+            # Drop the in-progress bar (providers include it): evaluating a
+            # bar seconds after it opens both false-fires on a transient tick
+            # and swallows the real transition when the bar actually closes,
+            # since the band state has already advanced.
+            if "timestamp" in df.columns and not df.empty:
+                ts = pd.to_datetime(df["timestamp"])
+                if ts.dt.tz is None:
+                    ts = ts.dt.tz_localize("UTC")
+                df = df[(ts.dt.tz_convert(ET) < boundary).values]
             all_alerts.extend(self.evaluate(tf, df))
 
         # Confirm: a direction seen on both 5m and 15m this cycle.

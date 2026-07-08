@@ -20,6 +20,7 @@ import pytz
 
 from config import (
     ALERT_CHANNEL_ID,
+    DAY_FORECAST_ENABLED,
     TICKERS,
     FIRST_CANDLE_READY_MINUTE,
     MARKET_OPEN_HOUR,
@@ -44,8 +45,8 @@ from core import market_calendar
 from core import vix as vix_mod
 from core.git_sync import get_version
 from core.market_data import MarketDataClient, is_market_open
-from core.paths import WATCHLIST_FILE
-from core.tracking import append_jsonl
+from core.paths import DATA_DIR, WATCHLIST_FILE
+from core.tracking import append_jsonl, available_dates, load_jsonl
 from zero_dte.strategy import (
     get_daily_bias,
     set_bias_from_first_candle,
@@ -55,6 +56,7 @@ from zero_dte.strategy import (
     check_trade_outcome,
     compute_atr,
     compute_30m_forecast,
+    compute_day_forecast,
     StrategyState,
     TradeSignal,
     FilteredSignal,
@@ -73,6 +75,7 @@ from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.embeds import (
     bias_embed,
     daily_summary_embed,
+    day_forecast_embed,
     filtered_embed,
     forecast_embed,
     forecast_results_embed,
@@ -104,6 +107,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self._rsi_last_run: datetime | None = None
         self.vix_watcher = vix_mod.VixWatcher()
         self._menu_view_registered = False
+        self._catchup_done = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -205,12 +209,17 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
     # ── Shared actions (commands + MenuView) ─────────────────────────────
 
     async def send_forecast(self, dest, ticker: str):
-        """Compute, log, and post an on-demand 30-min forecast with vote buttons."""
+        """Compute, log, and post an on-demand forecast with vote buttons."""
         fc = await compute_30m_forecast(self.client, ticker)
         if fc:
             now = datetime.now(ET)
-            log_forecast(ticker, fc, now)
-            await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, now.isoformat()))
+            entry = log_forecast(ticker, fc, now)
+            # Counts as this window's forecast: keeps the scheduled loop from
+            # posting a near-duplicate a minute later.
+            st = self.states.get(ticker)
+            if st is not None:
+                st.last_forecast_time = now
+            await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
 
@@ -329,8 +338,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await ctx.send(f"Bias error: {exc}")
             return
 
-        # Step 2.5: 30-min forecast
-        await ctx.send("Computing 30-min forecast...")
+        # Step 2.5: intraday forecast
+        await ctx.send(f"Computing {FORECAST_INTERVAL_MINUTES}-min forecast...")
         try:
             forecast = await compute_30m_forecast(self.client, resolved)
             if forecast:
@@ -373,20 +382,25 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await ctx.send(f"Specify a ticker: `!bias <{'|'.join(self.active_tickers)}>`")
             return
         st = self.states[resolved]
-        if st.first_candle is None:
-            await ctx.send(f"First 5-min candle hasn't been set for {resolved} yet.")
+        if st.daily_bias is not None:
+            await ctx.send(embed=bias_embed(st.daily_bias))
             return
+        # Display-only: the monitor owns the live bias. A command must never
+        # overwrite it with a computation missing the gap/first-candle inputs.
         await ctx.send(f"Fetching daily bias for {resolved}...")
         try:
-            bias = await get_daily_bias(self.client, resolved)
+            today_open = st.first_candle.open_price if st.first_candle else None
+            bias = await get_daily_bias(self.client, resolved, today_open=today_open)
+            if bias is not None and st.first_candle is not None:
+                set_bias_from_first_candle(bias, st.first_candle)
         except Exception as exc:
             await ctx.send(f"Error fetching data: {exc}")
             return
         if bias is None:
             await ctx.send("Could not fetch daily data. Market may be closed.")
             return
-        st.daily_bias = bias
-        await ctx.send(embed=bias_embed(bias))
+        note = None if st.first_candle else "Preliminary — first 5-min candle not set yet (final bias at 9:35 ET)."
+        await ctx.send(note, embed=bias_embed(bias))
 
     @commands.command(name="range")
     async def cmd_range(self, ctx, ticker: str = None):
@@ -396,6 +410,11 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await ctx.send(f"Specify a ticker: `!range <{'|'.join(self.active_tickers)}>`")
             return
         st = self.states[resolved]
+        if st.first_candle is not None:
+            await ctx.send(embed=range_embed(st.first_candle))
+            return
+        # Display-only: before 9:35 the 9:30 bar is still forming, and storing
+        # a partial box here would corrupt the live break-and-retest state.
         await ctx.send(f"Fetching first candle range for {resolved}...")
         try:
             fc = await get_first_candle_range(self.client, resolved)
@@ -405,20 +424,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         if fc is None:
             await ctx.send("First 5-min candle not available yet. Wait until after 9:35 AM ET.")
             return
-        st.first_candle = fc
         await ctx.send(embed=range_embed(fc))
-
-        if st.daily_bias is None:
-            try:
-                bias = await get_daily_bias(self.client, resolved)
-            except Exception as exc:
-                await ctx.send(f"Error fetching daily bias: {exc}")
-                return
-            if bias is None:
-                await ctx.send("Could not fetch daily bias data.")
-                return
-            st.daily_bias = bias
-            await ctx.send(embed=bias_embed(bias))
 
     @commands.command(name="status")
     async def cmd_status(self, ctx):
@@ -541,12 +547,12 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
 
     @commands.command(name="forecast")
     async def cmd_forecast(self, ctx, ticker: str = None):
-        """Get an on-demand 30-min forecast. Usage: !forecast [ticker]"""
+        """Get an on-demand intraday forecast. Usage: !forecast [ticker]"""
         resolved = self._resolve_ticker(ticker)
         if resolved is None:
             await ctx.send(f"Specify a ticker: `!forecast <{'|'.join(self.active_tickers)}>`")
             return
-        await ctx.send(f"Computing 30-min forecast for {resolved}...")
+        await ctx.send(f"Computing {FORECAST_INTERVAL_MINUTES}-min forecast for {resolved}...")
         await self.send_forecast(ctx, resolved)
 
     # ── Background monitor ───────────────────────────────────────────────
@@ -562,10 +568,82 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             f"{', '.join(self.active_tickers)} | {market_open_time.strftime('%I:%M %p')} - {monitoring_cutoff.strftime('%I:%M %p')} ET"
         )
 
+    async def _grade_missed_days(self):
+        """Catch-up after downtime: EOD evaluation only runs while the bot is
+        up, so a day that ended during an outage never got graded (its
+        results-*.json is missing). Grade the most recent such days now."""
+        today_str = datetime.now(ET).strftime("%Y-%m-%d")
+        dates = [d for d in available_dates("forecasts") if d < today_str][-3:]
+        for d in dates:
+            if os.path.exists(os.path.join(DATA_DIR, f"results-{d}.json")):
+                continue
+            tickers = {e.get("ticker") for e in load_jsonl("forecasts", d)}
+            for ticker in sorted(t for t in tickers if t):
+                try:
+                    await evaluate_bias(self.client, ticker, d)
+                    results = await evaluate_forecasts(self.client, ticker, d)
+                    if results:
+                        logger.info("Catch-up: graded %d forecast(s) for %s on %s", len(results), ticker, d)
+                except Exception as exc:
+                    logger.warning("Catch-up grading failed for %s on %s: %s", ticker, d, exc)
+
+    def _rehydrate_state(self, today_str: str) -> None:
+        """After a mid-day restart, restore per-ticker flags from today's data
+        files so already-alerted signals/forecasts/bias don't fire again."""
+        try:
+            bias_tickers = {e.get("ticker") for e in load_jsonl("bias", today_str)}
+            fired_tickers = {e.get("ticker") for e in load_jsonl("filters", today_str) if e.get("fired")}
+            outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
+            last_fc: dict[str, str] = {}
+            for e in load_jsonl("forecasts", today_str):
+                if e.get("ticker") and e.get("time"):
+                    last_fc[e["ticker"]] = e["time"]
+        except Exception as exc:
+            logger.warning("State rehydration failed (starting fresh): %s", exc)
+            return
+
+        any_activity = bool(bias_tickers or last_fc or fired_tickers)
+        for ticker in self.active_tickers:
+            st = self.states[ticker]
+            if any_activity:
+                st.monitoring_started_posted = True  # already announced before the restart
+            if ticker in bias_tickers:
+                st.bias_logged = True  # don't re-log/re-post bias or day forecast
+            if ticker in last_fc:
+                try:
+                    st.last_forecast_time = datetime.fromisoformat(last_fc[ticker]).astimezone(ET)
+                except ValueError:
+                    pass
+            if ticker in fired_tickers:
+                st.signal_fired = True
+                out = outcomes.get(ticker)
+                if out:
+                    st.trade_outcome = TradeOutcome(
+                        ticker=ticker, direction=out.get("direction", "?"),
+                        entry_price=out.get("entry_price", 0.0), exit_price=out.get("exit_price", 0.0),
+                        stop_loss=out.get("stop_loss", 0.0), target=out.get("target", 0.0),
+                        result=out.get("result", "?"), pnl=out.get("pnl", 0.0),
+                        timestamp="restored after restart",
+                    )
+                else:
+                    logger.warning("[%s] Signal fired before restart but no outcome recorded — "
+                                   "its trade can't be tracked further", ticker)
+        if any_activity:
+            logger.info("Rehydrated today's state from data/ (bias=%s fired=%s forecasts=%s)",
+                        sorted(t for t in bias_tickers if t), sorted(t for t in fired_tickers if t),
+                        sorted(last_fc))
+
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def market_monitor(self):
         now = datetime.now(ET)
         time_str = now.strftime("%Y-%m-%d %I:%M:%S %p ET")
+
+        if not self._catchup_done:
+            self._catchup_done = True
+            try:
+                await self._grade_missed_days()
+            except Exception as exc:
+                logger.warning("Catch-up grading pass failed: %s", exc)
 
         if not market_calendar.is_trading_day(now.date()):
             logger.debug("[%s] Weekend/market holiday — skipping", time_str)
@@ -582,11 +660,14 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 self.states[ticker].reset(today_str)
                 self.rsi_watchers.setdefault(ticker, RSIWatcher(ticker)).reset()
             self.vix_watcher.reset()
+            self._rehydrate_state(today_str)
 
             # Only send "Monitoring started" if we're within the monitoring window (market open to end)
             market_open_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
             monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE, second=0, microsecond=0)
-            if market_open_time <= now < monitoring_cutoff:
+            if first_state.monitoring_started_posted:
+                pass  # rehydrated — announced before the restart
+            elif market_open_time <= now < monitoring_cutoff:
                 if channel:
                     await self._post_monitoring_started(channel, now, today_str)
                 else:
@@ -614,9 +695,11 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
 
         if past_monitoring and first_state and not first_state.monitoring_ended:
             logger.info("[%s] Monitoring window ended", time_str)
+            # Flag first: a missing channel must not leave this re-running (and
+            # re-posting a stale summary) every poll for the rest of the day.
+            for ticker in self.active_tickers:
+                self.states[ticker].monitoring_ended = True
             if channel:
-                for ticker in self.active_tickers:
-                    self.states[ticker].monitoring_ended = True
                 await channel.send(embed=daily_summary_embed(today_str, self.active_tickers, self.states))
 
         # Expire open trades at tracking cutoff
@@ -702,12 +785,12 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     fc = await compute_30m_forecast(self.client, ticker)
                     if fc:
                         st.last_forecast_time = now
-                        log_forecast(ticker, fc, now)
-                        logger.info("[%s] [%s] 30m Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
-                                    time_str, ticker, fc.direction, fc.confidence,
+                        entry = log_forecast(ticker, fc, now)
+                        logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
+                                    time_str, ticker, FORECAST_INTERVAL_MINUTES, fc.direction, fc.confidence,
                                     fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
                         if channel:
-                            await channel.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, now.isoformat()))
+                            await channel.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
                 except Exception as exc:
                     logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
 
@@ -802,8 +885,17 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, bias.direction, bias.gap_direction,
                                     bias.gap_pct, st.first_candle.candle_type,
                                     bias.rsi if bias.rsi else "N/A")
-                        log_bias(bias, now)
-                        await channel.send(embed=bias_embed(bias))
+                        if not st.bias_logged:
+                            st.bias_logged = True
+                            log_bias(bias, now)
+                            await channel.send(embed=bias_embed(bias))
+                            if DAY_FORECAST_ENABLED:
+                                try:
+                                    day_fc = await compute_day_forecast(self.client, ticker, bias, st.first_candle)
+                                    if day_fc:
+                                        await channel.send(embed=day_forecast_embed(day_fc))
+                                except Exception as exc:
+                                    logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:
                         logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
 

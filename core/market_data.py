@@ -163,7 +163,9 @@ class MarketDataClient:
                 lambda: self._fetch_yfinance(symbol, interval, count),
                 "yfinance",
             )
-        except (APIError, asyncio.TimeoutError) as exc:
+        except Exception as exc:
+            # Broad on purpose: whatever the last-resort provider throws, the
+            # caller-facing contract is AllSourcesExhaustedError.
             logger.error("yfinance failed for %s: %s", symbol, exc)
 
         raise AllSourcesExhaustedError(f"All API sources exhausted for {symbol}")
@@ -189,6 +191,11 @@ class MarketDataClient:
                 raise APIError(f"TwelveData HTTP {resp.status}")
             data = await resp.json()
 
+        # Free-tier credit exhaustion arrives as HTTP 200 with an error body —
+        # treat it as a rate limit so we fail over fast instead of retrying.
+        if isinstance(data, dict) and str(data.get("code")) == "429":
+            raise RateLimitError(f"TwelveData rate limited: {str(data.get('message', ''))[:120]}")
+
         if "values" not in data:
             msg = data.get("message", "Unknown error")
             raise APIError(f"TwelveData no values for {symbol}: {msg}")
@@ -213,11 +220,15 @@ class MarketDataClient:
         resolution = INTERVAL_MAP[interval][0]
 
         now = int(time.time())
+        # The window is wall-clock but candles only print during trading time
+        # (~5 sessions per 7 days, ~6.5 of 24 hours intraday) — an unpadded
+        # window returns far fewer bars than `count` and silently starves
+        # consumers like the swing evaluator's 210-bar minimum.
         if interval == "D":
-            from_ts = now - (count * 86400)
+            from_ts = now - int(count * 86400 * 1.6) - 14 * 86400
         else:
             seconds_per_candle = int(interval) * 60
-            from_ts = now - (count * seconds_per_candle)
+            from_ts = now - (count * seconds_per_candle * 6)
 
         url = "https://finnhub.io/api/v1/stock/candle"
         params = {
@@ -251,8 +262,11 @@ class MarketDataClient:
             "volume": data["v"],
         })
 
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        if len(df) > count:
+            df = df.tail(count).reset_index(drop=True)
         logger.info("Finnhub: fetched %d candles for %s (%s)", len(df), symbol, resolution)
-        return df.sort_values("timestamp").reset_index(drop=True)
+        return df
 
     # ── yfinance (free fallback) ─────────────────────────────────────────
 
@@ -261,8 +275,11 @@ class MarketDataClient:
         period = YFINANCE_PERIOD[interval]
 
         def _download() -> pd.DataFrame:
-            ticker = yf.Ticker(symbol.upper())
-            df = ticker.history(period=period, interval=yf_interval)
+            try:
+                ticker = yf.Ticker(symbol.upper())
+                df = ticker.history(period=period, interval=yf_interval)
+            except Exception as exc:  # requests/parse errors → retryable APIError
+                raise APIError(f"yfinance error for {symbol}: {exc}") from exc
             if df is None or df.empty:
                 raise APIError(f"yfinance no data for {symbol}")
             return df

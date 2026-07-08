@@ -196,7 +196,7 @@ class SwingCog(commands.Cog, name="Swing"):
                 status = check_price_vs_signal(sig, last_price)
                 log_swing_check({
                     "signal_id": sig["signal_id"], "ticker": sig["ticker"],
-                    "time": now.isoformat(), "price": last_price,
+                    "time": now.astimezone(pytz.UTC).isoformat(), "price": last_price,
                     "status": status or "OK",
                 }, now)
                 if status:

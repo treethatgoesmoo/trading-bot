@@ -35,6 +35,19 @@ def get_version() -> str:
         return "unknown"
 
 
+def get_latest_change() -> dict | None:
+    """Subject/short-sha/date of HEAD, for the restart notice in Discord."""
+    try:
+        out = _git("log", "-1", "--format=%h%x1f%s%x1f%ad", "--date=format:%Y-%m-%d %H:%M")
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        sha, subject, when = out.stdout.strip().split("\x1f")
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        return {"sha": sha, "subject": subject, "date": when, "branch": branch or "?"}
+    except Exception:
+        return None
+
+
 def commit_data_history(message: str, push: bool = True) -> tuple[bool, str]:
     """Stage data/, commit if there's anything new, then (optionally) pull --rebase + push.
 
@@ -61,6 +74,9 @@ def commit_data_history(message: str, push: bool = True) -> tuple[bool, str]:
 
         pull = _git("pull", "--rebase", "--autostash")
         if pull.returncode != 0:
+            # A failed rebase leaves the repo mid-rebase, which would make
+            # every future commit fail — abort it (the local commit survives).
+            _git("rebase", "--abort")
             return True, f"committed locally, but pull --rebase failed: {pull.stderr.strip()}"
 
         push_res = _git("push")

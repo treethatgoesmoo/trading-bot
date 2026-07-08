@@ -7,6 +7,9 @@ instead of module globals so they work inside the cog-based bot.
 from datetime import datetime
 
 import discord
+import pytz
+
+ET = pytz.timezone("US/Eastern")
 
 from zero_dte.strategy import DirectionForecast, TradeSignal
 from zero_dte.tracker import log_trade_decision, log_user_vote
@@ -23,11 +26,16 @@ class ForecastView(discord.ui.View):
 
     @discord.ui.button(label="👍 Agree", style=discord.ButtonStyle.success)
     async def agree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # A NEUTRAL agreement isn't a directional call — log it unscored
+        # (actuals are only ever BULLISH/BEARISH, so scoring it guarantees a miss).
+        user_dir = self.forecast.direction if self.forecast.direction in ("BULLISH", "BEARISH") else None
         log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
-                      self.forecast.direction, interaction.user.name)
-        await interaction.response.send_message(
-            f"Logged: you agree with **{self.forecast.direction}** on {self.ticker}. Scored at 4 PM.",
-            ephemeral=True)
+                      user_dir, interaction.user.name)
+        if user_dir:
+            msg = f"Logged: you agree with **{user_dir}** on {self.ticker}. Scored at 4 PM."
+        else:
+            msg = "Logged your agree on a NEUTRAL forecast (not scored)."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(label="👎 Disagree", style=discord.ButtonStyle.danger)
     async def disagree(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -132,7 +140,7 @@ class ReportDetailsView(discord.ui.View):
         )
         lines = []
         for r in self.results:
-            ftime = datetime.fromisoformat(r["time"]).strftime("%I:%M %p")
+            ftime = datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p")
             if r.get("correct") is None:
                 icon = "\U0001f7e1"
             elif r["correct"]:
