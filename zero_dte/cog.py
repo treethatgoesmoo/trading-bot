@@ -167,22 +167,29 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             except Exception as exc:
                 logger.warning("[%s] RSI watch error: %s", ticker, exc)
                 continue
+            embeds = []
+            confirmed_any = False
             for alert in alerts:
                 logger.info("[%s] RSI alert: %s %s %s (%s) conf=%s | %s",
                             ticker, alert.timeframe, alert.kind, alert.direction,
                             alert.rsi, alert.confirmed, alert.message)
                 try:
                     append_jsonl("rsi_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
-                        "ticker": ticker, "time": datetime.now(ET).isoformat(),
+                        "ticker": ticker, "time": datetime.now(pytz.UTC).isoformat(),
                         "timeframe": alert.timeframe, "kind": alert.kind,
                         "direction": alert.direction, "stage": alert.stage,
                         "tier": alert.tier, "rsi": alert.rsi, "confirmed": alert.confirmed,
                     })
                 except Exception:
                     pass
-                if channel:
-                    content = "\U0001f514 **Confirmed RSI reversal**" if alert.confirmed else None
-                    await channel.send(content, embed=rsi_alert_embed(alert))
+                confirmed_any = confirmed_any or alert.confirmed
+                embeds.append(rsi_alert_embed(alert))
+            # One message per ticker per cycle — simultaneous 5m/15m signals
+            # used to arrive as 2-4 separate pings.
+            if channel and embeds:
+                content = "\U0001f514 **Confirmed RSI reversal**" if confirmed_any else None
+                for i in range(0, len(embeds), 10):
+                    await channel.send(content if i == 0 else None, embeds=embeds[i:i + 10])
 
     async def run_vix_watch(self, channel) -> None:
         """Poll VIX for regime crossings / spikes and post any risk pings."""
@@ -198,7 +205,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         alert.kind, alert.direction, alert.level, alert.change_pct, alert.message)
             try:
                 append_jsonl("vix_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
-                    "time": datetime.now(ET).isoformat(), "kind": alert.kind,
+                    "time": datetime.now(pytz.UTC).isoformat(), "kind": alert.kind,
                     "direction": alert.direction, "level": alert.level, "change_pct": alert.change_pct,
                 })
             except Exception:

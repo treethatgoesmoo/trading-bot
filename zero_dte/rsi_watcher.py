@@ -88,7 +88,9 @@ class RSIWatcher:
         self.div_lookback = cfg.RSI_DIV_LOOKBACK
         self.order = cfg.RSI_PIVOT_ORDER
         self.div_directions = cfg.RSI_DIVERGENCE_DIRECTIONS  # both | bullish | bearish | off
+        self.cooldown_sec = cfg.RSI_ALERT_COOLDOWN_MINUTES * 60
         self._state: dict[str, _TFState] = {tf: _TFState() for tf in TIMEFRAMES}
+        self._last_alert: dict[tuple, datetime] = {}  # (tf, kind, direction, stage) -> time
 
     def _div_enabled(self, direction: str) -> bool:
         mode = (self.div_directions or "both").lower()
@@ -100,6 +102,7 @@ class RSIWatcher:
 
     def reset(self) -> None:
         self._state = {tf: _TFState() for tf in TIMEFRAMES}
+        self._last_alert = {}
 
     # ── Detectors (pure; operate on a candle DataFrame) ──────────────────
 
@@ -166,8 +169,11 @@ class RSIWatcher:
             return []
         p_highs, p_lows = _pivots(c, self.order)
 
+        # Only while RSI is still on the reversal side (gate at 50): a
+        # "bullish reversal" ping with RSI already at 55 arrives after the
+        # move, and the sliding pivot window would repeat it for hours.
         # Bearish: last two price swing highs rising, RSI at those highs falling.
-        if self._div_enabled("bearish") and len(p_highs) >= 2:
+        if self._div_enabled("bearish") and len(p_highs) >= 2 and cur >= cfg.RSI_DIV_RSI_GATE:
             a, b = p_highs[-2], p_highs[-1]
             if c[b] > c[a] and r[b] < r[a] and not np.isnan(r[b]):
                 ts = times.iloc[offset + b]
@@ -177,7 +183,7 @@ class RSIWatcher:
                                      round(cur, 1),
                                      f"Bearish divergence — price higher high, RSI lower high ({r[a]:.0f}→{r[b]:.0f})")]
         # Bullish: last two price swing lows falling, RSI at those lows rising.
-        if self._div_enabled("bullish") and len(p_lows) >= 2:
+        if self._div_enabled("bullish") and len(p_lows) >= 2 and cur <= cfg.RSI_DIV_RSI_GATE:
             a, b = p_lows[-2], p_lows[-1]
             if c[b] < c[a] and r[b] > r[a] and not np.isnan(r[b]):
                 ts = times.iloc[offset + b]
@@ -204,7 +210,8 @@ class RSIWatcher:
             troughs = [t for t in lows if p1 < t < p2]
             if troughs and r[p1] > self.ob and r[p2] < r[p1]:
                 fail = r[troughs[-1]]
-                if cur < fail:
+                # Fresh breaks only — far past the trigger the swing already played out.
+                if fail - cfg.RSI_FS_STALE_MARGIN <= cur < fail:
                     ts = times.iloc[offset + troughs[-1]]
                     if st.last_bear_fs_ts != ts:
                         st.last_bear_fs_ts = ts
@@ -217,7 +224,8 @@ class RSIWatcher:
             peaks = [p for p in highs if t1 < p < t2]
             if peaks and r[t1] < self.os and r[t2] > r[t1]:
                 fail = r[peaks[-1]]
-                if cur > fail:
+                # Fresh breaks only — far past the trigger the swing already played out.
+                if fail < cur <= fail + cfg.RSI_FS_STALE_MARGIN:
                     ts = times.iloc[offset + peaks[-1]]
                     if st.last_bull_fs_ts != ts:
                         st.last_bull_fs_ts = ts
@@ -258,7 +266,15 @@ class RSIWatcher:
                 if ts.dt.tz is None:
                     ts = ts.dt.tz_localize("UTC")
                 df = df[(ts.dt.tz_convert(ET) < boundary).values]
-            all_alerts.extend(self.evaluate(tf, df))
+            for alert in self.evaluate(tf, df):
+                # Per-signal cooldown: an oscillation around a threshold or a
+                # re-detected pivot pair must not re-ping for cooldown_sec.
+                key = (alert.timeframe, alert.kind, alert.direction, alert.stage)
+                last = self._last_alert.get(key)
+                if last is not None and (now - last).total_seconds() < self.cooldown_sec:
+                    continue
+                self._last_alert[key] = now
+                all_alerts.append(alert)
 
         # Confirm: a direction seen on both 5m and 15m this cycle.
         dirs_by_tf = {tf: {a.direction for a in all_alerts if a.timeframe == tf} for tf in TIMEFRAMES}

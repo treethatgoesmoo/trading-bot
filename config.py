@@ -85,12 +85,19 @@ RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
 # Which divergence directions to alert on: both | bullish | bearish | off
 RSI_DIVERGENCE_DIRECTIONS = os.getenv("RSI_DIVERGENCE_DIRECTIONS", "both").lower()
 RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
+# Anti-spam: identical (timeframe, kind, direction, stage) alerts are
+# suppressed for this long — RSI oscillating around 30/70 otherwise pings on
+# every crossing, and sliding-window pivots re-fire the same divergence.
+RSI_ALERT_COOLDOWN_MINUTES = int(os.getenv("RSI_ALERT_COOLDOWN_MINUTES", "30"))
+RSI_DIV_RSI_GATE = 50.0     # divergence pings only while RSI is still on the reversal side
+RSI_FS_STALE_MARGIN = 10.0  # failure-swing break further than this past its trigger is stale
 
 # VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
 VIX_WATCH_ENABLED = _flag("VIX_WATCH_ENABLED")
 VIX_ELEVATED = 20.0   # regime thresholds
 VIX_HIGH = 25.0
 VIX_FEAR = 30.0
+VIX_LEVEL_HYSTERESIS = 0.3    # regime cross-back must clear the level by this (no 19.9↔20.2 ping-pong)
 VIX_SPIKE_PCT = 5.0           # intraday % surge that triggers a spike alert
 VIX_SPIKE_WINDOW_BARS = 3     # over this many 5-min bars (~15 min)
 VIX_SPIKE_COOLDOWN_SEC = 900  # min seconds between spike alerts

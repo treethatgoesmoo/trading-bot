@@ -144,17 +144,19 @@ class VixWatcher:
         # Highest threshold currently exceeded (for level-cross detection).
         exceeded = max([l for l in self.levels if cur >= l], default=0.0)
         prev = st.band
-        st.band = exceeded
         if not st.primed:
             st.primed = True  # establish baseline silently — no startup ping
-        elif prev is not None and exceeded != prev:
-            if exceeded > prev:  # crossed UP into a higher regime — risk-off
-                alerts.append(VixAlert("LEVEL", "BEARISH", cur, 0.0,
-                    f"VIX crossed into **{self._label(exceeded)}** ({cur:.1f}) — risk-off, SPY headwind"))
-            elif exceeded < prev:  # crossed back DOWN — calming
-                lbl = self._label(prev)
-                alerts.append(VixAlert("LEVEL", "BULLISH", cur, 0.0,
-                    f"VIX fell back below {prev:.0f} ({cur:.1f}) — volatility easing, SPY tailwind"))
+            st.band = exceeded
+        elif prev is not None and exceeded > prev:  # crossed UP into a higher regime — risk-off
+            st.band = exceeded
+            alerts.append(VixAlert("LEVEL", "BEARISH", cur, 0.0,
+                f"VIX crossed into **{self._label(exceeded)}** ({cur:.1f}) — risk-off, SPY headwind"))
+        elif prev is not None and exceeded < prev and cur < prev - cfg.VIX_LEVEL_HYSTERESIS:
+            # Crossed back DOWN — only past the hysteresis band, so hovering
+            # at 19.9↔20.2 doesn't ping BEARISH/BULLISH in alternation.
+            st.band = exceeded
+            alerts.append(VixAlert("LEVEL", "BULLISH", cur, 0.0,
+                f"VIX fell back below {prev:.0f} ({cur:.1f}) — volatility easing, SPY tailwind"))
 
         # Rapid intraday spike over the window.
         k = cfg.VIX_SPIKE_WINDOW_BARS
