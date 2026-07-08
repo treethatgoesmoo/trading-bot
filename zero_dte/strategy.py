@@ -18,6 +18,8 @@ from config import (
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
+    FORECAST_CONFLICT_MIN_SIGNALS,
+    FORECAST_CONFLICT_RATIO,
     FORECAST_INTERVAL_MINUTES,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     VIX_FORECAST_WEIGHT,
@@ -190,7 +192,7 @@ class TradeOutcome:
 @dataclass
 class DirectionForecast:
     ticker: str
-    direction: str  # "BULLISH", "BEARISH", or "NEUTRAL"
+    direction: str  # "BULLISH", "BEARISH", "NEUTRAL", or "VOLATILE" (mixed signals — caution)
     confidence: float  # 0-100
     timestamp: str
     current_price: float
@@ -1059,6 +1061,18 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         direction = "BULLISH" if bull_score > bear_score else "BEARISH"
         margin = abs(bull_score - bear_score) / total_weight
         confidence = round(50.0 + 50.0 * margin, 1)
+
+        # Contradiction guard: with several indicators voting the other way
+        # at meaningful weight, a directional call is a coin flip (graded 42%
+        # on live history) — flag VOLATILE (caution/chop) instead.
+        losing_dir = "BEARISH" if direction == "BULLISH" else "BULLISH"
+        losing_votes = sum(1 for v in signals.values() if v == losing_dir)
+        losing_score = min(bull_score, bear_score)
+        winning_score = max(bull_score, bear_score)
+        if (losing_votes >= FORECAST_CONFLICT_MIN_SIGNALS
+                and winning_score > 0
+                and losing_score / winning_score >= FORECAST_CONFLICT_RATIO):
+            direction = "VOLATILE"
 
     return DirectionForecast(
         ticker=ticker,

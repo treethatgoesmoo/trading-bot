@@ -92,6 +92,7 @@ def forecast_stats(results: list[dict]) -> dict:
         "correct": correct,
         "accuracy": _pct(correct, len(scored)),
         "neutral": sum(1 for r in results if r.get("direction") == "NEUTRAL"),
+        "volatile": sum(1 for r in results if r.get("direction") == "VOLATILE"),
         "avg_confidence": round(sum(confidences) / len(confidences), 1) if confidences else 0.0,
         "by_direction": by_dir,
     }
