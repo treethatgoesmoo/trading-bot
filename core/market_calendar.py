@@ -65,6 +65,8 @@ def holidays(year: int) -> set[date]:
     hs.add(_easter(year) - timedelta(days=2))      # Good Friday
     hs.add(_last_weekday(year, 5, 0))              # Memorial Day — last Monday of May
     for month, day in ((6, 19), (7, 4), (12, 25)):  # Juneteenth, Independence Day, Christmas
+        if (month, day) == (6, 19) and year < 2022:
+            continue  # NYSE only observes Juneteenth from 2022 — matters for deep backtests
         obs = _observed(date(year, month, day))
         if obs:
             hs.add(obs)

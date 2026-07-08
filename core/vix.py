@@ -73,7 +73,18 @@ async def get_snapshot() -> VixSnapshot | None:
         return None
     closes = intraday["close"].astype(float)
     level = round(float(closes.iloc[-1]), 2)
-    prev_close = round(float(daily["close"].astype(float).iloc[-2]), 2)
+    # "Previous close" is the last completed day BEFORE the level's own day.
+    # Outside market hours there's no today-row, so iloc[-2] would silently
+    # compare yesterday against two days ago.
+    daily_closes = daily["close"].astype(float)
+    last_daily_ts = pd.Timestamp(daily["timestamp"].iloc[-1])
+    if last_daily_ts.tzinfo is None:
+        last_daily_date = last_daily_ts.date()
+    else:
+        last_daily_date = last_daily_ts.tz_convert(ET).date()
+    today = pd.Timestamp.now(tz=ET).date()
+    prev_idx = -2 if last_daily_date == today else -1
+    prev_close = round(float(daily_closes.iloc[prev_idx]), 2)
     change = round(level - prev_close, 2)
     change_pct = round(change / prev_close * 100, 2) if prev_close else 0.0
 

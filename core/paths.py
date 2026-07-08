@@ -13,6 +13,7 @@ LOGS_DIR = os.path.join(ROOT, "logs")
 
 WATCHLIST_FILE = os.path.join(ROOT, ".watchlist.json")
 SWING_WATCHLIST_FILE = os.path.join(ROOT, ".swing_watchlist.json")
+API_BUDGET_FILE = os.path.join(ROOT, ".api_budget.json")
 
 INDICATOR_WEIGHTS_FILE = os.path.join(DATA_DIR, "indicator_weights.json")
 SWING_WEIGHTS_FILE = os.path.join(DATA_DIR, "swing_weights.json")
