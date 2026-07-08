@@ -1,0 +1,8 @@
+{"signal_id": "TSLA-20260702", "ticker": "TSLA", "time": "2026-07-08T12:30:46.236997-04:00", "price": 393.89, "status": "OK"}
+{"signal_id": "GOOG-20260702", "ticker": "GOOG", "time": "2026-07-08T12:30:46.236997-04:00", "price": 358.2, "status": "OK"}
+{"signal_id": "META-20260702", "ticker": "META", "time": "2026-07-08T12:30:46.236997-04:00", "price": 604.26, "status": "OK"}
+{"signal_id": "AMD-20260707", "ticker": "AMD", "time": "2026-07-08T12:30:46.236997-04:00", "price": 510.76, "status": "OK"}
+{"signal_id": "TSLA-20260702", "ticker": "TSLA", "time": "2026-07-08T17:54:00.072150+00:00", "price": 393.0, "status": "OK"}
+{"signal_id": "GOOG-20260702", "ticker": "GOOG", "time": "2026-07-08T17:54:00.072150+00:00", "price": 356.46, "status": "OK"}
+{"signal_id": "META-20260702", "ticker": "META", "time": "2026-07-08T17:54:00.072150+00:00", "price": 605.04, "status": "OK"}
+{"signal_id": "AMD-20260707", "ticker": "AMD", "time": "2026-07-08T17:54:00.072150+00:00", "price": 511.65, "status": "OK"}

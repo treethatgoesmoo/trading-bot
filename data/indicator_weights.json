@@ -1,0 +1,31 @@
+{
+  "generated": "2026-07-08T20:10:00.111550+00:00",
+  "days": 9,
+  "date_range": [
+    "2026-06-25",
+    "2026-07-08"
+  ],
+  "min_samples": 20,
+  "samples": {
+    "RSI": 47,
+    "EMA": 112,
+    "VWAP": 112,
+    "MACD": 112,
+    "MACD_Mom": 112,
+    "Volume": 18,
+    "Momentum": 112,
+    "VIX": 93,
+    "Divergence": 29
+  },
+  "weights": {
+    "RSI": 3.2,
+    "EMA": 1.2,
+    "VWAP": 0.4,
+    "MACD": 2.3,
+    "MACD_Mom": 0.0,
+    "Divergence": 2.4,
+    "Volume": 1.0,
+    "Momentum": 0.0,
+    "VIX": 0.0
+  }
+}
