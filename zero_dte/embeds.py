@@ -45,13 +45,17 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
         color, emoji = 0x00CC66, "\U0001f7e2"
     elif fc.direction == "BEARISH":
         color, emoji = 0xFF4444, "\U0001f534"
-    else:
+    else:  # NEUTRAL / VOLATILE
         color, emoji = 0xFFAA00, "\U0001f7e1"
 
+    title_dir = "VOLATILE ⚠️" if fc.direction == "VOLATILE" else fc.direction
     embed = discord.Embed(
-        title=f"{emoji} {FORECAST_INTERVAL_MINUTES}-Min Forecast: {fc.direction} {fc.ticker}",
+        title=f"{emoji} {FORECAST_INTERVAL_MINUTES}-Min Forecast: {title_dir} {fc.ticker}",
         color=color,
     )
+    if fc.direction == "VOLATILE":
+        embed.description = ("Indicators are contradicting each other — expect chop. "
+                             "No directional call; caution on entries.")
     embed.add_field(name="Confidence", value=f"{fc.confidence}%", inline=True)
     embed.add_field(name="Price", value=f"${fc.current_price}", inline=True)
     if fc.vwap:

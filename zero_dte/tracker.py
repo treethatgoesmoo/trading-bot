@@ -247,7 +247,9 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
         result["actual"] = actual
         result["actual_price"] = round(outcome_close, 2)
         result["move"] = round(outcome_close - entry["price"], 2)
-        result["correct"] = entry["direction"] == actual if entry["direction"] != "NEUTRAL" else None
+        # Only directional calls are scored; NEUTRAL/VOLATILE are on-record
+        # but ungraded (their per-indicator votes still feed the tuner).
+        result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
         results.append(result)
 
     if results:

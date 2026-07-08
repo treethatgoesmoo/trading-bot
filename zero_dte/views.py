@@ -34,7 +34,7 @@ class ForecastView(discord.ui.View):
         if user_dir:
             msg = f"Logged: you agree with **{user_dir}** on {self.ticker}. Scored at 4 PM."
         else:
-            msg = "Logged your agree on a NEUTRAL forecast (not scored)."
+            msg = f"Logged your agree on a {self.forecast.direction} forecast (not scored)."
         await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(label="👎 Disagree", style=discord.ButtonStyle.danger)
@@ -50,7 +50,7 @@ class ForecastView(discord.ui.View):
         if user_dir:
             msg = f"Logged: you disagree — your call is **{user_dir}** on {self.ticker}. Scored at 4 PM."
         else:
-            msg = "Logged your disagree on a NEUTRAL forecast (not scored)."
+            msg = f"Logged your disagree on a {self.forecast.direction} forecast (not scored)."
         await interaction.response.send_message(msg, ephemeral=True)
 
 
