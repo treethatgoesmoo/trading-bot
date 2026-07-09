@@ -69,7 +69,8 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
         embed.add_field(name="MACD", value=fc.macd_direction, inline=True)
     if fc.divergence:
         div_str = "Bearish divergence" if fc.divergence == "BEARISH_DIV" else "Bullish divergence"
-        embed.add_field(name="Divergence", value=f"⚠️ {div_str}", inline=True)
+        tf = f" ({fc.divergence_tf})" if fc.divergence_tf else ""
+        embed.add_field(name="Divergence", value=f"⚠️ {div_str}{tf}", inline=True)
 
     # Signal breakdown
     sig_lines = []

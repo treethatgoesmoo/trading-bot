@@ -30,6 +30,7 @@ from config import (
     SWING_MIN_CONFIDENCE,
     SWING_SCORE_THRESHOLD,
     SWING_TARGET_MOVE_PCT,
+    TUNED_WEIGHT_FLOOR,
 )
 from core.indicators import atr, macd, obv, pivots, rsi_series, sma
 from core.market_data import MarketDataClient
@@ -56,7 +57,11 @@ _weights_cache: tuple[float, dict] | None = None
 
 
 def _swing_weight_overrides() -> dict:
-    """Tuned weights from data/swing_weights.json, reloaded on file change."""
+    """Tuned weights from data/swing_weights.json, reloaded on file change.
+
+    Clamped to TUNED_WEIGHT_FLOOR — see zero_dte.strategy._weight_overrides:
+    zero-weight votes vanish from the confidence denominator.
+    """
     global _weights_cache
     try:
         mtime = os.path.getmtime(SWING_WEIGHTS_FILE)
@@ -66,7 +71,8 @@ def _swing_weight_overrides() -> dict:
         try:
             with open(SWING_WEIGHTS_FILE) as f:
                 data = json.load(f)
-            overrides = {k: float(v) for k, v in data.get("weights", data).items()}
+            overrides = {k: max(float(v), TUNED_WEIGHT_FLOOR)
+                         for k, v in data.get("weights", data).items()}
             _weights_cache = (mtime, overrides)
             logger.info("Loaded swing weight overrides: %s", overrides)
         except Exception as exc:
