@@ -68,13 +68,20 @@ def evaluate_all(df: pd.DataFrame, start: str) -> list[dict]:
 
 
 def walk_forward(df: pd.DataFrame, i: int, direction: str, entry: float,
-                 invalidation: float, horizon_end) -> tuple[str, float] | None:
-    """Same resolution rule as swing.tracker._walk_forward."""
+                 invalidation: float, horizon_end) -> tuple[str, float, float] | None:
+    """Same resolution rule as swing.tracker._walk_forward.
+
+    Also tracks the max adverse excursion (mae_pct, >= 0): the worst dip
+    against the position before/at resolution, as % of entry. This is the
+    "signal fired, then it moved against me" number that entry-zone guidance
+    (SWING_ENTRY_ZONE_ATR_MULT) is calibrated from.
+    """
     dates = pd.to_datetime(df["timestamp"]).dt.tz_localize(None).dt.date
     target_move = entry * cfg.SWING_TARGET_MOVE_PCT / 100.0
     is_call = direction == "CALL"
     last_close = None
     passed_horizon = False
+    mae = 0.0
     for j in range(i + 1, len(df)):
         d = dates.iloc[j]
         if d > horizon_end:
@@ -82,16 +89,19 @@ def walk_forward(df: pd.DataFrame, i: int, direction: str, entry: float,
             break
         high, low, close = float(df["high"].iloc[j]), float(df["low"].iloc[j]), float(df["close"].iloc[j])
         last_close = close
+        adverse = (entry - low) if is_call else (high - entry)
+        mae = max(mae, adverse / entry * 100)
+        mae_r = round(mae, 2)
         if is_call:
             if low <= invalidation:
-                return "INVALIDATED", round((invalidation - entry) / entry * 100, 2)
+                return "INVALIDATED", round((invalidation - entry) / entry * 100, 2), mae_r
             if high >= entry + target_move:
-                return "TARGET_HIT", cfg.SWING_TARGET_MOVE_PCT
+                return "TARGET_HIT", cfg.SWING_TARGET_MOVE_PCT, mae_r
         else:
             if high >= invalidation:
-                return "INVALIDATED", round((invalidation - entry) / entry * 100, 2)
+                return "INVALIDATED", round((invalidation - entry) / entry * 100, 2), mae_r
             if low <= entry - target_move:
-                return "TARGET_HIT", -cfg.SWING_TARGET_MOVE_PCT
+                return "TARGET_HIT", -cfg.SWING_TARGET_MOVE_PCT, mae_r
     # Only grade EXPIRED when the data actually extends past the horizon —
     # signals near the end of history are unresolved, not expired (a 3-day-old
     # signal graded off a truncated walk would skew the sweep).
@@ -99,7 +109,7 @@ def walk_forward(df: pd.DataFrame, i: int, direction: str, entry: float,
         return None
     move_pct = round((last_close - entry) / entry * 100, 2)
     favorable = move_pct > 0 if is_call else move_pct < 0
-    return ("EXPIRED_WIN" if favorable else "EXPIRED_LOSS"), move_pct
+    return ("EXPIRED_WIN" if favorable else "EXPIRED_LOSS"), move_pct, round(mae, 2)
 
 
 def simulate(ticker: str, df: pd.DataFrame, votes: list[dict],
@@ -128,7 +138,7 @@ def simulate(ticker: str, df: pd.DataFrame, votes: list[dict],
         last_fired[direction] = d
         if result is None:
             continue  # ran off the end of history — unresolved
-        resolution, move_pct = result
+        resolution, move_pct, mae_pct = result
         signals.append({
             "ticker": ticker, "date": d, "direction": direction,
             "entry": entry, "invalidation": round(invalidation, 2),
@@ -136,6 +146,8 @@ def simulate(ticker: str, df: pd.DataFrame, votes: list[dict],
             "signals": vote.signals,
             "resolution": resolution, "move_pct": move_pct,
             "win": resolution in ("TARGET_HIT", "EXPIRED_WIN"),
+            "mae_pct": mae_pct,
+            "mae_atr": round(mae_pct / (vote.atr14 / entry * 100), 2) if vote.atr14 else None,
         })
         open_until = horizon_end
     return signals
@@ -167,6 +179,28 @@ def report(all_signals: list[dict], verbose: bool) -> None:
     print("Per side:    " + " | ".join(
         f"{d}: {w}/{c} ({w / c * 100:.0f}%)" for d, (w, c) in sorted(by_dir.items())))
 
+    # Adverse excursion: how far the underlying moved AGAINST the signal before
+    # it resolved. Winners-only is the entry-timing number — "even the trades
+    # that worked dipped this much first" — and what SWING_ENTRY_ZONE_ATR_MULT
+    # should roughly cover.
+    def _mae_line(label: str, sigs: list[dict]) -> str:
+        pcts = pd.Series([s["mae_pct"] for s in sigs])
+        atrs = pd.Series([s["mae_atr"] for s in sigs if s["mae_atr"] is not None])
+        flat = (pcts <= 0.05).mean() * 100
+        line = (f"  {label:9s} median {pcts.median():.2f}% | p75 {pcts.quantile(0.75):.2f}% "
+                f"| p90 {pcts.quantile(0.90):.2f}%")
+        if not atrs.empty:
+            line += (f"  (in ATRs: median {atrs.median():.2f}x | p75 {atrs.quantile(0.75):.2f}x)")
+        line += f" | never dipped: {flat:.0f}%"
+        return line
+
+    winners = [s for s in all_signals if s["win"]]
+    print("\nAdverse excursion before resolution (dip against the signal):")
+    if winners:
+        print(_mae_line("winners:", winners))
+    print(_mae_line("all:", all_signals))
+    print(f"  -> calibrates SWING_ENTRY_ZONE_ATR_MULT (currently {cfg.SWING_ENTRY_ZONE_ATR_MULT}x ATR)")
+
     # Per-indicator accuracy vs the actual move (with deadband), as live grading does.
     agg = defaultdict(lambda: [0, 0])
     for s in all_signals:
@@ -189,7 +223,7 @@ def report(all_signals: list[dict], verbose: bool) -> None:
         for s in all_signals:
             print(f"  {s['date']} {s['ticker']:5s} {s['direction']:4s} "
                   f"entry ${s['entry']:<8.2f} score {s['score']:+5.1f} conf {s['confidence']:5.1f}% "
-                  f"-> {s['resolution']:13s} {s['move_pct']:+.2f}%")
+                  f"-> {s['resolution']:13s} {s['move_pct']:+.2f}% (worst dip {s['mae_pct']:.2f}%)")
 
 
 def main() -> None:

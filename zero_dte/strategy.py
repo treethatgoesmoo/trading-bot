@@ -22,6 +22,8 @@ from config import (
     FORECAST_CONFLICT_RATIO,
     FORECAST_INTERVAL_MINUTES,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
+    RSI_DIV_RSI_GATE,
+    TUNED_WEIGHT_FLOOR,
     VIX_FORECAST_WEIGHT,
 )
 from core import vix
@@ -54,6 +56,9 @@ def _weight_overrides() -> dict:
     """Tuned per-indicator weights from data/indicator_weights.json, if present.
 
     Written by tune_weights.py --write; reloaded automatically on file change.
+    Clamped to TUNED_WEIGHT_FLOOR: a 0-weight indicator still votes but drops
+    out of the confidence denominator and the VOLATILE conflict guard, so a
+    shrunken ensemble could print 100% confidence over a zeroed dissenter.
     """
     global _weights_cache
     try:
@@ -64,7 +69,8 @@ def _weight_overrides() -> dict:
         try:
             with open(_WEIGHTS_FILE) as f:
                 data = json.load(f)
-            overrides = {k: float(v) for k, v in data.get("weights", data).items()}
+            overrides = {k: max(float(v), TUNED_WEIGHT_FLOOR)
+                         for k, v in data.get("weights", data).items()}
             _weights_cache = (mtime, overrides)
             logger.info("Loaded indicator weight overrides: %s", overrides)
         except Exception as exc:
@@ -157,6 +163,10 @@ class TradeSignal:
     timestamp: str  # ET display string
     created_at: str = ""  # UTC ISO — machine-comparable entry time
     filters: list[FilterStatus] = field(default_factory=list)
+    # Entry-timing guidance: the broken box edge. Pullbacks from the signal
+    # close back toward this level are routine after a break-and-retest and
+    # don't touch the thesis (only the stop does) — often the better fill.
+    retest_level: float = 0.0
 
 
 @dataclass
@@ -203,6 +213,7 @@ class DirectionForecast:
     divergence: str | None  # "BULLISH_DIV", "BEARISH_DIV", or None
     signals: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)
+    divergence_tf: str | None = None  # timeframe that showed it, e.g. "15m"/"5m"
 
 
 class StrategyState:
@@ -868,6 +879,9 @@ async def _build_signal_or_filtered(
     if all_passed:
         target = entry_price - (risk * RISK_REWARD_RATIO) if direction == "SHORT" else entry_price + (risk * RISK_REWARD_RATIO)
         state.signal_fired = True
+        retest_level = 0.0
+        if state.first_candle is not None:
+            retest_level = state.first_candle.high if direction == "LONG" else state.first_candle.low
         signal = TradeSignal(
             ticker=ticker, direction=direction,
             entry_price=round(entry_price, 2), stop_loss=round(stop_loss, 2),
@@ -876,6 +890,7 @@ async def _build_signal_or_filtered(
             timestamp=timestamp,
             created_at=datetime.now(pytz.UTC).isoformat(),
             filters=filters,
+            retest_level=round(retest_level, 2),
         )
         state.active_trade = signal
         return signal
@@ -1008,7 +1023,28 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     # Divergence — pivot-based reversal signal, voted at face value.
     # (The old endpoint-compare detector was inverted per its backtest; that
     # inversion doesn't carry over to the pivot detector.)
+    # The RSI watcher no longer pings divergence standalone (it contradicted
+    # forecasts posted moments earlier) — instead the forecast checks its own
+    # frame first, then falls back to 5m so the faster frame's divergence
+    # still enters the weighted vote. Live only: the backfill replay can't
+    # align a second timeframe.
     divergence = _detect_divergence(closes, rsi_vals) if rsi_val is not None else None
+    divergence_tf = f"{FORECAST_INTERVAL_MINUTES}m" if divergence else None
+    if divergence is None and asof is None and client is not None:
+        try:
+            data_5m = await client.fetch_candles(ticker, interval="5", count=60)
+            if data_5m is not None and len(data_5m) >= 15:
+                closes_5m = data_5m["close"].astype(float)
+                rsi_5m = rsi_series(closes_5m, 14)
+                cur_5m = float(rsi_5m.iloc[-1])
+                div_5m = None if np.isnan(cur_5m) else _detect_divergence(closes_5m, rsi_5m)
+                # Watcher-style gate: only while RSI is still on the reversal
+                # side of 50 — past it the move already happened.
+                if ((div_5m == "BEARISH_DIV" and cur_5m >= RSI_DIV_RSI_GATE)
+                        or (div_5m == "BULLISH_DIV" and cur_5m <= RSI_DIV_RSI_GATE)):
+                    divergence, divergence_tf = div_5m, "5m"
+        except Exception:
+            pass
     if divergence == "BULLISH_DIV":
         signals["Divergence"] = "BULLISH"
         weights["Divergence"] = indicator_weights["Divergence"]
@@ -1087,4 +1123,5 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         divergence=divergence,
         signals=signals,
         weights=weights,
+        divergence_tf=divergence_tf,
     )

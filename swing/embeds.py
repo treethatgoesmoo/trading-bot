@@ -2,8 +2,9 @@
 
 import discord
 
+from config import SWING_ENTRY_AVOID_OPEN_MINUTES
 from swing.options import OptionContract
-from swing.strategy import SwingSignal, SwingVote
+from swing.strategy import SwingSignal, SwingVote, entry_zone
 
 _GREEN, _RED, _AMBER, _BLUE = 0x00CC66, 0xFF4444, 0xFFAA00, 0x3498DB
 
@@ -33,6 +34,24 @@ def _contract_block(c: OptionContract) -> str:
     return "\n".join(lines)
 
 
+def _entry_plan_block(direction: str, zone_low: float, zone_high: float,
+                      no_chase: float, invalidation: float | None) -> str:
+    """Entry-timing guidance: the signal marks the day, not the minute."""
+    is_call = direction == "CALL"
+    chase_word = "above" if is_call else "below"
+    inval_note = ""
+    if invalidation is not None:
+        inval_note = f" — thesis only breaks at ${invalidation:g}"
+    return "\n".join([
+        f"• Skip the first ~{SWING_ENTRY_AVOID_OPEN_MINUTES} min after open (widest spreads, worst fills).",
+        f"• Ideal underlying zone: **${zone_low:g} – ${zone_high:g}** — a dip against you here is a "
+        f"normal wiggle and a better fill{inval_note}.",
+        f"• Don't chase {chase_word} ${no_chase:g}: quoted premium/breakeven no longer apply — "
+        f"wait for a pullback into the zone.",
+        "• Enter with a limit at the option mid, never market.",
+    ])
+
+
 def swing_signal_embed(sig: SwingSignal) -> discord.Embed:
     is_call = sig.direction == "CALL"
     color = _GREEN if is_call else _RED
@@ -58,6 +77,13 @@ def swing_signal_embed(sig: SwingSignal) -> discord.Embed:
                         value="Contract lookup failed — retry with `!swing " + sig.ticker + "`",
                         inline=False)
 
+    if sig.entry_zone_low or sig.entry_zone_high:
+        embed.add_field(
+            name="⏱️ Entry plan",
+            value=_entry_plan_block(sig.direction, sig.entry_zone_low, sig.entry_zone_high,
+                                    sig.no_chase, sig.invalidation),
+            inline=False)
+
     embed.add_field(name="Signals", value=_signal_lines(v.signals, v.weights), inline=False)
     embed.set_footer(text=f"Swing scan {sig.signal_date} · graded after the horizon · not financial advice")
     return embed
@@ -81,6 +107,13 @@ def swing_analysis_embed(ticker: str, vote: SwingVote,
     embed.add_field(name="ATR(14)", value=f"${vote.atr14}", inline=True)
     if contract is not None:
         embed.add_field(name="Nearest 1-2wk contract", value=_contract_block(contract), inline=False)
+    if vote.direction in ("BULLISH", "BEARISH") and vote.atr14 > 0:
+        direction = "CALL" if vote.direction == "BULLISH" else "PUT"
+        zone_low, zone_high, no_chase = entry_zone(direction, vote.close, vote.atr14)
+        embed.add_field(
+            name="⏱️ Entry plan",
+            value=_entry_plan_block(direction, zone_low, zone_high, no_chase, None),
+            inline=False)
     embed.add_field(name="Signals", value=_signal_lines(vote.signals, vote.weights), inline=False)
     embed.set_footer(text="On-demand analysis — not tracked or graded")
     return embed

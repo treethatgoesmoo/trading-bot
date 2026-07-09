@@ -4,11 +4,14 @@ Reads data/results-*.json (written nightly by forecast_tracker), measures each
 indicator's directional accuracy against the actual move, and maps accuracy to
 a weight:
 
-    weight = (accuracy - 0.50) * 20, floored at 0
+    weight = (accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
 
-so 55% -> 1.0, 60% -> 2.0, 65% -> 3.0, and anything at or below coin-flip gets
-no vote. Indicators with fewer than --min-samples graded bars keep their
-current default weight (not enough evidence to move them).
+so 55% -> 1.0, 60% -> 2.0, 65% -> 3.0. The floor keeps underperformers to a
+token vote instead of zero: a 0-weight dissenter disappears from the
+confidence denominator and the VOLATILE conflict guard, letting a shrunken
+ensemble print 100% confidence. Indicators with fewer than --min-samples
+graded bars keep their current default weight (not enough evidence to move
+them).
 
 Usage:
     python tune_weights.py               # report only
@@ -29,6 +32,7 @@ from datetime import datetime
 
 import pytz
 
+from config import TUNED_WEIGHT_FLOOR
 from core.paths import DATA_DIR
 from core.tracking import available_dates
 from zero_dte.tracker import load_results
@@ -59,7 +63,7 @@ def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float
         if s["n"] < min_samples:
             continue
         acc = s["correct"] / s["n"]
-        weights[name] = round(max((acc - 0.50) * 20, 0.0), 1)
+        weights[name] = round(max((acc - 0.50) * 20, TUNED_WEIGHT_FLOOR), 1)
     return weights
 
 

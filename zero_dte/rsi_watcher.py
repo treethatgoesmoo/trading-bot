@@ -8,6 +8,9 @@ using three techniques (per the classic "how to actually use RSI" playbook):
      as the actual reversal *trigger*; entering it is a *watch*.
   2. Divergence — price makes a higher high while RSI makes a lower high (bearish),
      or price lower low while RSI higher low (bullish). The strongest reversal hint.
+     OFF by default (RSI_DIVERGENCE_DIRECTIONS): standalone divergence pings kept
+     contradicting the forecast posted moments earlier — divergence now enters the
+     intraday forecast's weighted vote instead (see compute_30m_forecast).
   3. Failure swings — Wilder's RSI-only structure break.
 
 Watches 5-min and 15-min in parallel; when both agree on direction in the same

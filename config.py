@@ -88,8 +88,11 @@ RSI_OS_WARN = 30.0     # oversold warning
 RSI_OS_EXTREME = 20.0  # oversold extreme
 RSI_DIV_LOOKBACK = 40  # bars to scan for divergence / failure-swing pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
-# Which divergence directions to alert on: both | bullish | bearish | off
-RSI_DIVERGENCE_DIRECTIONS = os.getenv("RSI_DIVERGENCE_DIRECTIONS", "both").lower()
+# Which divergence directions to alert on: both | bullish | bearish | off.
+# Default off: standalone divergence pings contradicted the forecast posted
+# moments earlier — divergence now votes inside the intraday forecast instead
+# (compute_30m_forecast checks the forecast frame, then 5m).
+RSI_DIVERGENCE_DIRECTIONS = os.getenv("RSI_DIVERGENCE_DIRECTIONS", "off").lower()
 RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
 # Anti-spam: identical (timeframe, kind, direction, stage) alerts are
 # suppressed for this long — RSI oscillating around 30/70 otherwise pings on
@@ -113,6 +116,10 @@ VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
 # Nightly self-tuning: retune forecast + swing indicator weights from graded
 # history after each session close (before the git auto-commit).
 AUTO_TUNE_ENABLED = _flag("AUTO_TUNE_ENABLED")
+# Tuned weights never go below this. A 0-weight indicator still "votes" but
+# vanishes from the confidence denominator and the VOLATILE conflict guard —
+# one zeroed dissenter let a 4-indicator forecast print 100% confidence.
+TUNED_WEIGHT_FLOOR = float(os.getenv("TUNED_WEIGHT_FLOOR", "0.3"))
 
 # Auto-commit captured history (data/) to git after market close
 GIT_AUTOCOMMIT_ENABLED = _flag("GIT_AUTOCOMMIT_ENABLED")
@@ -146,6 +153,15 @@ SWING_MAX_SPREAD_PCT = 10.0     # wider bid-ask than this -> illiquid warning
 SWING_TARGET_MOVE_PCT = 3.0     # underlying move that counts as a win
 SWING_HORIZON_CAL_DAYS = 14     # grade at min(expiry, signal + this many days)
 SWING_ATR_STOP_MULT = 1.5       # invalidation = close -/+ this x daily ATR(14)
+
+# Entry timing (signals fire pre-open off yesterday's close; buying the open
+# blind is the worst fill of the day). Zone depth: a dip of this x ATR(14)
+# below the signal close is a normal pullback, not a broken thesis — validate
+# with `python backtest_swing.py` (adverse-excursion section). Chase cap: a
+# run of this x ATR past the signal close voids the quoted premium/breakeven.
+SWING_ENTRY_ZONE_ATR_MULT = float(os.getenv("SWING_ENTRY_ZONE_ATR_MULT", "0.5"))
+SWING_ENTRY_CHASE_ATR_MULT = float(os.getenv("SWING_ENTRY_CHASE_ATR_MULT", "0.5"))
+SWING_ENTRY_AVOID_OPEN_MINUTES = int(os.getenv("SWING_ENTRY_AVOID_OPEN_MINUTES", "15"))
 
 # Polling
 POLL_INTERVAL_SECONDS = 60  # How often to check for setups
