@@ -181,6 +181,18 @@ def signal_embed(signal: TradeSignal) -> discord.Embed:
     embed.add_field(name="Risk", value=f"${signal.risk}", inline=True)
     embed.add_field(name="Reward", value=f"${signal.reward}", inline=True)
     embed.add_field(name="R:R", value=f"1:{int(signal.reward / signal.risk) if signal.risk else 0}", inline=True)
+    if signal.retest_level:
+        back = "back down to" if signal.direction == "LONG" else "back up to"
+        embed.add_field(
+            name="⏱️ Entry plan",
+            value=(
+                f"No need to chase ${signal.entry_price}. A wiggle {back} the broken level "
+                f"**${signal.retest_level}** is routine after a break-and-retest and usually a better "
+                f"fill — it does NOT void the setup; only the stop (${signal.stop_loss}) does.\n"
+                f"Options: limit order at the mid — consider half now, half on a pullback toward "
+                f"${signal.retest_level}."
+            ),
+            inline=False)
     if signal.filters:
         filter_lines = [f"✅ {f.name}: {f.reason}" for f in signal.filters]
         embed.add_field(name="Filters", value="\n".join(filter_lines), inline=False)

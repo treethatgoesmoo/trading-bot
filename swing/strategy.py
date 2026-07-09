@@ -24,6 +24,8 @@ import pytz
 
 from config import (
     SWING_ATR_STOP_MULT,
+    SWING_ENTRY_CHASE_ATR_MULT,
+    SWING_ENTRY_ZONE_ATR_MULT,
     SWING_HORIZON_CAL_DAYS,
     SWING_MIN_CONFIDENCE,
     SWING_SCORE_THRESHOLD,
@@ -100,6 +102,30 @@ class SwingSignal:
     created_at: str           # UTC ISO
     signal_id: str
     contract: object | None = None   # OptionContract, attached by the cog
+    # Entry-timing guidance (see entry_zone): where a post-signal dip is a
+    # normal pullback vs where a run has already left the quoted premium behind.
+    entry_zone_low: float = 0.0
+    entry_zone_high: float = 0.0
+    no_chase: float = 0.0
+
+
+def entry_zone(direction: str, close: float, atr14: float) -> tuple[float, float, float]:
+    """(zone_low, zone_high, no_chase) for entering after a pre-open signal.
+
+    The signal is computed off yesterday's close, so the first prints of the
+    session routinely wiggle a fraction of an ATR against it before the move —
+    invalidation sits SWING_ATR_STOP_MULT ATRs away, so a dip inside the zone
+    is an entry improvement, not a broken thesis. The no-chase level marks
+    where the underlying has already run: the quoted premium/breakeven no
+    longer apply and the entry should wait for a pullback into the zone.
+    """
+    dip = SWING_ENTRY_ZONE_ATR_MULT * atr14
+    chase = SWING_ENTRY_CHASE_ATR_MULT * atr14
+    if direction == "CALL":
+        return round(close - dip, 2), round(close, 2), round(close + chase, 2)
+    # PUT mirror: a bounce above the close is the better fill; a slide well
+    # below it means the down-move already happened without you.
+    return round(close, 2), round(close + dip, 2), round(close - chase, 2)
 
 
 def evaluate_daily(df: pd.DataFrame) -> SwingVote | None:
@@ -264,6 +290,7 @@ def build_signal(ticker: str, vote: SwingVote, now_utc: datetime,
     direction = "CALL" if vote.direction == "BULLISH" else "PUT"
     stop_dist = SWING_ATR_STOP_MULT * vote.atr14
     invalidation = vote.close - stop_dist if direction == "CALL" else vote.close + stop_dist
+    zone_low, zone_high, no_chase = entry_zone(direction, vote.close, vote.atr14)
     created = now_utc.isoformat()
     return SwingSignal(
         ticker=ticker,
@@ -275,6 +302,9 @@ def build_signal(ticker: str, vote: SwingVote, now_utc: datetime,
         signal_date=now_et.strftime("%Y-%m-%d"),
         created_at=created,
         signal_id=f"{ticker}-{now_et.strftime('%Y%m%d')}",
+        entry_zone_low=zone_low,
+        entry_zone_high=zone_high,
+        no_chase=no_chase,
     )
 
 

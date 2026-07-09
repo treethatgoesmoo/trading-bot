@@ -147,6 +147,15 @@ SWING_TARGET_MOVE_PCT = 3.0     # underlying move that counts as a win
 SWING_HORIZON_CAL_DAYS = 14     # grade at min(expiry, signal + this many days)
 SWING_ATR_STOP_MULT = 1.5       # invalidation = close -/+ this x daily ATR(14)
 
+# Entry timing (signals fire pre-open off yesterday's close; buying the open
+# blind is the worst fill of the day). Zone depth: a dip of this x ATR(14)
+# below the signal close is a normal pullback, not a broken thesis — validate
+# with `python backtest_swing.py` (adverse-excursion section). Chase cap: a
+# run of this x ATR past the signal close voids the quoted premium/breakeven.
+SWING_ENTRY_ZONE_ATR_MULT = float(os.getenv("SWING_ENTRY_ZONE_ATR_MULT", "0.5"))
+SWING_ENTRY_CHASE_ATR_MULT = float(os.getenv("SWING_ENTRY_CHASE_ATR_MULT", "0.5"))
+SWING_ENTRY_AVOID_OPEN_MINUTES = int(os.getenv("SWING_ENTRY_AVOID_OPEN_MINUTES", "15"))
+
 # Polling
 POLL_INTERVAL_SECONDS = 60  # How often to check for setups
 

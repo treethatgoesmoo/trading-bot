@@ -157,6 +157,10 @@ class TradeSignal:
     timestamp: str  # ET display string
     created_at: str = ""  # UTC ISO — machine-comparable entry time
     filters: list[FilterStatus] = field(default_factory=list)
+    # Entry-timing guidance: the broken box edge. Pullbacks from the signal
+    # close back toward this level are routine after a break-and-retest and
+    # don't touch the thesis (only the stop does) — often the better fill.
+    retest_level: float = 0.0
 
 
 @dataclass
@@ -868,6 +872,9 @@ async def _build_signal_or_filtered(
     if all_passed:
         target = entry_price - (risk * RISK_REWARD_RATIO) if direction == "SHORT" else entry_price + (risk * RISK_REWARD_RATIO)
         state.signal_fired = True
+        retest_level = 0.0
+        if state.first_candle is not None:
+            retest_level = state.first_candle.high if direction == "LONG" else state.first_candle.low
         signal = TradeSignal(
             ticker=ticker, direction=direction,
             entry_price=round(entry_price, 2), stop_loss=round(stop_loss, 2),
@@ -876,6 +883,7 @@ async def _build_signal_or_filtered(
             timestamp=timestamp,
             created_at=datetime.now(pytz.UTC).isoformat(),
             filters=filters,
+            retest_level=round(retest_level, 2),
         )
         state.active_trade = signal
         return signal
