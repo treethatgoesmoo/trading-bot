@@ -1,19 +1,23 @@
 # ── Trading Bot Makefile ─────────────────────────────────────
+# `make` or `make help` lists all commands.
 
-.PHONY: install run start stop restart status backtest backtest-swing logs tail clean
+.PHONY: help install run start stop restart status backtest backtest-swing logs tail clean
+
+.DEFAULT_GOAL := help
 
 PID_FILE = .bot.pid
 
-# Install dependencies
-install:
+help: ## Show this help
+	@echo "Trading bot commands:"
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+install: ## Install dependencies (pip install -r requirements.txt)
 	pip install -r requirements.txt
 
-# Run the bot (foreground)
-run:
+run: ## Run the bot in the foreground
 	python main.py
 
-# Run the bot in the background
-start:
+start: ## Run the bot in the background (PID in .bot.pid)
 	@mkdir -p logs
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Bot is already running (PID $$(cat $(PID_FILE)))"; \
@@ -22,8 +26,7 @@ start:
 		echo "Bot started (PID $$(cat $(PID_FILE))). Logs: logs/"; \
 	fi
 
-# Stop the bot
-stop:
+stop: ## Stop the background bot
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		kill $$(cat $(PID_FILE)); \
 		rm -f $(PID_FILE); \
@@ -33,41 +36,33 @@ stop:
 		rm -f $(PID_FILE); \
 	fi
 
-# Restart the bot
-restart: stop
+restart: stop ## Restart the background bot
 	@sleep 2
 	@$(MAKE) start
 
-# Show bot status
-status:
+status: ## Show whether the bot is running
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Bot is running (PID $$(cat $(PID_FILE)))"; \
 	else \
 		echo "Bot is not running."; \
 	fi
 
-# Run backtest (usage: make backtest DATE=2026-04-13 TICKER=SPY)
 DATE ?= 2026-04-13
 TICKER ?= SPY
 VERBOSE ?=
-backtest:
+backtest: ## Replay one 0DTE day (make backtest DATE=2026-04-13 TICKER=SPY [VERBOSE=1])
 	python backtest.py $(DATE) $(TICKER) $(if $(VERBOSE),--verbose)
 
-# Backtest the swing options strategy
-# Usage: make backtest-swing START=2024-01-01 [TICKERS=TSLA,AMD] [VERBOSE=1] [SWEEP=1]
 START ?= 2023-01-01
-backtest-swing:
+backtest-swing: ## Backtest swing strategy (make backtest-swing START=2024-01-01 [TICKERS=TSLA,AMD] [VERBOSE=1] [SWEEP=1])
 	python backtest_swing.py --start $(START) $(if $(TICKERS),--tickers $(TICKERS)) $(if $(SWEEP),--sweep) $(if $(VERBOSE),--verbose)
 
-# Show today's log
-logs:
+logs: ## Show the last 100 lines of today's log
 	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -100 {} || echo "No log file found."
 
-# Follow logs in real time
-tail:
+tail: ## Follow the latest log in real time
 	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -f {} || echo "No log file found."
 
-# Remove cached files
-clean:
+clean: ## Remove __pycache__ dirs and the PID file
 	rm -rf __pycache__ core/__pycache__ zero_dte/__pycache__ swing/__pycache__ bot/__pycache__ .bot.pid
 	@echo "Cleaned."
