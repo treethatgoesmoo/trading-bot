@@ -23,6 +23,7 @@ from config import (
     FORECAST_INTERVAL_MINUTES,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     RSI_DIV_RSI_GATE,
+    RSI_OB_WARN, RSI_OS_WARN,
     TUNED_WEIGHT_FLOOR,
     VIX_FORECAST_WEIGHT,
 )
@@ -214,6 +215,27 @@ class DirectionForecast:
     signals: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)
     divergence_tf: str | None = None  # timeframe that showed it, e.g. "15m"/"5m"
+    rsi_caution: str | None = None    # RSI reversal watch/trigger caution line
+
+
+def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
+    """Caution line when RSI is at an extreme or just left one.
+
+    Replaces the standalone RSI watcher pings (threshold watch/trigger):
+    the same information now rides on the forecast so one message tells a
+    coherent story instead of two contradicting each other.
+    """
+    if cur is None:
+        return None
+    if prev is not None and prev >= RSI_OB_WARN > cur:
+        return f"RSI {cur:.0f} fell back out of overbought — bearish reversal trigger"
+    if prev is not None and prev <= RSI_OS_WARN < cur:
+        return f"RSI {cur:.0f} rose back out of oversold — bullish reversal trigger"
+    if cur >= RSI_OB_WARN:
+        return f"RSI {cur:.0f} overbought — late to chase calls; pullback risk"
+    if cur <= RSI_OS_WARN:
+        return f"RSI {cur:.0f} oversold — late to chase puts; bounce risk"
+    return None
 
 
 class StrategyState:
@@ -970,6 +992,8 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     # RSI
     rsi_vals = rsi_series(closes, 14)
     rsi_val = float(rsi_vals.iloc[-1]) if not np.isnan(rsi_vals.iloc[-1]) else None
+    rsi_prev = (float(rsi_vals.iloc[-2])
+                if len(rsi_vals) >= 2 and not np.isnan(rsi_vals.iloc[-2]) else None)
 
     if rsi_val is not None:
         if rsi_val > 60:
@@ -1124,4 +1148,5 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         signals=signals,
         weights=weights,
         divergence_tf=divergence_tf,
+        rsi_caution=_rsi_caution(rsi_prev, rsi_val),
     )

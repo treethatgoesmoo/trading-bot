@@ -1,7 +1,13 @@
 """Real-time RSI reversal watcher.
 
-Runs on the bot's poll loop and pings the moment it spots a potential reversal,
-using three techniques (per the classic "how to actually use RSI" playbook):
+Standalone pings are OFF by default (RSI_WATCH_ENABLED=0): reversal state now
+rides on the intraday forecast embed (divergence votes in it; threshold state
+becomes its "RSI Watch" caution line), so one message tells a coherent story.
+This module still powers the on-demand `!rsi` command.
+
+When enabled, runs on the bot's poll loop and pings the moment it spots a
+potential reversal, using three techniques (per the classic "how to actually
+use RSI" playbook):
 
   1. Threshold crossings — RSI entering/leaving overbought/oversold, tiered:
      a 70/30 "warning" and a stronger 80/20 "extreme". Leaving a zone is treated

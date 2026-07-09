@@ -79,8 +79,12 @@ KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com
 ECON_EVENTS_ENABLED = _flag("ECON_EVENTS_ENABLED")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
-# RSI reversal watcher (real-time alerts on 5m + 15m)
-RSI_WATCH_ENABLED = _flag("RSI_WATCH_ENABLED")
+# RSI reversal watcher (real-time alerts on 5m + 15m).
+# Standalone pings default OFF: they duplicated/contradicted the intraday
+# forecast posted alongside them — RSI reversal state now stamps a caution
+# line on the forecast embed instead (see compute_30m_forecast.rsi_caution).
+# `!rsi` still checks live on demand; set RSI_WATCH_ENABLED=1 to re-enable.
+RSI_WATCH_ENABLED = _flag("RSI_WATCH_ENABLED", "0")
 RSI_PERIOD = 14
 RSI_OB_WARN = 70.0     # overbought warning
 RSI_OB_EXTREME = 80.0  # overbought extreme

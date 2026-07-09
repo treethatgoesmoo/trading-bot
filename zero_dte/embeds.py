@@ -71,6 +71,8 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
         div_str = "Bearish divergence" if fc.divergence == "BEARISH_DIV" else "Bullish divergence"
         tf = f" ({fc.divergence_tf})" if fc.divergence_tf else ""
         embed.add_field(name="Divergence", value=f"⚠️ {div_str}{tf}", inline=True)
+    if fc.rsi_caution:
+        embed.add_field(name="RSI Watch", value=f"⚠️ {fc.rsi_caution}", inline=False)
 
     # Signal breakdown
     sig_lines = []
