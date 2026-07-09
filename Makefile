@@ -1,6 +1,6 @@
 # ── Trading Bot Makefile ─────────────────────────────────────
 
-.PHONY: install run start stop restart status backtest logs clean
+.PHONY: install run start stop restart status backtest backtest-swing logs tail clean
 
 PID_FILE = .bot.pid
 
@@ -53,10 +53,11 @@ VERBOSE ?=
 backtest:
 	python backtest.py $(DATE) $(TICKER) $(if $(VERBOSE),--verbose)
 
-# Backtest the swing options strategy (usage: make backtest-swing START=2023-01-01)
+# Backtest the swing options strategy
+# Usage: make backtest-swing START=2024-01-01 [TICKERS=TSLA,AMD] [VERBOSE=1] [SWEEP=1]
 START ?= 2023-01-01
 backtest-swing:
-	python backtest_swing.py --start $(START) $(if $(VERBOSE),--verbose)
+	python backtest_swing.py --start $(START) $(if $(TICKERS),--tickers $(TICKERS)) $(if $(SWEEP),--sweep) $(if $(VERBOSE),--verbose)
 
 # Show today's log
 logs:
