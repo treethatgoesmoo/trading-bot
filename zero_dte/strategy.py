@@ -18,7 +18,6 @@ from config import (
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
-    FORECAST_CONFLICT_MIN_SIGNALS,
     FORECAST_CONFLICT_RATIO,
     FORECAST_INTERVAL_MINUTES,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
@@ -216,6 +215,7 @@ class DirectionForecast:
     weights: dict = field(default_factory=dict)
     divergence_tf: str | None = None  # timeframe that showed it, e.g. "15m"/"5m"
     rsi_caution: str | None = None    # RSI reversal watch/trigger caution line
+    lean: str | None = None           # winning side when direction == VOLATILE
 
 
 def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
@@ -1115,6 +1115,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     bear_score = sum(weights.get(k, 0) for k, v in signals.items() if v == "BEARISH")
     total_weight = sum(weights.values())
 
+    lean = None
     if total_weight == 0 or bull_score == bear_score:
         direction = "NEUTRAL"
         confidence = 50.0
@@ -1123,16 +1124,14 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         margin = abs(bull_score - bear_score) / total_weight
         confidence = round(50.0 + 50.0 * margin, 1)
 
-        # Contradiction guard: with several indicators voting the other way
-        # at meaningful weight, a directional call is a coin flip (graded 42%
-        # on live history) — flag VOLATILE (caution/chop) instead.
-        losing_dir = "BEARISH" if direction == "BULLISH" else "BULLISH"
-        losing_votes = sum(1 for v in signals.values() if v == losing_dir)
+        # Contradiction guard: when the losing side carries near the winning
+        # side's weight, a directional call is a coin flip (ratio >= 0.75
+        # graded 27% vs 61% on rescored live history) — flag VOLATILE but
+        # keep the winning side as a lean so the read isn't directionless.
         losing_score = min(bull_score, bear_score)
         winning_score = max(bull_score, bear_score)
-        if (losing_votes >= FORECAST_CONFLICT_MIN_SIGNALS
-                and winning_score > 0
-                and losing_score / winning_score >= FORECAST_CONFLICT_RATIO):
+        if winning_score > 0 and losing_score / winning_score >= FORECAST_CONFLICT_RATIO:
+            lean = direction
             direction = "VOLATILE"
 
     return DirectionForecast(
@@ -1150,4 +1149,5 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         weights=weights,
         divergence_tf=divergence_tf,
         rsi_caution=_rsi_caution(rsi_prev, rsi_val),
+        lean=lean,
     )

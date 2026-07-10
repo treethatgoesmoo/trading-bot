@@ -258,7 +258,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             ]
             if st.last_forecast:
                 fc = st.last_forecast
-                status_lines.insert(1, f"Intraday now: {fc.direction} ({fc.confidence}%, {fc.timestamp})")
+                dir_txt = f"VOLATILE, leaning {fc.lean}" if fc.direction == "VOLATILE" and fc.lean else fc.direction
+                status_lines.insert(1, f"Intraday now: {dir_txt} ({fc.confidence}%, {fc.timestamp})")
 
             if st.trade_outcome:
                 o = st.trade_outcome
@@ -643,6 +644,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         macd_direction=e.get("macd_direction"),
                         divergence=e.get("divergence"),
                         signals=e.get("signals", {}),
+                        lean=e.get("lean"),
                     )
             if ticker in fired_tickers:
                 st.signal_fired = True

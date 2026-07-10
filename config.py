@@ -49,12 +49,14 @@ TRADE_TRACKING_END_MINUTE = 0
 # Intraday directional forecast cadence (minutes). Also the candle interval
 # the forecast is computed on and graded against.
 FORECAST_INTERVAL_MINUTES = int(os.getenv("FORECAST_INTERVAL_MINUTES", "15"))
-# Contradiction guard: when the losing side still has at least this many
-# directional votes AND carries at least this fraction of the winning side's
-# weight, the forecast is VOLATILE (yellow caution) instead of a direction.
-# Calibrated on live history: such forecasts graded 42% vs 54% directional.
-FORECAST_CONFLICT_MIN_SIGNALS = int(os.getenv("FORECAST_CONFLICT_MIN_SIGNALS", "2"))
-FORECAST_CONFLICT_RATIO = float(os.getenv("FORECAST_CONFLICT_RATIO", "0.5"))
+# Contradiction guard: when the losing side carries at least this fraction of
+# the winning side's weight, the forecast is VOLATILE (yellow caution, with a
+# lean) instead of a direction. Weight ratio only — no vote-count minimum: a
+# lone dissenting heavyweight is the worst case (graded 0/6 on live history),
+# while multi-vote/low-weight splits below this ratio graded 60%+. Calibrated
+# on results-*.json rescored with the current tuned weights: ratio >= 0.75
+# graded 27% vs 61% directional.
+FORECAST_CONFLICT_RATIO = float(os.getenv("FORECAST_CONFLICT_RATIO", "0.75"))
 FORECAST_START_HOUR = 10
 FORECAST_START_MINUTE = 0
 FORECAST_END_HOUR = 16

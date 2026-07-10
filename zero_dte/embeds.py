@@ -55,7 +55,10 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
     )
     if fc.direction == "VOLATILE":
         embed.description = ("Indicators are contradicting each other — expect chop. "
-                             "No directional call; caution on entries.")
+                             "Low-conviction read; caution on entries.")
+        if fc.lean:
+            lean_icon = "\U0001f7e2" if fc.lean == "BULLISH" else "\U0001f534"
+            embed.add_field(name="Lean", value=f"{lean_icon} {fc.lean}", inline=True)
     embed.add_field(name="Confidence", value=f"{fc.confidence}%", inline=True)
     embed.add_field(name="Price", value=f"${fc.current_price}", inline=True)
     if fc.vwap:
@@ -268,7 +271,8 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
         if st.last_forecast:
             fc = st.last_forecast
             fc_icon = "\U0001f7e2" if fc.direction == "BULLISH" else ("\U0001f534" if fc.direction == "BEARISH" else "\U0001f7e1")
-            lines.append(f"Intraday now: {fc_icon} {fc.direction} ({fc.confidence}%, {fc.timestamp})")
+            dir_txt = f"VOLATILE, leaning {fc.lean}" if fc.direction == "VOLATILE" and fc.lean else fc.direction
+            lines.append(f"Intraday now: {fc_icon} {dir_txt} ({fc.confidence}%, {fc.timestamp})")
         if st.first_candle:
             lines.append(f"Range: ${st.first_candle.high} / ${st.first_candle.low} (${st.first_candle.range_size:.2f})")
         if st.first_candle_overextended:
