@@ -264,7 +264,11 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
 
         lines = []
         if st.daily_bias:
-            lines.append(f"Bias: {st.daily_bias.direction} ({st.daily_bias.strength})")
+            lines.append(f"Morning bias: {st.daily_bias.direction} ({st.daily_bias.strength})")
+        if st.last_forecast:
+            fc = st.last_forecast
+            fc_icon = "\U0001f7e2" if fc.direction == "BULLISH" else ("\U0001f534" if fc.direction == "BEARISH" else "\U0001f7e1")
+            lines.append(f"Intraday now: {fc_icon} {fc.direction} ({fc.confidence}%, {fc.timestamp})")
         if st.first_candle:
             lines.append(f"Range: ${st.first_candle.high} / ${st.first_candle.low} (${st.first_candle.range_size:.2f})")
         if st.first_candle_overextended:
@@ -289,6 +293,8 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
             inline=True,
         )
 
+    embed.set_footer(text=f"Morning bias (~9:35 ET) drove today's entries; 'Intraday now' is the latest "
+                          f"{FORECAST_INTERVAL_MINUTES}-min forecast and can diverge as the tape changes")
     return embed
 
 

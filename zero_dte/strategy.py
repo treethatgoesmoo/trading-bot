@@ -258,6 +258,7 @@ class StrategyState:
         self.filter_cooldown_until: datetime | None = None
         self.filtered_signals: list[FilteredSignal] = []
         self.last_forecast_time: datetime | None = None
+        self.last_forecast: DirectionForecast | None = None
         self.forecast_eval_done: bool = False
         self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 

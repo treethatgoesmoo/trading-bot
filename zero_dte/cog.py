@@ -48,6 +48,7 @@ from core.market_data import MarketDataClient, is_market_open
 from core.paths import DATA_DIR, WATCHLIST_FILE
 from core.tracking import append_jsonl, available_dates, load_jsonl
 from zero_dte.strategy import (
+    DirectionForecast,
     get_daily_bias,
     set_bias_from_first_candle,
     get_first_candle_range,
@@ -226,6 +227,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             st = self.states.get(ticker)
             if st is not None:
                 st.last_forecast_time = now
+                st.last_forecast = fc
             await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
@@ -250,10 +252,13 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             overext_str = " (OVEREXTENDED)" if st.first_candle_overextended else ""
 
             status_lines = [
-                f"Bias: {bias_str}",
+                f"Morning bias: {bias_str}",
                 f"Candle: {candle_str}",
                 f"ATR: {atr_str}{overext_str}",
             ]
+            if st.last_forecast:
+                fc = st.last_forecast
+                status_lines.insert(1, f"Intraday now: {fc.direction} ({fc.confidence}%, {fc.timestamp})")
 
             if st.trade_outcome:
                 o = st.trade_outcome
@@ -601,10 +606,10 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             bias_tickers = {e.get("ticker") for e in load_jsonl("bias", today_str)}
             fired_tickers = {e.get("ticker") for e in load_jsonl("filters", today_str) if e.get("fired")}
             outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
-            last_fc: dict[str, str] = {}
+            last_fc: dict[str, dict] = {}
             for e in load_jsonl("forecasts", today_str):
                 if e.get("ticker") and e.get("time"):
-                    last_fc[e["ticker"]] = e["time"]
+                    last_fc[e["ticker"]] = e
         except Exception as exc:
             logger.warning("State rehydration failed (starting fresh): %s", exc)
             return
@@ -617,10 +622,28 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             if ticker in bias_tickers:
                 st.bias_logged = True  # don't re-log/re-post bias or day forecast
             if ticker in last_fc:
+                e = last_fc[ticker]
                 try:
-                    st.last_forecast_time = datetime.fromisoformat(last_fc[ticker]).astimezone(ET)
+                    fc_time = datetime.fromisoformat(e["time"]).astimezone(ET)
                 except ValueError:
-                    pass
+                    fc_time = None
+                if fc_time is not None:
+                    st.last_forecast_time = fc_time
+                    # Minimal restore so the daily summary / !status can still
+                    # show the latest intraday read after a mid-day restart.
+                    st.last_forecast = DirectionForecast(
+                        ticker=ticker,
+                        direction=e.get("direction", "NEUTRAL"),
+                        confidence=e.get("confidence", 0.0),
+                        timestamp=fc_time.strftime("%I:%M %p ET"),
+                        current_price=e.get("price", 0.0),
+                        vwap=e.get("vwap"),
+                        rsi_30m=e.get("rsi_30m"),
+                        ema_direction=e.get("ema_direction"),
+                        macd_direction=e.get("macd_direction"),
+                        divergence=e.get("divergence"),
+                        signals=e.get("signals", {}),
+                    )
             if ticker in fired_tickers:
                 st.signal_fired = True
                 out = outcomes.get(ticker)
@@ -792,6 +815,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     fc = await compute_30m_forecast(self.client, ticker)
                     if fc:
                         st.last_forecast_time = now
+                        st.last_forecast = fc
                         entry = log_forecast(ticker, fc, now)
                         logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                     time_str, ticker, FORECAST_INTERVAL_MINUTES, fc.direction, fc.confidence,
