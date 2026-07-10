@@ -37,6 +37,7 @@ def log_forecast(ticker: str, forecast, now: datetime) -> dict:
         "ticker": ticker,
         "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": forecast.direction,
+        "lean": forecast.lean,
         "confidence": forecast.confidence,
         "price": forecast.current_price,
         "vwap": forecast.vwap,
