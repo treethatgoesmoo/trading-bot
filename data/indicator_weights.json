@@ -1,25 +1,25 @@
 {
-  "generated": "2026-07-13T20:10:52.148455+00:00",
-  "days": 12,
+  "generated": "2026-07-14T20:10:52.168498+00:00",
+  "days": 13,
   "date_range": [
     "2026-06-25",
-    "2026-07-13"
+    "2026-07-14"
   ],
   "min_samples": 20,
   "samples": {
-    "RSI": 110,
-    "EMA": 184,
-    "VWAP": 184,
-    "MACD": 184,
-    "MACD_Mom": 184,
-    "Volume": 36,
-    "Momentum": 184,
-    "VIX": 146,
-    "Divergence": 65
+    "RSI": 112,
+    "EMA": 208,
+    "VWAP": 208,
+    "MACD": 208,
+    "MACD_Mom": 208,
+    "Volume": 41,
+    "Momentum": 208,
+    "VIX": 165,
+    "Divergence": 71
   },
   "weights": {
     "RSI": 1.6,
-    "EMA": 1.0,
+    "EMA": 0.9,
     "VWAP": 0.3,
     "MACD": 1.7,
     "MACD_Mom": 0.3,
