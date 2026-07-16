@@ -1,18 +1,18 @@
 {
-  "generated": "2026-07-15T20:10:52.157460+00:00",
-  "days": 2,
+  "generated": "2026-07-16T20:10:52.161653+00:00",
+  "days": 3,
   "date_range": [
     "2026-07-10",
-    "2026-07-13"
+    "2026-07-16"
   ],
   "min_samples": 15,
   "samples": {
-    "Trend": 3,
+    "Trend": 4,
     "Cross": 1,
-    "RSI_Pullback": 3,
-    "MACD": 3,
-    "Structure": 2,
-    "Volume": 2,
+    "RSI_Pullback": 4,
+    "MACD": 4,
+    "Structure": 3,
+    "Volume": 3,
     "Dist52w": 1
   },
   "weights": {
