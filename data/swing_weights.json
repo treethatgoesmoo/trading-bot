@@ -1,17 +1,17 @@
 {
-  "generated": "2026-07-16T20:10:52.161653+00:00",
-  "days": 3,
+  "generated": "2026-07-17T20:10:52.150049+00:00",
+  "days": 4,
   "date_range": [
     "2026-07-10",
-    "2026-07-16"
+    "2026-07-17"
   ],
   "min_samples": 15,
   "samples": {
-    "Trend": 4,
+    "Trend": 5,
     "Cross": 1,
-    "RSI_Pullback": 4,
-    "MACD": 4,
-    "Structure": 3,
+    "RSI_Pullback": 5,
+    "MACD": 5,
+    "Structure": 4,
     "Volume": 3,
     "Dist52w": 1
   },

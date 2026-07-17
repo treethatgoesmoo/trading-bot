@@ -1,0 +1,3 @@
+{"signal_id": "META-20260713", "ticker": "META", "time": "2026-07-17T16:30:52.126674+00:00", "price": 643.37, "status": "OK"}
+{"signal_id": "TSLA-20260715", "ticker": "TSLA", "time": "2026-07-17T16:30:52.126674+00:00", "price": 382.6, "status": "TARGET"}
+{"signal_id": "GOOG-20260716", "ticker": "GOOG", "time": "2026-07-17T16:30:52.126674+00:00", "price": 346.36, "status": "INVALIDATED"}
