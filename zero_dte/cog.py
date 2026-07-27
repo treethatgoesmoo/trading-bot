@@ -33,6 +33,8 @@ from config import (
     TRADE_TRACKING_END_HOUR,
     TRADE_TRACKING_END_MINUTE,
     FORECAST_INTERVAL_MINUTES,
+    FORECAST_5M_ENABLED,
+    FORECAST_5M_INTERVAL_MINUTES,
     FORECAST_START_HOUR,
     FORECAST_START_MINUTE,
     FORECAST_END_HOUR,
@@ -228,7 +230,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             if st is not None:
                 st.last_forecast_time = now
                 st.last_forecast = fc
-            await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
+            day_fc = st.day_forecast if st is not None else None
+            await dest.send(embed=forecast_embed(fc, day_fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
 
@@ -351,12 +354,17 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await ctx.send(f"Bias error: {exc}")
             return
 
-        # Step 2.5: intraday forecast
+        # Step 2.5: intraday forecast (with the day forecast for context)
         await ctx.send(f"Computing {FORECAST_INTERVAL_MINUTES}-min forecast...")
+        day_fc = None
+        try:
+            day_fc = await compute_day_forecast(self.client, resolved, bias, fc)
+        except Exception:
+            pass
         try:
             forecast = await compute_30m_forecast(self.client, resolved)
             if forecast:
-                await ctx.send(embed=forecast_embed(forecast))
+                await ctx.send(embed=forecast_embed(forecast, day_fc))
             else:
                 await ctx.send("Could not compute forecast (insufficient data).")
         except Exception as exc:
@@ -608,14 +616,20 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             fired_tickers = {e.get("ticker") for e in load_jsonl("filters", today_str) if e.get("fired")}
             outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
             last_fc: dict[str, dict] = {}
+            last_fc_5m: dict[str, dict] = {}
             for e in load_jsonl("forecasts", today_str):
                 if e.get("ticker") and e.get("time"):
-                    last_fc[e["ticker"]] = e
+                    # The 5m companion stream throttles separately; only the
+                    # main-interval stream is the canonical "last forecast".
+                    if e.get("interval", FORECAST_INTERVAL_MINUTES) == FORECAST_INTERVAL_MINUTES:
+                        last_fc[e["ticker"]] = e
+                    else:
+                        last_fc_5m[e["ticker"]] = e
         except Exception as exc:
             logger.warning("State rehydration failed (starting fresh): %s", exc)
             return
 
-        any_activity = bool(bias_tickers or last_fc or fired_tickers)
+        any_activity = bool(bias_tickers or last_fc or last_fc_5m or fired_tickers)
         for ticker in self.active_tickers:
             st = self.states[ticker]
             if any_activity:
@@ -646,6 +660,11 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         signals=e.get("signals", {}),
                         lean=e.get("lean"),
                     )
+            if ticker in last_fc_5m:
+                try:
+                    st.last_forecast_5m_time = datetime.fromisoformat(last_fc_5m[ticker]["time"]).astimezone(ET)
+                except ValueError:
+                    pass
             if ticker in fired_tickers:
                 st.signal_fired = True
                 out = outcomes.get(ticker)
@@ -823,9 +842,33 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, FORECAST_INTERVAL_MINUTES, fc.direction, fc.confidence,
                                     fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
                         if channel:
-                            await channel.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
+                            await channel.send(embed=forecast_embed(fc, st.day_forecast),
+                                               view=ForecastView(ticker, fc, entry["time"]))
                 except Exception as exc:
                     logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
+
+        # Fast companion forecast on 5-min candles, same window
+        if (FORECAST_5M_ENABLED and forecast_start <= now < forecast_end
+                and now.minute % FORECAST_5M_INTERVAL_MINUTES < 2):
+            for ticker in list(self.active_tickers):
+                st = self.states.get(ticker)
+                if st is None:
+                    continue
+                if st.last_forecast_5m_time and (now - st.last_forecast_5m_time).total_seconds() < (FORECAST_5M_INTERVAL_MINUTES * 60 - 30):
+                    continue
+                try:
+                    fc5 = await compute_30m_forecast(self.client, ticker, interval=FORECAST_5M_INTERVAL_MINUTES)
+                    if fc5:
+                        st.last_forecast_5m_time = now
+                        entry = log_forecast(ticker, fc5, now)
+                        logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
+                                    time_str, ticker, FORECAST_5M_INTERVAL_MINUTES, fc5.direction, fc5.confidence,
+                                    fc5.rsi_30m, fc5.ema_direction, fc5.macd_direction, fc5.divergence)
+                        if channel:
+                            await channel.send(embed=forecast_embed(fc5, st.day_forecast),
+                                               view=ForecastView(ticker, fc5, entry["time"]))
+                except Exception as exc:
+                    logger.exception("[%s] [%s] 5m forecast error: %s", time_str, ticker, exc)
 
         # RSI + VIX watchers — run all session, throttled, ping on detection
         if (is_market_open() and
@@ -918,17 +961,23 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, bias.direction, bias.gap_direction,
                                     bias.gap_pct, st.first_candle.candle_type,
                                     bias.rsi if bias.rsi else "N/A")
-                        if not st.bias_logged:
+                        first_post = not st.bias_logged
+                        if first_post:
                             st.bias_logged = True
                             log_bias(bias, now)
                             await channel.send(embed=bias_embed(bias))
-                            if DAY_FORECAST_ENABLED:
-                                try:
-                                    day_fc = await compute_day_forecast(self.client, ticker, bias, st.first_candle)
-                                    if day_fc:
+                        # Compute even when rehydrated after a restart (the
+                        # in-memory day forecast is gone but intraday forecast
+                        # embeds still want it) — only post it the first time.
+                        if DAY_FORECAST_ENABLED and st.day_forecast is None:
+                            try:
+                                day_fc = await compute_day_forecast(self.client, ticker, bias, st.first_candle)
+                                if day_fc:
+                                    st.day_forecast = day_fc
+                                    if first_post:
                                         await channel.send(embed=day_forecast_embed(day_fc))
-                                except Exception as exc:
-                                    logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
+                            except Exception as exc:
+                                logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:
                         logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
 

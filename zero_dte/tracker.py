@@ -36,6 +36,7 @@ def log_forecast(ticker: str, forecast, now: datetime) -> dict:
     entry = {
         "ticker": ticker,
         "time": now.astimezone(pytz.UTC).isoformat(),
+        "interval": getattr(forecast, "interval", FORECAST_INTERVAL_MINUTES),
         "direction": forecast.direction,
         "lean": forecast.lean,
         "confidence": forecast.confidence,
@@ -210,48 +211,59 @@ def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int
 async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] | None:
     """Compare each of the day's forecasts against the actual next-window move.
 
-    A forecast made at 10:00 predicts the next FORECAST_INTERVAL_MINUTES
-    candle: actual direction is that candle's close vs the price at forecast
-    time. Works for past dates too (restart catch-up) as long as the candle
-    window still covers them.
+    A forecast made at 10:00 predicts the next candle of its own interval
+    (entries store `interval`; older entries without it are graded on
+    FORECAST_INTERVAL_MINUTES): actual direction is that candle's close vs the
+    price at forecast time. Works for past dates too (restart catch-up) as
+    long as the candle window still covers them.
     """
     forecasts = [e for e in load_forecasts(date_str) if e["ticker"] == ticker]
     if not forecasts:
         return None
 
-    interval = FORECAST_INTERVAL_MINUTES
-    data = await client.fetch_candles(ticker, interval=str(interval), count=120)
-    if data.empty:
-        return None
-
-    timestamps = pd.to_datetime(data["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC")
-    timestamps = timestamps.dt.tz_convert(ET)
-
     results = []
-    for entry in forecasts:
-        ftime = datetime.fromisoformat(entry["time"])
-        # The candle covering the forecast window (starts at/just before forecast time)
-        mask = (timestamps >= ftime - pd.Timedelta(minutes=2)).values
-        future = data[mask]
-        if future.empty:
+    intervals = sorted({e.get("interval", FORECAST_INTERVAL_MINUTES) for e in forecasts})
+    for interval in intervals:
+        # Cover the same wall-clock span regardless of interval (120 bars of
+        # 15m ≈ 360 bars of 5m) so catch-up grading still reaches back.
+        count = max(120, int(120 * FORECAST_INTERVAL_MINUTES / interval))
+        data = await client.fetch_candles(ticker, interval=str(interval), count=count)
+        if data.empty:
             continue
-        # Provider data gaps must not grade a forecast against a candle far
-        # in its future (a whole day once went 1/12 this way) — skip instead.
-        candle_ts = timestamps[mask].iloc[0]
-        if (candle_ts - ftime).total_seconds() > (interval + 5) * 60:
-            continue
-        outcome_close = float(future.iloc[0]["close"])
-        actual = "BULLISH" if outcome_close > entry["price"] else "BEARISH"
-        result = dict(entry)
-        result["actual"] = actual
-        result["actual_price"] = round(outcome_close, 2)
-        result["move"] = round(outcome_close - entry["price"], 2)
-        # Only directional calls are scored; NEUTRAL/VOLATILE are on-record
-        # but ungraded (their per-indicator votes still feed the tuner).
-        result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
-        results.append(result)
+
+        timestamps = pd.to_datetime(data["timestamp"])
+        if timestamps.dt.tz is None:
+            timestamps = timestamps.dt.tz_localize("UTC")
+        timestamps = timestamps.dt.tz_convert(ET)
+
+        for entry in forecasts:
+            if entry.get("interval", FORECAST_INTERVAL_MINUTES) != interval:
+                continue
+            ftime = datetime.fromisoformat(entry["time"])
+            # The candle covering the forecast window (starts at/just before forecast time)
+            mask = (timestamps >= ftime - pd.Timedelta(minutes=2)).values
+            future = data[mask]
+            if future.empty:
+                continue
+            # Provider data gaps must not grade a forecast against a candle far
+            # in its future (a whole day once went 1/12 this way) — skip instead.
+            candle_ts = timestamps[mask].iloc[0]
+            if (candle_ts - ftime).total_seconds() > (interval + 5) * 60:
+                continue
+            outcome_close = float(future.iloc[0]["close"])
+            actual = "BULLISH" if outcome_close > entry["price"] else "BEARISH"
+            result = dict(entry)
+            result["actual"] = actual
+            result["actual_price"] = round(outcome_close, 2)
+            result["move"] = round(outcome_close - entry["price"], 2)
+            # Only directional calls are scored; NEUTRAL/VOLATILE are on-record
+            # but ungraded (their per-indicator votes still feed the tuner).
+            result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
+            results.append(result)
+
+    if not results:
+        return None
+    results.sort(key=lambda r: r["time"])  # grouped-by-interval grading above
 
     if results:
         out_path = os.path.join(DATA_DIR, f"results-{date_str}.json")

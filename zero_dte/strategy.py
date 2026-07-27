@@ -20,6 +20,7 @@ from config import (
     FILTER_COOLDOWN_MINUTES,
     FORECAST_CONFLICT_RATIO,
     FORECAST_INTERVAL_MINUTES,
+    FORECAST_VOLATILE_CONFIDENCE,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     RSI_DIV_RSI_GATE,
     RSI_OB_WARN, RSI_OS_WARN,
@@ -216,6 +217,7 @@ class DirectionForecast:
     divergence_tf: str | None = None  # timeframe that showed it, e.g. "15m"/"5m"
     rsi_caution: str | None = None    # RSI reversal watch/trigger caution line
     lean: str | None = None           # winning side when direction == VOLATILE
+    interval: int = FORECAST_INTERVAL_MINUTES  # candle interval/window (minutes)
 
 
 def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
@@ -259,6 +261,8 @@ class StrategyState:
         self.filtered_signals: list[FilteredSignal] = []
         self.last_forecast_time: datetime | None = None
         self.last_forecast: DirectionForecast | None = None
+        self.last_forecast_5m_time: datetime | None = None
+        self.day_forecast: DayForecast | None = None
         self.forecast_eval_done: bool = False
         self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
@@ -960,16 +964,20 @@ def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
 
 async def compute_30m_forecast(client: MarketDataClient, ticker: str,
                                data: pd.DataFrame | None = None,
-                               asof: datetime | None = None) -> DirectionForecast | None:
+                               asof: datetime | None = None,
+                               interval: int | None = None) -> DirectionForecast | None:
     """Compute a weighted directional forecast from intraday candle data.
 
-    Live cadence and candle interval come from FORECAST_INTERVAL_MINUTES
-    (default 15m; the function keeps its historical "30m" name).
-    `data`/`asof` may be supplied by the backfill replay so the identical
-    computation runs on a historical window as-of a past timestamp.
+    `interval` is the candle interval and forecast window in minutes,
+    defaulting to FORECAST_INTERVAL_MINUTES (default 15m; the function keeps
+    its historical "30m" name). Pass interval=5 for the fast companion
+    forecast. `data`/`asof` may be supplied by the backfill replay so the
+    identical computation runs on a historical window as-of a past timestamp.
     """
+    if interval is None:
+        interval = FORECAST_INTERVAL_MINUTES
     if data is None:
-        data = await client.fetch_candles(ticker, interval=str(FORECAST_INTERVAL_MINUTES), count=50)
+        data = await client.fetch_candles(ticker, interval=str(interval), count=50)
     if data.empty or len(data) < 15:
         return None
 
@@ -1054,8 +1062,8 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     # still enters the weighted vote. Live only: the backfill replay can't
     # align a second timeframe.
     divergence = _detect_divergence(closes, rsi_vals) if rsi_val is not None else None
-    divergence_tf = f"{FORECAST_INTERVAL_MINUTES}m" if divergence else None
-    if divergence is None and asof is None and client is not None:
+    divergence_tf = f"{interval}m" if divergence else None
+    if divergence is None and asof is None and client is not None and interval != 5:
         try:
             data_5m = await client.fetch_candles(ticker, interval="5", count=60)
             if data_5m is not None and len(data_5m) >= 15:
@@ -1133,6 +1141,11 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         if winning_score > 0 and losing_score / winning_score >= FORECAST_CONFLICT_RATIO:
             lean = direction
             direction = "VOLATILE"
+        # Low-confidence gate: below FORECAST_VOLATILE_CONFIDENCE a directional
+        # call isn't worth acting on either — same VOLATILE treatment.
+        elif confidence < FORECAST_VOLATILE_CONFIDENCE:
+            lean = direction
+            direction = "VOLATILE"
 
     return DirectionForecast(
         ticker=ticker,
@@ -1150,4 +1163,5 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         divergence_tf=divergence_tf,
         rsi_caution=_rsi_caution(rsi_prev, rsi_val),
         lean=lean,
+        interval=interval,
     )

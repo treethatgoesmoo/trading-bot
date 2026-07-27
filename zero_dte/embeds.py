@@ -40,7 +40,7 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     return embed
 
 
-def forecast_embed(fc: DirectionForecast) -> discord.Embed:
+def forecast_embed(fc: DirectionForecast, day_fc: DayForecast | None = None) -> discord.Embed:
     if fc.direction == "BULLISH":
         color, emoji = 0x00CC66, "\U0001f7e2"
     elif fc.direction == "BEARISH":
@@ -50,7 +50,7 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
 
     title_dir = "VOLATILE ⚠️" if fc.direction == "VOLATILE" else fc.direction
     embed = discord.Embed(
-        title=f"{emoji} {FORECAST_INTERVAL_MINUTES}-Min Forecast: {title_dir} {fc.ticker}",
+        title=f"{emoji} {fc.interval}-Min Forecast: {title_dir} {fc.ticker}",
         color=color,
     )
     if fc.direction == "VOLATILE":
@@ -77,6 +77,17 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
     if fc.rsi_caution:
         embed.add_field(name="RSI Watch", value=f"⚠️ {fc.rsi_caution}", inline=False)
 
+    # Day context: the morning day forecast + its ATR-projected range
+    if day_fc is not None:
+        day_icon = ("\U0001f7e2" if day_fc.direction == "BULLISH"
+                    else "\U0001f534" if day_fc.direction == "BEARISH" else "\U0001f7e1")
+        embed.add_field(
+            name="Day Forecast",
+            value=(f"{day_icon} {day_fc.direction} ({day_fc.strength}) · "
+                   f"Proj High ~${day_fc.exp_high} · Proj Low ~${day_fc.exp_low}"),
+            inline=False,
+        )
+
     # Signal breakdown
     sig_lines = []
     for name, val in fc.signals.items():
@@ -86,7 +97,7 @@ def forecast_embed(fc: DirectionForecast) -> discord.Embed:
     if sig_lines:
         embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
 
-    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next {FORECAST_INTERVAL_MINUTES} min outlook")
+    embed.set_footer(text=f"Forecast at {fc.timestamp} | Next {fc.interval} min outlook")
     return embed
 
 
@@ -132,12 +143,24 @@ def forecast_results_embed(ticker: str, date_str: str, results: list[dict],
         color=color,
     )
     embed.add_field(name="Bot Accuracy", value=f"{correct}/{total} ({accuracy:.0f}%)", inline=True)
+    # With both 15m and 5m streams graded, break the headline number down.
+    intervals = sorted({r.get("interval", FORECAST_INTERVAL_MINUTES) for r in results})
+    if len(intervals) > 1:
+        for iv in intervals:
+            iv_scored = [r for r in scored if r.get("interval", FORECAST_INTERVAL_MINUTES) == iv]
+            iv_correct = sum(1 for r in iv_scored if r["correct"])
+            iv_pct = iv_correct / len(iv_scored) * 100 if iv_scored else 0
+            embed.add_field(name=f"{iv}m", value=f"{iv_correct}/{len(iv_scored)} ({iv_pct:.0f}%)", inline=True)
     if user_score and user_score[1] > 0:
         u_correct, u_total = user_score
         embed.add_field(name="Your Calls", value=f"{u_correct}/{u_total} ({u_correct / u_total * 100:.0f}%)", inline=True)
 
+    # The line list sticks to the main interval — a 5m stream would drown it
+    # (full breakdown lives behind View Details).
     lines = []
     for r in results:
+        if len(intervals) > 1 and r.get("interval", FORECAST_INTERVAL_MINUTES) != max(intervals):
+            continue
         ftime = datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p")
         if r.get("correct") is None:
             icon = "\U0001f7e1"
@@ -147,7 +170,8 @@ def forecast_results_embed(ticker: str, date_str: str, results: list[dict],
             icon = "❌"
         lines.append(f"{icon} {ftime}: {r['direction']} ({r['confidence']}%) -> {r['actual']} ({r['move']:+.2f})")
     if lines:
-        embed.add_field(name="Forecasts", value="\n".join(lines[:10]), inline=False)
+        name = f"Forecasts ({max(intervals)}m)" if len(intervals) > 1 else "Forecasts"
+        embed.add_field(name=name, value="\n".join(lines[:10]), inline=False)
 
     embed.set_footer(text=f"Saved to data/results-{date_str}.json | Click View Details for full breakdown")
     return embed

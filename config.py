@@ -57,6 +57,15 @@ FORECAST_INTERVAL_MINUTES = int(os.getenv("FORECAST_INTERVAL_MINUTES", "15"))
 # on results-*.json rescored with the current tuned weights: ratio >= 0.75
 # graded 27% vs 61% directional.
 FORECAST_CONFLICT_RATIO = float(os.getenv("FORECAST_CONFLICT_RATIO", "0.75"))
+# Low-confidence gate: a directional forecast below this confidence is posted
+# as VOLATILE (winning side kept as the lean) instead of a direction. At the
+# default 65 this subsumes the conflict-ratio guard (ratio >= 0.75 caps
+# confidence at ~57%), which stays as a backstop if this gate is lowered.
+FORECAST_VOLATILE_CONFIDENCE = float(os.getenv("FORECAST_VOLATILE_CONFIDENCE", "65"))
+# Faster companion forecast on 5-min candles, posted every 5 minutes over the
+# same window as the main forecast (graded against the next 5-min candle).
+FORECAST_5M_ENABLED = _flag("FORECAST_5M_ENABLED")
+FORECAST_5M_INTERVAL_MINUTES = 5
 FORECAST_START_HOUR = 10
 FORECAST_START_MINUTE = 0
 FORECAST_END_HOUR = 16
