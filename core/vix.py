@@ -95,23 +95,48 @@ async def get_snapshot() -> VixSnapshot | None:
     return VixSnapshot(level, prev_close, change, change_pct, direction, regime(level))
 
 
+def _signal_from_closes(closes: pd.Series) -> str | None:
+    """Pure core of forecast_signal (split out for offline testing).
+
+    VIX change over the last ~30 min (6 x 5m bars), gated by the day's own
+    volatility: the move must be >= VIX_SIGNAL_MIN_Z standard deviations of
+    today's rolling 30-min changes to vote, else abstain. Early in the day
+    (too few samples for a std) falls back to the fixed percentage deadband.
+    """
+    window = 6  # ~30 min of 5m bars
+    if len(closes) < window + 2:
+        return None
+    diffs = closes.astype(float).diff(window).dropna()
+    if diffs.empty:
+        return None
+    delta = float(diffs.iloc[-1])
+    if len(diffs) >= window:
+        sigma = float(diffs.std())
+        if not np.isfinite(sigma) or sigma <= 0:
+            return None
+        if abs(delta) < cfg.VIX_SIGNAL_MIN_Z * sigma:
+            return None
+    else:
+        ref = float(closes.iloc[-(window + 1)])
+        if ref <= 0 or abs(delta) / ref * 100 < cfg.VIX_SIGNAL_DEADBAND_PCT:
+            return None
+    return "BEARISH" if delta > 0 else "BULLISH"  # inverse: VIX up -> SPY down
+
+
 async def forecast_signal() -> str | None:
-    """VIX momentum over the last two 30-min bars (~30-60 min depending on how
-    much of the current bar has formed) -> SPY signal (inverse).
-    Returns BULLISH/BEARISH/None."""
-    df = await _fetch("30m", "5d")
-    if df is None or len(df) < 4:
+    """VIX momentum -> SPY signal (inverse). Returns BULLISH/BEARISH/None.
+
+    Rebuilt after grading 47% over 329 live votes: the old read compared a
+    partially-formed 30-min bar against one from 60-90 minutes earlier with a
+    fixed 0.3% deadband (~0.05 VIX pts), so it voted nearly every window on
+    stale noise. Now: fresh 5-min bars, and the move must clear the day's own
+    volatility (z-gate) to vote at all — literature says VIX is the strongest
+    short-horizon SPY predictor (arXiv 2112.15108), so the spec deserved care.
+    """
+    df = await _fetch("5m", "1d")
+    if df is None:
         return None
-    closes = df["close"].astype(float)
-    ref = float(closes.iloc[-3])
-    if ref <= 0:
-        return None
-    pct = (float(closes.iloc[-1]) - ref) / ref * 100
-    if pct > cfg.VIX_SIGNAL_DEADBAND_PCT:
-        return "BEARISH"   # VIX rising -> SPY bearish
-    if pct < -cfg.VIX_SIGNAL_DEADBAND_PCT:
-        return "BULLISH"   # VIX falling -> SPY bullish
-    return None
+    return _signal_from_closes(df["close"])
 
 
 @dataclass

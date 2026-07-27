@@ -35,6 +35,7 @@ from config import (
     FORECAST_INTERVAL_MINUTES,
     FORECAST_5M_ENABLED,
     FORECAST_5M_INTERVAL_MINUTES,
+    FORECAST_POST_MODE,
     FORECAST_START_HOUR,
     FORECAST_START_MINUTE,
     FORECAST_END_HOUR,
@@ -52,6 +53,7 @@ from core.tracking import append_jsonl, available_dates, load_jsonl
 from zero_dte.strategy import (
     DayForecast,
     DirectionForecast,
+    forecast_post_reason,
     get_daily_bias,
     set_bias_from_first_candle,
     get_first_candle_range,
@@ -229,13 +231,39 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             # Counts as this window's forecast: keeps the scheduled loop from
             # posting a near-duplicate a minute later.
             st = self.states.get(ticker)
+            day_fc = None
             if st is not None:
                 st.last_forecast_time = now
                 st.last_forecast = fc
-            day_fc = st.day_forecast if st is not None else None
+                # On-demand posts always go out — but they still count as the
+                # last posted read so the change-driven loop stays quiet until
+                # something actually moves.
+                st.last_posted_forecast = fc
+                st.last_posted_time = now
+                day_fc = st.day_forecast
             await dest.send(embed=forecast_embed(fc, day_fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
+
+    async def _post_forecast(self, channel, ticker: str, st, fc, now, entry) -> bool:
+        """Post a computed (already-logged) forecast, unless change-driven mode
+        decides nothing changed. Returns True if a message was sent."""
+        reason = None
+        if FORECAST_POST_MODE == "change":
+            reason = forecast_post_reason(fc, st.last_posted_forecast, st.last_posted_time,
+                                          st.day_forecast, now)
+            if reason is None:
+                logger.debug("[%s] %dm forecast unchanged (%s %.0f%%) — not posted",
+                             ticker, fc.interval, fc.direction, fc.confidence)
+                return False
+        st.last_posted_forecast = fc
+        st.last_posted_time = now
+        content = None
+        if reason and reason not in ("first read", "periodic update"):
+            content = f"\U0001f514 {reason}"
+        await channel.send(content, embed=forecast_embed(fc, st.day_forecast),
+                           view=ForecastView(ticker, fc, entry["time"]))
+        return True
 
     async def _recover_day_forecast(self, ticker: str, st) -> None:
         """Rebuild the morning day forecast after a restart that lost it (and
@@ -900,8 +928,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, FORECAST_INTERVAL_MINUTES, fc.direction, fc.confidence,
                                     fc.rsi_30m, fc.ema_direction, fc.macd_direction, fc.divergence)
                         if channel:
-                            await channel.send(embed=forecast_embed(fc, st.day_forecast),
-                                               view=ForecastView(ticker, fc, entry["time"]))
+                            await self._post_forecast(channel, ticker, st, fc, now, entry)
                 except Exception as exc:
                     logger.exception("[%s] [%s] Forecast error: %s", time_str, ticker, exc)
 
@@ -923,8 +950,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, FORECAST_5M_INTERVAL_MINUTES, fc5.direction, fc5.confidence,
                                     fc5.rsi_30m, fc5.ema_direction, fc5.macd_direction, fc5.divergence)
                         if channel:
-                            await channel.send(embed=forecast_embed(fc5, st.day_forecast),
-                                               view=ForecastView(ticker, fc5, entry["time"]))
+                            await self._post_forecast(channel, ticker, st, fc5, now, entry)
                 except Exception as exc:
                     logger.exception("[%s] [%s] 5m forecast error: %s", time_str, ticker, exc)
 

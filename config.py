@@ -74,6 +74,13 @@ FORECAST_5M_INTERVAL_MINUTES = 5
 # into BULLISH/BEARISH labels fed the tuner noise (see arXiv 2303.04581 on
 # fixed-threshold labeling).
 FORECAST_DEADBAND_ATR_MULT = float(os.getenv("FORECAST_DEADBAND_ATR_MULT", "0.25"))
+# Posting mode: "change" posts a forecast only when the read changed —
+# direction flip, confidence jump, projected-range breach, or heartbeat —
+# while every computed forecast is still logged and graded. "always" restores
+# the old post-every-cycle firehose.
+FORECAST_POST_MODE = os.getenv("FORECAST_POST_MODE", "change").lower()
+FORECAST_REPOST_CONFIDENCE_DELTA = float(os.getenv("FORECAST_REPOST_CONFIDENCE_DELTA", "15"))
+FORECAST_HEARTBEAT_MINUTES = int(os.getenv("FORECAST_HEARTBEAT_MINUTES", "60"))
 FORECAST_START_HOUR = 10
 FORECAST_START_MINUTE = 0
 FORECAST_END_HOUR = 16
@@ -133,7 +140,8 @@ VIX_LEVEL_HYSTERESIS = 0.3    # regime cross-back must clear the level by this (
 VIX_SPIKE_PCT = 5.0           # intraday % surge that triggers a spike alert
 VIX_SPIKE_WINDOW_BARS = 3     # over this many 5-min bars (~15 min)
 VIX_SPIKE_COOLDOWN_SEC = 900  # min seconds between spike alerts
-VIX_SIGNAL_DEADBAND_PCT = 0.3  # VIX move (last two 30m bars) below this is treated as neutral
+VIX_SIGNAL_DEADBAND_PCT = 0.3  # early-day fallback: VIX 30-min move below this % is neutral
+VIX_SIGNAL_MIN_Z = float(os.getenv("VIX_SIGNAL_MIN_Z", "1.0"))  # 30-min move must clear this many std devs of today's moves to vote
 VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
 
 # Nightly self-tuning: retune forecast + swing indicator weights from graded

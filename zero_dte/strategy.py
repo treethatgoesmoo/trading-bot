@@ -19,7 +19,9 @@ from config import (
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
     FORECAST_CONFLICT_RATIO,
+    FORECAST_HEARTBEAT_MINUTES,
     FORECAST_INTERVAL_MINUTES,
+    FORECAST_REPOST_CONFIDENCE_DELTA,
     FORECAST_VOLATILE_CONFIDENCE,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
     RSI_DIV_RSI_GATE,
@@ -264,12 +266,53 @@ class StrategyState:
         self.last_forecast_5m_time: datetime | None = None
         self.day_forecast: DayForecast | None = None
         self.day_forecast_attempts: int = 0  # mid-day recovery tries (capped)
+        # Change-driven posting: the last forecast actually POSTED to Discord
+        # (shared across the 15m/5m streams — a change is a change regardless
+        # of which stream noticed it first).
+        self.last_posted_forecast: DirectionForecast | None = None
+        self.last_posted_time: datetime | None = None
         self.forecast_eval_done: bool = False
         self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
     def reset(self, today: str | None = None):
         self.__init__()
         self.trading_day = today
+
+
+def forecast_post_reason(fc: DirectionForecast,
+                         prev: DirectionForecast | None,
+                         last_posted: datetime | None,
+                         day_fc, now: datetime) -> str | None:
+    """Change-driven posting gate: why this forecast deserves a message.
+
+    Returns a short human-readable reason, or None to stay quiet. Compared
+    against the last POSTED forecast (not the last computed one): direction
+    flip, a confidence move >= FORECAST_REPOST_CONFIDENCE_DELTA, price
+    breaching the day forecast's projected high/low, or a heartbeat so the
+    channel never goes silent longer than FORECAST_HEARTBEAT_MINUTES.
+    """
+    if prev is None:
+        return "first read"
+    if fc.direction != prev.direction:
+        return f"read changed: {prev.direction} → {fc.direction}"
+    if abs(fc.confidence - prev.confidence) >= FORECAST_REPOST_CONFIDENCE_DELTA:
+        return f"confidence {prev.confidence:.0f}% → {fc.confidence:.0f}%"
+    if day_fc is not None:
+        def _zone(price: float) -> str:
+            if price > day_fc.exp_high:
+                return "above"
+            if price < day_fc.exp_low:
+                return "below"
+            return "in"
+        zone = _zone(fc.current_price)
+        # Only breaches ping; drifting back inside the range doesn't.
+        if zone != "in" and zone != _zone(prev.current_price):
+            if zone == "above":
+                return f"price above projected high (${day_fc.exp_high})"
+            return f"price below projected low (${day_fc.exp_low})"
+    if last_posted is not None and (now - last_posted).total_seconds() >= FORECAST_HEARTBEAT_MINUTES * 60:
+        return "periodic update"
+    return None
 
 
 # ── Core strategy functions ─────────────────────────────────
