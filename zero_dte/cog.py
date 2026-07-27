@@ -50,6 +50,7 @@ from core.market_data import MarketDataClient, is_market_open
 from core.paths import DATA_DIR, WATCHLIST_FILE
 from core.tracking import append_jsonl, available_dates, load_jsonl
 from zero_dte.strategy import (
+    DayForecast,
     DirectionForecast,
     get_daily_bias,
     set_bias_from_first_candle,
@@ -67,6 +68,7 @@ from zero_dte.strategy import (
 )
 from zero_dte.tracker import (
     log_forecast,
+    log_day_forecast,
     evaluate_forecasts,
     evaluate_votes,
     log_trade_outcome,
@@ -234,6 +236,33 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await dest.send(embed=forecast_embed(fc, day_fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
+
+    async def _recover_day_forecast(self, ticker: str, st) -> None:
+        """Rebuild the morning day forecast after a restart that lost it (and
+        that has nothing persisted to restore — e.g. the bot was down at bias
+        time). Quiet: fills in state so intraday forecast embeds regain the
+        projected range, but never posts the day-forecast embed itself."""
+        st.day_forecast_attempts += 1
+        try:
+            if st.first_candle is None:
+                st.first_candle = await get_first_candle_range(self.client, ticker)
+            if st.first_candle is None:
+                return
+            if st.daily_bias is None:
+                bias = await get_daily_bias(self.client, ticker, today_open=st.first_candle.open_price)
+                if bias is None:
+                    return
+                set_bias_from_first_candle(bias, st.first_candle)
+                st.daily_bias = bias
+            day_fc = await compute_day_forecast(self.client, ticker, st.daily_bias, st.first_candle)
+            if day_fc:
+                st.day_forecast = day_fc
+                log_day_forecast(day_fc, datetime.now(ET))
+                logger.info("[%s] Day forecast recovered mid-day: %s high=$%s low=$%s",
+                            ticker, day_fc.direction, day_fc.exp_high, day_fc.exp_low)
+        except Exception as exc:
+            logger.warning("[%s] Day forecast recovery failed (attempt %d): %s",
+                           ticker, st.day_forecast_attempts, exc)
 
     def build_status_embed(self) -> discord.Embed:
         now = datetime.now(ET)
@@ -615,6 +644,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             bias_tickers = {e.get("ticker") for e in load_jsonl("bias", today_str)}
             fired_tickers = {e.get("ticker") for e in load_jsonl("filters", today_str) if e.get("fired")}
             outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
+            day_fcs = {e.get("ticker"): e for e in load_jsonl("day_forecast", today_str)}
             last_fc: dict[str, dict] = {}
             last_fc_5m: dict[str, dict] = {}
             for e in load_jsonl("forecasts", today_str):
@@ -665,6 +695,18 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     st.last_forecast_5m_time = datetime.fromisoformat(last_fc_5m[ticker]["time"]).astimezone(ET)
                 except ValueError:
                     pass
+            if ticker in day_fcs:
+                e = day_fcs[ticker]
+                try:
+                    st.day_forecast = DayForecast(
+                        ticker=ticker, direction=e["direction"], strength=e["strength"],
+                        open_price=e["open_price"], exp_high=e["exp_high"], exp_low=e["exp_low"],
+                        day_atr=e["day_atr"], pivot=e["pivot"], r1=e["r1"], s1=e["s1"],
+                        prev_high=e["prev_high"], prev_low=e["prev_low"],
+                        timestamp=e.get("timestamp", ""),
+                    )
+                except KeyError as exc:
+                    logger.warning("[%s] Day forecast restore missing field %s", ticker, exc)
             if ticker in fired_tickers:
                 st.signal_fired = True
                 out = outcomes.get(ticker)
@@ -825,6 +867,22 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             now.replace(hour=FORECAST_END_HOUR, minute=FORECAST_END_MINUTE, second=0, microsecond=0),
             session_close,
         )
+
+        # Day-forecast recovery: a restart with nothing persisted to rehydrate
+        # (or one after the 11:00 monitoring window, where the bias step no
+        # longer runs) leaves forecasts without the projected range — rebuild
+        # it here. Pre-11:00 first starts are left to the normal bias step so
+        # the bias/day-forecast embeds still post. Throttled to forecast slots
+        # and capped so a bad data day can't hammer the API every 60s.
+        if (DAY_FORECAST_ENABLED and forecast_start <= now < forecast_end
+                and now.minute % FORECAST_5M_INTERVAL_MINUTES < 2):
+            for ticker in list(self.active_tickers):
+                st = self.states.get(ticker)
+                if (st is None or st.day_forecast is not None or st.day_forecast_attempts >= 10
+                        or not (st.bias_logged or past_monitoring)):
+                    continue
+                await self._recover_day_forecast(ticker, st)
+
         if forecast_start <= now < forecast_end and now.minute % FORECAST_INTERVAL_MINUTES < 2:
             for ticker in list(self.active_tickers):
                 st = self.states.get(ticker)
@@ -974,6 +1032,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                 day_fc = await compute_day_forecast(self.client, ticker, bias, st.first_candle)
                                 if day_fc:
                                     st.day_forecast = day_fc
+                                    log_day_forecast(day_fc, now)
                                     if first_post:
                                         await channel.send(embed=day_forecast_embed(day_fc))
                             except Exception as exc:

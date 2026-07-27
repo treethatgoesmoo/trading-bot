@@ -263,6 +263,7 @@ class StrategyState:
         self.last_forecast: DirectionForecast | None = None
         self.last_forecast_5m_time: datetime | None = None
         self.day_forecast: DayForecast | None = None
+        self.day_forecast_attempts: int = 0  # mid-day recovery tries (capped)
         self.forecast_eval_done: bool = False
         self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
