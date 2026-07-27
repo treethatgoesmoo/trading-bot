@@ -13,10 +13,12 @@ import json
 import os
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import pytz
 
-from config import FORECAST_INTERVAL_MINUTES
+from config import FORECAST_DEADBAND_ATR_MULT, FORECAST_INTERVAL_MINUTES
+from core.indicators import atr as _atr_series
 from core.paths import DATA_DIR
 from core.tracking import (
     write_atomic as _write_atomic,
@@ -214,7 +216,10 @@ def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int
     with open(path) as f:
         votes = [json.loads(line) for line in f if line.strip()]
 
-    actual_by_time = {r["time"]: r["actual"] for r in results if r.get("actual")}
+    # FLAT windows don't score votes either way — a directional vote on a
+    # noise window is neither right nor wrong.
+    actual_by_time = {r["time"]: r["actual"] for r in results
+                      if r.get("actual") in ("BULLISH", "BEARISH")}
     correct = total = 0
     for vote in votes:
         # Only directional calls are scorable — an "agree" on a NEUTRAL
@@ -238,6 +243,11 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
     FORECAST_INTERVAL_MINUTES): actual direction is that candle's close vs the
     price at forecast time. Works for past dates too (restart catch-up) as
     long as the candle window still covers them.
+
+    Volatility-scaled deadband: windows whose |move| is under
+    FORECAST_DEADBAND_ATR_MULT x the interval ATR(14) at that candle grade as
+    actual=FLAT — a directional call on a flat window goes ungraded (noise,
+    not a miss) and a NEUTRAL/VOLATILE call on it grades correct.
     """
     forecasts = [e for e in load_forecasts(date_str) if e["ticker"] == ticker]
     if not forecasts:
@@ -258,6 +268,9 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
             timestamps = timestamps.dt.tz_localize("UTC")
         timestamps = timestamps.dt.tz_convert(ET)
 
+        atr_vals = _atr_series(data, 14)
+        atr_fallback = float(atr_vals.dropna().mean()) if atr_vals.notna().any() else 0.0
+
         for entry in forecasts:
             if entry.get("interval", FORECAST_INTERVAL_MINUTES) != interval:
                 continue
@@ -273,14 +286,26 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
             if (candle_ts - ftime).total_seconds() > (interval + 5) * 60:
                 continue
             outcome_close = float(future.iloc[0]["close"])
-            actual = "BULLISH" if outcome_close > entry["price"] else "BEARISH"
+            pos = int(np.argmax(mask))
+            band_atr = float(atr_vals.iloc[pos]) if not np.isnan(atr_vals.iloc[pos]) else atr_fallback
+            deadband = FORECAST_DEADBAND_ATR_MULT * band_atr
+            move = outcome_close - entry["price"]
+
             result = dict(entry)
-            result["actual"] = actual
             result["actual_price"] = round(outcome_close, 2)
-            result["move"] = round(outcome_close - entry["price"], 2)
-            # Only directional calls are scored; NEUTRAL/VOLATILE are on-record
-            # but ungraded (their per-indicator votes still feed the tuner).
-            result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
+            result["move"] = round(move, 2)
+            result["deadband"] = round(deadband, 3)
+            if abs(move) < deadband:
+                # Flat window: a directional call goes ungraded (noise, not a
+                # miss); calling no-edge on a no-move window is correct.
+                result["actual"] = "FLAT"
+                result["correct"] = True if entry["direction"] in ("NEUTRAL", "VOLATILE") else None
+            else:
+                actual = "BULLISH" if move > 0 else "BEARISH"
+                result["actual"] = actual
+                # NEUTRAL/VOLATILE on a real move stay on-record but ungraded
+                # (their per-indicator votes still feed the tuner).
+                result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
             results.append(result)
 
     if not results:

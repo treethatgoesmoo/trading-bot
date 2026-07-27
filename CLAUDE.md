@@ -24,6 +24,7 @@ make logs / tail          # show / follow latest logs/bot-YYYY-MM-DD.log
 python backtest.py 2026-04-13 SPY --verbose   # replay break-and-retest for one day
 python backtest_30m.py                        # backtest the 30-min forecast voting
 python backtest_swing.py --start 2023-01-01 --sweep   # validate swing thresholds (bulk yfinance, no API budget)
+python backtest_filters.py                    # replay fired+vetoed setups, per-filter expectancy audit (bulk yfinance)
 python backfill.py 20 SPY QQQ                 # replay live 0DTE logic over history → data/
 python dashboard.py 30 --open                 # HTML performance dashboard from data/
 python tune_weights.py --days 20 --write      # retune 0DTE forecast weights → data/indicator_weights.json

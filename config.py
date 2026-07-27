@@ -66,6 +66,14 @@ FORECAST_VOLATILE_CONFIDENCE = float(os.getenv("FORECAST_VOLATILE_CONFIDENCE", "
 # same window as the main forecast (graded against the next 5-min candle).
 FORECAST_5M_ENABLED = _flag("FORECAST_5M_ENABLED")
 FORECAST_5M_INTERVAL_MINUTES = 5
+# Volatility-scaled grading deadband (triple-barrier-style flat class): a
+# window whose |move| is under this fraction of the interval ATR(14) grades
+# as FLAT — directional calls on it go ungraded (noise, not a miss) and
+# NEUTRAL/VOLATILE calls on it grade correct. Median 15m SPY window moved
+# ~$0.47 while graded accuracy sat at coin-flip; forcing those tiny moves
+# into BULLISH/BEARISH labels fed the tuner noise (see arXiv 2303.04581 on
+# fixed-threshold labeling).
+FORECAST_DEADBAND_ATR_MULT = float(os.getenv("FORECAST_DEADBAND_ATR_MULT", "0.25"))
 FORECAST_START_HOUR = 10
 FORECAST_START_MINUTE = 0
 FORECAST_END_HOUR = 16
@@ -131,6 +139,9 @@ VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
 # Nightly self-tuning: retune forecast + swing indicator weights from graded
 # history after each session close (before the git auto-commit).
 AUTO_TUNE_ENABLED = _flag("AUTO_TUNE_ENABLED")
+# Rolling window for the nightly 0DTE retune (days of graded history; 0 = all).
+# Keeps pre-deadband force-labeled days from dominating the stats forever.
+AUTO_TUNE_DAYS = int(os.getenv("AUTO_TUNE_DAYS", "30"))
 # Tuned weights never go below this. A 0-weight indicator still "votes" but
 # vanishes from the confidence denominator and the VOLATILE conflict guard —
 # one zeroed dissenter let a 4-indicator forecast print 100% confidence.

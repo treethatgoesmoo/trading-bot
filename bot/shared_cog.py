@@ -17,6 +17,7 @@ import pytz
 from config import (
     ALERT_CHANNEL_ID,
     AUTO_TUNE_ENABLED,
+    AUTO_TUNE_DAYS,
     ECON_EVENTS_ENABLED,
     ECON_LOOKAHEAD_DAYS,
     GIT_AUTOCOMMIT_ENABLED,
@@ -197,7 +198,9 @@ class SharedCog(commands.Cog, name="Shared"):
         def _tune():
             import tune_weights
             import tune_swing_weights
-            return (tune_weights.retune(write=True),
+            # Rolling window: pre-deadband force-labeled days age out of the
+            # 0DTE stats. Swing keeps all history — samples are still scarce.
+            return (tune_weights.retune(days=AUTO_TUNE_DAYS, write=True),
                     tune_swing_weights.retune(write=True))
 
         try:
