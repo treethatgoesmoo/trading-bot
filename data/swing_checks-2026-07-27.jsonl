@@ -1,0 +1,6 @@
+{"signal_id": "TSLA-20260724", "ticker": "TSLA", "time": "2026-07-27T16:30:52.129043+00:00", "price": 309.36, "status": "TARGET"}
+{"signal_id": "GOOG-20260724", "ticker": "GOOG", "time": "2026-07-27T16:30:52.129043+00:00", "price": 327.88, "status": "OK"}
+{"signal_id": "META-20260724", "ticker": "META", "time": "2026-07-27T16:30:52.129043+00:00", "price": 599.04, "status": "OK"}
+{"signal_id": "GOOG-20260724", "ticker": "GOOG", "time": "2026-07-27T17:47:38.881122+00:00", "price": 326.39, "status": "OK"}
+{"signal_id": "META-20260724", "ticker": "META", "time": "2026-07-27T17:47:38.881122+00:00", "price": 595.25, "status": "OK"}
+{"signal_id": "TSLA-20260727", "ticker": "TSLA", "time": "2026-07-27T17:47:38.881122+00:00", "price": 308.16, "status": "OK"}
