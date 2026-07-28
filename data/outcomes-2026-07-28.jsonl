@@ -1,0 +1,1 @@
+{"ticker": "SPY", "time": "2026-07-28T14:51:39.405080+00:00", "direction": "SHORT", "result": "STOPPED_OUT", "entry_price": 737.47, "exit_price": 739.42, "stop_loss": 739.42, "target": 733.57, "pnl": -1.95, "r_multiple": -1.0}

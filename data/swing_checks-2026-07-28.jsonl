@@ -1,0 +1,4 @@
+{"signal_id": "GOOG-20260724", "ticker": "GOOG", "time": "2026-07-28T16:30:39.408207+00:00", "price": 333.07, "status": "OK"}
+{"signal_id": "META-20260724", "ticker": "META", "time": "2026-07-28T16:30:39.408207+00:00", "price": 596.43, "status": "OK"}
+{"signal_id": "TSLA-20260727", "ticker": "TSLA", "time": "2026-07-28T16:30:39.408207+00:00", "price": 306.58, "status": "OK"}
+{"signal_id": "AMD-20260728", "ticker": "AMD", "time": "2026-07-28T16:30:39.408207+00:00", "price": 460.6, "status": "TARGET"}

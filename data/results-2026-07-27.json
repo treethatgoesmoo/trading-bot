@@ -20,9 +20,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 740.97,
+    "move": -0.65,
+    "deadband": 0.437,
     "actual": "BEARISH",
-    "actual_price": 741.06,
-    "move": -0.56,
     "correct": false
   },
   {
@@ -46,9 +47,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 738.32,
+    "move": -2.74,
+    "deadband": 0.466,
     "actual": "BEARISH",
-    "actual_price": 738.33,
-    "move": -2.73,
     "correct": false
   },
   {
@@ -72,9 +74,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 736.79,
+    "move": -1.54,
+    "deadband": 0.468,
     "actual": "BEARISH",
-    "actual_price": 736.74,
-    "move": -1.59,
     "correct": true
   },
   {
@@ -98,9 +101,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 739.69,
+    "move": 2.95,
+    "deadband": 0.49,
     "actual": "BULLISH",
-    "actual_price": 739.66,
-    "move": 2.92,
     "correct": false
   },
   {
@@ -124,10 +128,11 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 739.4,
-    "move": -0.26,
-    "correct": true
+    "actual_price": 739.39,
+    "move": -0.27,
+    "deadband": 0.477,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -151,9 +156,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 738.29,
+    "move": -1.11,
+    "deadband": 0.472,
     "actual": "BEARISH",
-    "actual_price": 738.24,
-    "move": -1.16,
     "correct": null
   },
   {
@@ -178,9 +184,10 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.44,
+    "move": -0.8,
+    "deadband": 0.473,
     "actual": "BEARISH",
-    "actual_price": 737.42,
-    "move": -0.82,
     "correct": true
   },
   {
@@ -205,10 +212,11 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 737.47,
-    "move": 0.05,
-    "correct": false
+    "actual_price": 737.48,
+    "move": 0.06,
+    "deadband": 0.457,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -232,10 +240,11 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 737.5,
-    "move": 0.02,
-    "correct": false
+    "actual_price": 737.45,
+    "move": -0.02,
+    "deadband": 0.447,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -258,9 +267,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 738.72,
+    "move": 1.22,
+    "deadband": 0.466,
     "actual": "BULLISH",
-    "actual_price": 738.71,
-    "move": 1.21,
     "correct": false
   },
   {
@@ -284,10 +294,11 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 738.35,
-    "move": -0.36,
-    "correct": true
+    "actual_price": 738.34,
+    "move": -0.37,
+    "deadband": 0.455,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -310,9 +321,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.06,
+    "move": -1.29,
+    "deadband": 0.461,
     "actual": "BEARISH",
-    "actual_price": 737.03,
-    "move": -1.32,
     "correct": true
   },
   {
@@ -336,10 +348,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
     "actual_price": 736.65,
     "move": -0.38,
-    "correct": true
+    "deadband": 0.447,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -362,9 +375,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 736.2,
+    "move": -0.45,
+    "deadband": 0.431,
     "actual": "BEARISH",
-    "actual_price": 736.21,
-    "move": -0.44,
     "correct": true
   },
   {
@@ -388,9 +402,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 736.8,
+    "move": 0.59,
+    "deadband": 0.419,
     "actual": "BULLISH",
-    "actual_price": 736.81,
-    "move": 0.6,
     "correct": false
   },
   {
@@ -414,9 +429,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 737.8,
+    "move": 0.99,
+    "deadband": 0.412,
     "actual": "BULLISH",
-    "actual_price": 737.81,
-    "move": 1.0,
     "correct": false
   },
   {
@@ -441,9 +457,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.5,
+    "move": 0.71,
+    "deadband": 0.205,
     "actual": "BULLISH",
-    "actual_price": 737.48,
-    "move": 0.69,
     "correct": true
   },
   {
@@ -467,9 +484,10 @@
       "MACD_Mom": "BULLISH",
       "Momentum": "BULLISH"
     },
+    "actual_price": 737.8,
+    "move": 0.32,
+    "deadband": 0.2,
     "actual": "BULLISH",
-    "actual_price": 737.81,
-    "move": 0.33,
     "correct": null
   },
   {
@@ -493,9 +511,10 @@
       "MACD_Mom": "BULLISH",
       "Momentum": "BULLISH"
     },
+    "actual_price": 737.61,
+    "move": -0.2,
+    "deadband": 0.193,
     "actual": "BEARISH",
-    "actual_price": 737.62,
-    "move": -0.19,
     "correct": null
   },
   {
@@ -519,10 +538,11 @@
       "MACD_Mom": "BULLISH",
       "Momentum": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 737.78,
-    "move": -0.03,
-    "correct": null
+    "actual_price": 737.75,
+    "move": -0.06,
+    "deadband": 0.392,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -545,10 +565,11 @@
       "MACD_Mom": "BULLISH",
       "Momentum": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 737.69,
-    "move": 0.07,
-    "correct": null
+    "actual_price": 737.68,
+    "move": 0.06,
+    "deadband": 0.188,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -573,10 +594,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 737.78,
-    "move": 0.09,
-    "correct": null
+    "actual_price": 737.75,
+    "move": 0.06,
+    "deadband": 0.18,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -601,9 +623,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.25,
+    "move": -0.53,
+    "deadband": 0.182,
     "actual": "BEARISH",
-    "actual_price": 737.21,
-    "move": -0.57,
     "correct": false
   },
   {
@@ -628,10 +651,11 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 737.66,
-    "move": -0.12,
-    "correct": null
+    "actual_price": 737.62,
+    "move": -0.16,
+    "deadband": 0.378,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -655,9 +679,10 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.55,
+    "move": 0.34,
+    "deadband": 0.18,
     "actual": "BULLISH",
-    "actual_price": 737.57,
-    "move": 0.36,
     "correct": null
   },
   {
@@ -682,10 +707,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 737.66,
-    "move": 0.09,
-    "correct": null
+    "actual_price": 737.62,
+    "move": 0.05,
+    "deadband": 0.174,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -709,9 +735,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
     "actual_price": 736.91,
     "move": -0.75,
+    "deadband": 0.175,
+    "actual": "BEARISH",
     "correct": false
   },
   {
@@ -736,10 +763,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 737.46,
-    "move": -0.2,
-    "correct": true
+    "actual_price": 737.47,
+    "move": -0.19,
+    "deadband": 0.369,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -763,10 +791,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
     "actual_price": 736.79,
     "move": -0.12,
-    "correct": null
+    "deadband": 0.17,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -790,9 +819,10 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 737.47,
+    "move": 0.68,
+    "deadband": 0.175,
     "actual": "BULLISH",
-    "actual_price": 737.46,
-    "move": 0.67,
     "correct": null
   },
   {
@@ -818,10 +848,11 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 737.4,
-    "move": -0.06,
-    "correct": null
+    "actual_price": 737.37,
+    "move": -0.09,
+    "deadband": 0.169,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -846,9 +877,10 @@
       "Momentum": "BEARISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 739.06,
+    "move": 1.6,
+    "deadband": 0.377,
     "actual": "BULLISH",
-    "actual_price": 739.05,
-    "move": 1.59,
     "correct": null
   },
   {
@@ -874,9 +906,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 738.55,
+    "move": 1.15,
+    "deadband": 0.18,
     "actual": "BULLISH",
-    "actual_price": 738.54,
-    "move": 1.14,
     "correct": null
   },
   {
@@ -902,9 +935,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
+    "actual_price": 739.06,
+    "move": 0.52,
+    "deadband": 0.18,
     "actual": "BULLISH",
-    "actual_price": 739.05,
-    "move": 0.51,
     "correct": true
   },
   {
@@ -929,9 +963,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BEARISH",
     "actual_price": 738.58,
     "move": -0.47,
+    "deadband": 0.179,
+    "actual": "BEARISH",
     "correct": false
   },
   {
@@ -957,10 +992,11 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 739.08,
-    "move": 0.03,
-    "correct": true
+    "actual_price": 739.09,
+    "move": 0.04,
+    "deadband": 0.369,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -984,9 +1020,10 @@
       "Momentum": "BULLISH",
       "VIX": "BEARISH"
     },
-    "actual": "BULLISH",
     "actual_price": 739.32,
     "move": 0.74,
+    "deadband": 0.182,
+    "actual": "BULLISH",
     "correct": true
   },
   {
@@ -1011,9 +1048,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 739.09,
+    "move": -0.23,
+    "deadband": 0.18,
     "actual": "BEARISH",
-    "actual_price": 739.08,
-    "move": -0.24,
     "correct": false
   },
   {
@@ -1038,9 +1076,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 739.49,
+    "actual_price": 739.5,
     "move": 0.41,
+    "deadband": 0.175,
+    "actual": "BULLISH",
     "correct": true
   },
   {
@@ -1066,9 +1105,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 739.65,
+    "move": 0.57,
+    "deadband": 0.355,
     "actual": "BULLISH",
-    "actual_price": 739.63,
-    "move": 0.55,
     "correct": true
   },
   {
@@ -1093,10 +1133,11 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 739.6,
-    "move": 0.11,
-    "correct": true
+    "actual_price": 739.61,
+    "move": 0.12,
+    "deadband": 0.17,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -1120,10 +1161,11 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 739.63,
-    "move": 0.03,
-    "correct": true
+    "actual_price": 739.65,
+    "move": 0.05,
+    "deadband": 0.164,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -1147,10 +1189,11 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
     "actual_price": 739.57,
     "move": -0.06,
-    "correct": false
+    "deadband": 0.159,
+    "actual": "FLAT",
+    "correct": null
   },
   {
     "ticker": "SPY",
@@ -1174,9 +1217,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 738.97,
+    "move": -0.66,
+    "deadband": 0.348,
     "actual": "BEARISH",
-    "actual_price": 738.98,
-    "move": -0.65,
     "correct": false
   },
   {
@@ -1201,9 +1245,10 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 738.99,
+    "move": -0.58,
+    "deadband": 0.162,
     "actual": "BEARISH",
-    "actual_price": 738.98,
-    "move": -0.59,
     "correct": false
   },
   {
@@ -1229,10 +1274,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 738.98,
-    "move": 0.0,
-    "correct": null
+    "actual_price": 738.97,
+    "move": -0.01,
+    "deadband": 0.157,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -1257,10 +1303,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BULLISH",
-    "actual_price": 739.03,
-    "move": 0.05,
-    "correct": null
+    "actual_price": 739.04,
+    "move": 0.06,
+    "deadband": 0.154,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -1284,10 +1331,11 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 738.77,
-    "move": -0.21,
-    "correct": null
+    "actual_price": 739.02,
+    "move": 0.04,
+    "deadband": 0.336,
+    "actual": "FLAT",
+    "correct": true
   },
   {
     "ticker": "SPY",
@@ -1312,9 +1360,10 @@
       "Momentum": "BULLISH",
       "VIX": "BULLISH"
     },
+    "actual_price": 738.77,
+    "move": -0.26,
+    "deadband": 0.155,
     "actual": "BEARISH",
-    "actual_price": 738.78,
-    "move": -0.25,
     "correct": false
   },
   {
@@ -1340,9 +1389,10 @@
       "Momentum": "BEARISH",
       "VIX": "BULLISH"
     },
-    "actual": "BEARISH",
-    "actual_price": 738.77,
-    "move": -0.01,
+    "actual_price": 739.02,
+    "move": 0.24,
+    "deadband": 0.155,
+    "actual": "BULLISH",
     "correct": null
   }
 ]
