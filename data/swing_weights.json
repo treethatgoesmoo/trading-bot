@@ -1,25 +1,25 @@
 {
-  "generated": "2026-07-29T20:10:39.442931+00:00",
-  "days": 10,
+  "generated": "2026-07-30T20:10:39.434552+00:00",
+  "days": 11,
   "date_range": [
     "2026-07-10",
-    "2026-07-29"
+    "2026-07-30"
   ],
   "min_samples": 15,
   "samples": {
-    "Trend": 14,
+    "Trend": 15,
     "Cross": 2,
     "RSI_Pullback": 10,
-    "MACD": 14,
-    "Structure": 7,
-    "Volume": 10,
-    "Dist52w": 2
+    "MACD": 15,
+    "Structure": 8,
+    "Volume": 11,
+    "Dist52w": 3
   },
   "weights": {
-    "Trend": 3.0,
+    "Trend": 0.7,
     "RSI_Pullback": 2.5,
     "Cross": 2.0,
-    "MACD": 2.0,
+    "MACD": 3.3,
     "Structure": 1.5,
     "Volume": 1.0,
     "Dist52w": 1.0
