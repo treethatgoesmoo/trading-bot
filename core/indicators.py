@@ -34,6 +34,55 @@ def pivots(vals: np.ndarray, order: int) -> tuple[list[int], list[int]]:
     return highs, lows
 
 
+def dow_trend(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+              order: int = 2) -> tuple[list[str | None], list[tuple[int, str]]]:
+    """Dow Theory trend state with failure-swing reversal events, walk-forward.
+
+    Uptrend = successive higher swing highs AND higher swing lows; it stands
+    until reversed. A BEARISH reversal fires on the bar where, after a LOWER
+    swing high has formed (failure to extend the trend), the close breaks
+    below the last confirmed swing low. BULLISH is the mirror: a higher swing
+    low followed by a close above the last confirmed swing high.
+
+    No lookahead: a pivot found with a +/-`order` window only becomes a
+    confirmed swing `order` bars after it prints, so states[i] and any event
+    at bar i use only data available at bar i. Returns (states, events) —
+    states is per-bar "UP"/"DOWN"/None (None until structure establishes),
+    events is [(bar_index, "BULLISH"|"BEARISH"), ...].
+    """
+    swing_high_idx = pivots(np.asarray(highs, dtype=float), order)[0]
+    swing_low_idx = pivots(np.asarray(lows, dtype=float), order)[1]
+    sh: list[float] = []   # confirmed swing high values, chronological
+    sl: list[float] = []   # confirmed swing low values, chronological
+    next_h = next_l = 0
+    state: str | None = None
+    states: list[str | None] = []
+    events: list[tuple[int, str]] = []
+    for i in range(len(closes)):
+        while next_h < len(swing_high_idx) and swing_high_idx[next_h] + order <= i:
+            sh.append(float(highs[swing_high_idx[next_h]]))
+            next_h += 1
+        while next_l < len(swing_low_idx) and swing_low_idx[next_l] + order <= i:
+            sl.append(float(lows[swing_low_idx[next_l]]))
+            next_l += 1
+        if len(sh) >= 2 and len(sl) >= 2:
+            if state is None:
+                if sh[-1] > sh[-2] and sl[-1] > sl[-2]:
+                    state = "UP"
+                elif sh[-1] < sh[-2] and sl[-1] < sl[-2]:
+                    state = "DOWN"
+            elif state == "UP":
+                if sh[-1] < sh[-2] and closes[i] < sl[-1]:
+                    state = "DOWN"
+                    events.append((i, "BEARISH"))
+            else:
+                if sl[-1] > sl[-2] and closes[i] > sh[-1]:
+                    state = "UP"
+                    events.append((i, "BULLISH"))
+        states.append(state)
+    return states, events
+
+
 def sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(window=period, min_periods=period).mean()
 
