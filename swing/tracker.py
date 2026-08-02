@@ -185,9 +185,23 @@ def _walk_forward(sig: dict, days: pd.DataFrame,
     return None  # horizon not reached yet (or no candles inside it — widen the fetch)
 
 
-async def _option_pnl(sig: dict, move_pct: float, today) -> dict | None:
-    """Estimated option P&L at resolution: requote the exact contract when it
-    still trades, else a rough-delta model (explicitly labeled)."""
+async def _option_pnl(sig: dict, move_pct: float, resolution_date, today) -> dict | None:
+    """Option P&L as of the RESOLUTION date — the day the exit signal fired.
+
+    A live requote prices the contract *now*, which is only the exit price when
+    grading runs the same day the signal resolved. Grading is a pre-open pass,
+    so a signal that resolves mid-horizon is normally requoted 1+ days later —
+    and on a 7-14 DTE contract those extra days of theta are most of what is
+    left. Requoting late made winners look like losses (a TARGET_HIT graded 3
+    days on logged -99.1%), always biasing P&L down, since theta only ever runs
+    against a long holder.
+
+    So: use the live quote only when it is contemporaneous with the exit, and
+    otherwise fall back to the delta model, which prices off the resolution-day
+    move and carries no timing error. Either way record how stale the pricing
+    is (`quote_lag_days`, `priced_asof`) so the ledger stays auditable — the
+    fallback ignores theta and reads optimistic, the opposite bias.
+    """
     contract = sig.get("contract")
     if not contract or not contract.get("mid"):
         return None
@@ -197,21 +211,24 @@ async def _option_pnl(sig: dict, move_pct: float, today) -> dict | None:
     except (ValueError, TypeError):
         expiry = None
 
-    if expiry and today <= expiry:
+    lag_days = (today - resolution_date).days
+    meta = {"priced_asof": resolution_date.strftime("%Y-%m-%d"), "quote_lag_days": lag_days}
+
+    if lag_days <= 0 and expiry and today <= expiry:
         quote = await asyncio.to_thread(
             requote, sig["ticker"], contract["expiry"], float(contract["strike"]), contract["kind"])
         if quote is not None:
             return {"entry_mid": entry_mid, "exit_quote": quote,
                     "pnl_pct": round((quote - entry_mid) / entry_mid * 100, 1),
-                    "pnl_method": "requote"}
+                    "pnl_method": "requote", **meta}
 
-    # Fallback: delta-approximate from the underlying move.
+    # Fallback: delta-approximate from the underlying move at resolution.
     move_dollars = float(sig["entry_price"]) * move_pct / 100.0
     signed = move_dollars if sig["direction"] == "CALL" else -move_dollars
     est = signed * FALLBACK_DELTA
     return {"entry_mid": entry_mid, "exit_quote": None,
             "pnl_pct": round(est / entry_mid * 100, 1),
-            "pnl_method": "delta_est"}
+            "pnl_method": "delta_est", **meta}
 
 
 async def grade_due_signals(client, now_et: datetime) -> list[dict]:
@@ -254,7 +271,8 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
             continue
         resolution, resolution_date, move_pct = result
 
-        option = await _option_pnl(sig, move_pct, today)
+        resolved_on = datetime.strptime(resolution_date, "%Y-%m-%d").date()
+        option = await _option_pnl(sig, move_pct, resolved_on, today)
 
         actual = None
         if move_pct >= INDICATOR_DEADBAND_PCT:

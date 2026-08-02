@@ -136,7 +136,8 @@ def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: da
         "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": direction,
         "fired": fired,
-        "filters": [{"name": f.name, "passed": f.passed, "reason": f.reason} for f in filters],
+        "filters": [{"name": f.name, "passed": f.passed, "reason": f.reason,
+                     "advisory": f.advisory} for f in filters],
     })
 
 

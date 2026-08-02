@@ -18,6 +18,7 @@ from config import (
     ATR_PERIOD, ATR_OVEREXTENDED_MULT,
     EMA_FAST, EMA_SLOW,
     FILTER_COOLDOWN_MINUTES,
+    VWAP_FILTER_ENABLED,
     FORECAST_CONFLICT_RATIO,
     FORECAST_HEARTBEAT_MINUTES,
     FORECAST_INTERVAL_MINUTES,
@@ -152,6 +153,10 @@ class FilterStatus:
     name: str
     passed: bool
     reason: str
+    # Advisory filters are computed, displayed and logged exactly like the rest
+    # but never block a setup — so a filter can keep being audited by
+    # backtest_filters.py after the evidence says it should stop vetoing.
+    advisory: bool = False
 
 
 @dataclass
@@ -677,14 +682,16 @@ def _apply_filters(
 
     vwap = compute_vwap(today_candles)
     if vwap is not None:
+        advisory = not VWAP_FILTER_ENABLED
+        note = " — advisory, not blocking" if advisory else ""
         if direction == "LONG":
             passed = entry_price > vwap
-            filters.append(FilterStatus(name="VWAP", passed=passed,
-                reason=f"Entry ${entry_price} {'>' if passed else '<='} VWAP ${vwap}"))
+            filters.append(FilterStatus(name="VWAP", passed=passed, advisory=advisory,
+                reason=f"Entry ${entry_price} {'>' if passed else '<='} VWAP ${vwap}{note}"))
         else:
             passed = entry_price < vwap
-            filters.append(FilterStatus(name="VWAP", passed=passed,
-                reason=f"Entry ${entry_price} {'<' if passed else '>='} VWAP ${vwap}"))
+            filters.append(FilterStatus(name="VWAP", passed=passed, advisory=advisory,
+                reason=f"Entry ${entry_price} {'<' if passed else '>='} VWAP ${vwap}{note}"))
 
     # Relative Volume filter
     rvol_passed, rvol_ratio = check_relative_volume(candles_1m)
@@ -945,7 +952,7 @@ async def _build_signal_or_filtered(
 
     filters = _apply_filters(state, direction, entry_price, candles_1m, candles_5m, candles_15m)
     filters.extend(skipped)
-    all_passed = all(f.passed for f in filters)
+    all_passed = all(f.passed for f in filters if not f.advisory)
 
     if all_passed:
         target = entry_price - (risk * RISK_REWARD_RATIO) if direction == "SHORT" else entry_price + (risk * RISK_REWARD_RATIO)
