@@ -42,6 +42,16 @@ EMA_SLOW = 21
 # Filter cooldown
 FILTER_COOLDOWN_MINUTES = 5
 
+# VWAP entry filter (long must enter above VWAP, short below). Off by default:
+# it is the one filter in the stack whose vetoes were profitable. Over the
+# logged setups every VWAP veto would have won — 7/10, avg +0.63R, +6.3R total
+# blocked — while it was never the sole reason for a veto, so switching it off
+# costs no extra risk. Every other filter's vetoes lost money (RVOL sole vetoes
+# 0/9, -0.94R). See `python backtest_filters.py`. Kept as an advisory read
+# rather than deleted: it is still computed, still shown, still logged, so the
+# audit keeps scoring it on n>10 and this can be flipped back on the evidence.
+VWAP_FILTER_ENABLED = _flag("VWAP_FILTER_ENABLED", "0")
+
 # Trade tracking
 TRADE_TRACKING_END_HOUR = 16
 TRADE_TRACKING_END_MINUTE = 0

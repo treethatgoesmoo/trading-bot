@@ -37,6 +37,19 @@ from core.paths import DATA_DIR
 ET = pytz.timezone("US/Eastern")
 
 
+def _blocking_failures(setup: dict) -> list[str]:
+    """Names of the filters that actually vetoed this setup.
+
+    Advisory filters are computed and logged but never block, so they must not
+    be credited (or blamed) for a veto — otherwise an advisory filter riding
+    along on someone else's veto inflates its own record and destroys the
+    sole-veto counts. Records written before the advisory flag existed have no
+    such key and behave exactly as they always did.
+    """
+    return [f["name"] for f in setup.get("filters", [])
+            if not f.get("passed") and not f.get("advisory")]
+
+
 def load_setups() -> list[dict]:
     setups = []
     for path in sorted(glob.glob(os.path.join(DATA_DIR, "filters-*.jsonl"))):
@@ -147,7 +160,7 @@ def main() -> None:
         s["_r"], s["_exit"] = r, kind
         replayed.append(s)
         if args.verbose:
-            failed = [f["name"] for f in s.get("filters", []) if not f.get("passed")]
+            failed = _blocking_failures(s)
             tag = "FIRED " if s.get("fired") else f"VETOED[{','.join(failed) or '-'}]"
             print(f"  {s['date']} {ticker:5s} {s.get('direction', '?'):5s} {tag:28s} "
                   f"entry ${entry:.2f} risk ${risk:.2f} -> {kind:6s} {r:+.2f}R")
@@ -169,7 +182,7 @@ def main() -> None:
     for s in replayed:
         if s.get("fired"):
             continue
-        failed = [f["name"] for f in s.get("filters", []) if not f.get("passed")]
+        failed = _blocking_failures(s)
         for name in failed:
             any_veto[name].append(s["_r"])
         if len(failed) == 1:

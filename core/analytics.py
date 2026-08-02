@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from statistics import median
 
 import pytz
 
@@ -248,6 +249,21 @@ def swing_report(days: int | None = None) -> dict:
     graded = len(outcomes)
     moves = [o["move_pct"] for o in outcomes if o.get("move_pct") is not None]
     opt_pnls = [o["option"]["pnl_pct"] for o in outcomes if o.get("option")]
+    # Split by how the exit was priced. A live requote is the real fill only
+    # when it was taken the day the signal resolved; delta_est carries no
+    # timing error but ignores theta, so it reads optimistic. Averaging them
+    # blind hides which bias is in the headline. Records written before the
+    # as-of pricing fix have no `quote_lag_days` — count them separately
+    # rather than silently folding them in as clean.
+    opt_by_method = defaultdict(list)
+    for o in outcomes:
+        opt = o.get("option") or {}
+        if "pnl_pct" not in opt:
+            continue
+        method = opt.get("pnl_method", "?")
+        if "quote_lag_days" not in opt:
+            method += "_legacy"
+        opt_by_method[method].append(opt["pnl_pct"])
 
     by_dir = {}
     for d in ("CALL", "PUT"):
@@ -288,6 +304,11 @@ def swing_report(days: int | None = None) -> dict:
         "win_rate": _pct(wins, graded),
         "avg_move": round(sum(moves) / len(moves), 2) if moves else 0.0,
         "avg_option_pnl": round(sum(opt_pnls) / len(opt_pnls), 1) if opt_pnls else None,
+        "median_option_pnl": round(median(opt_pnls), 1) if opt_pnls else None,
+        "option_pnl_by_method": {
+            m: {"n": len(v), "avg": round(sum(v) / len(v), 1), "median": round(median(v), 1)}
+            for m, v in sorted(opt_by_method.items())
+        },
         "by_direction": by_dir,
         "by_ticker": sorted(by_ticker, key=lambda x: x["key"]),
         "resolutions": dict(resolutions),
