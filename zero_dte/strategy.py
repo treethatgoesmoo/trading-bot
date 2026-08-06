@@ -86,7 +86,7 @@ def _weight_overrides() -> dict:
 @dataclass
 class DailyBias:
     ticker: str
-    direction: str  # trading bias set from first candle + gap
+    direction: str  # trading bias: 2-of-3 vote (first candle/gap/trend), or NEUTRAL
     trend: str  # long-term 50 SMA
     gap_direction: str  # "GAP_UP", "GAP_DOWN", or "FLAT"
     gap_pct: float
@@ -400,9 +400,13 @@ async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: floa
 
 
 def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) -> None:
-    """Override bias direction using first candle + gap + RSI."""
-    fc_bullish = first_candle.close_price > first_candle.open_price
+    """Set bias direction by 2-of-3 vote: first candle, gap, 50 SMA trend.
 
+    The old rule let the first candle win unconditionally, which graded a coin
+    flip (50% over 60 days; bearish calls 43%). Requiring agreement from at
+    least one of gap/trend fixed bearish precision; when all three conflict the
+    day is NEUTRAL and break-and-retest fires no entries.
+    """
     # RSI contrarian: overbought flips bias bearish, oversold flips bullish
     if bias.rsi is not None and bias.rsi >= 70:
         bias.direction = "BEARISH"
@@ -411,15 +415,16 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
         bias.direction = "BULLISH"
         return
 
-    # First candle direction is primary, gap confirms
-    if fc_bullish and bias.gap_direction != "GAP_DOWN":
-        bias.direction = "BULLISH"
-    elif not fc_bullish and bias.gap_direction != "GAP_UP":
-        bias.direction = "BEARISH"
-    elif fc_bullish:
-        bias.direction = "BULLISH"
+    fc = "BULLISH" if first_candle.close_price > first_candle.open_price else "BEARISH"
+    gap = {"GAP_UP": "BULLISH", "GAP_DOWN": "BEARISH"}.get(bias.gap_direction)
+    trend = bias.trend
+
+    if fc == gap or fc == trend:
+        bias.direction = fc
+    elif gap is not None and gap == trend:
+        bias.direction = gap
     else:
-        bias.direction = "BEARISH"
+        bias.direction = "NEUTRAL"
 
 
 @dataclass

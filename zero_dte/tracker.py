@@ -91,6 +91,26 @@ def log_trade_outcome(outcome, now: datetime) -> None:
     })
 
 
+def direction_record(direction: str) -> tuple[int, int, float]:
+    """Lifetime (wins, total, total_r) of resolved trades in one direction.
+
+    Reads every outcomes-*.jsonl; used to show the live track record on new
+    signal alerts so a weak side (e.g. LONG) is visible at decision time.
+    """
+    wins = total = 0
+    total_r = 0.0
+    for date_str in available_dates("outcomes"):
+        for e in load_jsonl("outcomes", date_str):
+            if e.get("direction") != direction:
+                continue
+            total += 1
+            r = e.get("r_multiple") or 0.0
+            total_r += r
+            if r > 0:
+                wins += 1
+    return wins, total, round(total_r, 1)
+
+
 def log_bias(bias, now: datetime) -> None:
     """Persist the morning daily-bias call so its accuracy can be tracked over time."""
     _append_jsonl("bias", now.astimezone(ET).strftime("%Y-%m-%d"), {
@@ -168,7 +188,9 @@ async def evaluate_bias(client, ticker: str, date_str: str) -> None:
     for e in entries:
         if e["ticker"] == ticker and e.get("correct") is None:
             e["actual_direction"] = actual
-            e["correct"] = (e["direction"] == actual)
+            # NEUTRAL days made no directional call — record the actual but
+            # leave them ungraded (analytics filters correct=None).
+            e["correct"] = None if e["direction"] == "NEUTRAL" else (e["direction"] == actual)
             changed = True
     if changed:
         path = os.path.join(DATA_DIR, f"bias-{date_str}.jsonl")
