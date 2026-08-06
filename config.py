@@ -20,11 +20,6 @@ SWING_ENABLED = _flag("SWING_ENABLED")
 # API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-# Massive (formerly Polygon.io) — optional primary source for 0DTE SPX option
-# premiums (chain snapshot + contract day bars). yfinance stays the fallback
-# when unset or on any error. Free tier: 5 calls/min, 15-min delayed data.
-MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY", "")
-MASSIVE_CALLS_PER_MIN = int(os.getenv("MASSIVE_CALLS_PER_MIN", "5"))
 
 # Rate limits
 TWELVEDATA_CALLS_PER_MIN = 7
