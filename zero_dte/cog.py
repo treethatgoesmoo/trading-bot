@@ -43,6 +43,8 @@ from config import (
     RSI_WATCH_ENABLED,
     RSI_WATCH_INTERVAL_SECONDS,
     SPX_OPTIONS_ENABLED,
+    SPX_OPTIONS_ORB_MINUTES,
+    SPX_OPTIONS_ORB_TARGET_MULT,
     SPX_OPTIONS_PICK_DELAY_MINUTES,
     SPX_OPTIONS_SAMPLE_MINUTES,
     SPX_OPTIONS_TICKER,
@@ -1137,6 +1139,25 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
 
     # ── SPX 0DTE option range tracking ───────────────────────────────────
 
+    async def _project_spx_ranges(self, day, now, today_str: str) -> bool:
+        """Seed the projected premium ranges from the ORB opening range (first
+        SPX_OPTIONS_ORB_MINUTES of the session). The last 5-min bar of the
+        window can lag a poll or two — callers retry until this returns True
+        (or the day ends without one)."""
+        orb = await asyncio.to_thread(
+            spx_options.fetch_opening_range, day.ticker, now.date(), SPX_OPTIONS_ORB_MINUTES)
+        if orb is None:
+            return False
+        spx_options.apply_orb_projection(day, orb[0], orb[1], SPX_OPTIONS_ORB_TARGET_MULT)
+        if day.proj_high is None:
+            return False
+        append_jsonl("spx_options", today_str, spx_options.projection_entry(day))
+        logger.info("[SPX 0DTE] Opening range $%.2f-$%.2f -> breakout targets $%.2f / $%.2f | "
+                    "call could reach ~$%.2f, put ~$%.2f",
+                    day.or_low, day.or_high, day.proj_low, day.proj_high,
+                    day.call.projected_max, day.put.projected_max)
+        return True
+
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def spx_options_monitor(self):
         """Pick an ATM 0DTE call + put shortly after the open, sample their
@@ -1182,6 +1203,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             self.spx_day = day
             self._spx_last_sample = now
             append_jsonl("spx_options", today_str, spx_options.pick_entry(day))
+            await self._project_spx_ranges(day, now, today_str)
             logger.info("[SPX 0DTE] Tracking %s: call %s @ $%.2f | put %s @ $%.2f (spot $%.2f)",
                         day.date, day.call.strike, day.call.open_mid,
                         day.put.strike, day.put.open_mid, day.spot_at_pick)
@@ -1195,6 +1217,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     (now - self._spx_last_sample).total_seconds() < SPX_OPTIONS_SAMPLE_MINUTES * 60 - 30):
                 return
             self._spx_last_sample = now
+            if day.proj_high is None:
+                await self._project_spx_ranges(day, now, today_str)
             if await asyncio.to_thread(spx_options.sample_day, day):
                 append_jsonl("spx_options", today_str, spx_options.sample_entry(day))
             return

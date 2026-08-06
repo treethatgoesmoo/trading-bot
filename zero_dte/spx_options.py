@@ -11,6 +11,13 @@ reports each side's *effective* range:
                   option that finishes OTM is worth 0 even though the last
                   quoted low never prints it.
 
+The initial "what could this be worth" calculation follows the Opening Range
+Breakout (ORB) playbook: the first SPX_OPTIONS_ORB_MINUTES (default 15) of
+the session set the opening range, and the classic measured-move targets —
+range high + mult x range height above, range low - mult x range height
+below — price each side's projected max as intrinsic at its breakout target
+(fetch_opening_range / apply_orb_projection).
+
 Everything here is synchronous (yfinance is blocking) — the cog calls it via
 asyncio.to_thread(...). Failures always degrade: pick returns None (the loop
 retries next poll), a failed sample is skipped (the next one is minutes away),
@@ -22,12 +29,13 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 import pytz
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+ET = pytz.timezone("US/Eastern")
 
 
 @dataclass
@@ -42,6 +50,8 @@ class TrackedSide:
     last_mid: float
     samples: int = 1
     quote_stale: bool = False
+    # Set by apply_orb_projection() once the opening range is in:
+    projected_max: float | None = None   # intrinsic at the ORB breakout target
     # Set by finalize_day():
     settlement: float | None = None      # max(0, intrinsic at the close)
     effective_min: float | None = None   # min(observed, settlement)
@@ -57,6 +67,12 @@ class SpxOptionDay:
     put: TrackedSide
     spot_close: float | None = None
     finalized: bool = False
+    # Opening range (first SPX_OPTIONS_ORB_MINUTES of the session) and the
+    # ORB measured-move breakout targets (apply_orb_projection):
+    or_high: float | None = None
+    or_low: float | None = None
+    proj_high: float | None = None       # or_high + mult x range height
+    proj_low: float | None = None        # or_low  - mult x range height
 
 
 def _num(val, default=0.0) -> float:
@@ -165,6 +181,53 @@ def sample_day(day: SpxOptionDay) -> bool:
     return updated
 
 
+def fetch_opening_range(ticker: str, today: date, minutes: int) -> tuple[float, float] | None:
+    """High/low of the session's first `minutes` (the ORB opening range) from
+    5-min bars. None until every bar of the window is in — the range isn't
+    set before the window closes, and a partial fetch must not fake one."""
+    try:
+        h = yf.Ticker(ticker).history(period="1d", interval="5m")
+    except Exception as exc:
+        logger.warning("[%s] Opening range fetch failed: %s", ticker, exc)
+        return None
+    if h is None or h.empty:
+        return None
+    idx = h.index
+    try:
+        idx = idx.tz_convert(ET)
+    except TypeError:  # tz-naive index — assume exchange time
+        idx = idx.tz_localize(ET)
+    start = ET.localize(datetime.combine(today, time(9, 30)))
+    window = h[(idx >= start) & (idx < start + timedelta(minutes=minutes))]
+    if len(window) < max(1, minutes // 5):
+        return None
+    return float(window["High"].max()), float(window["Low"].min())
+
+
+def apply_orb_projection(day: SpxOptionDay, or_high: float, or_low: float,
+                         target_mult: float = 1.0) -> None:
+    """Derive each side's projected max from the ORB measured move: breakout
+    targets sit `target_mult` x the opening-range height beyond the range.
+
+    Projected max = intrinsic at the side's breakout target, floored at the
+    opening mid (with no breakout the premium just decays from there).
+    Conservative: ignores time value left when the target prints early. No
+    projected min is derived — the downside of an ATM 0DTE side is expiring
+    worthless, which the *effective* min captures at the close.
+    """
+    if or_high <= or_low:
+        return
+    height = or_high - or_low
+    day.or_high = round(or_high, 2)
+    day.or_low = round(or_low, 2)
+    day.proj_high = round(or_high + target_mult * height, 2)
+    day.proj_low = round(or_low - target_mult * height, 2)
+    for side in (day.call, day.put):
+        intrinsic = (day.proj_high - side.strike if side.kind == "call"
+                     else side.strike - day.proj_low)
+        side.projected_max = round(max(side.open_mid, intrinsic), 2)
+
+
 def fetch_close_spot(ticker: str) -> float | None:
     """Closing print of the underlying — the 0DTE cash-settlement reference."""
     try:
@@ -218,6 +281,14 @@ def pick_entry(day: SpxOptionDay) -> dict:
             "call": asdict(day.call), "put": asdict(day.put)}
 
 
+def projection_entry(day: SpxOptionDay) -> dict:
+    return {"type": "projection", "time": _utcnow_iso(),
+            "or_high": day.or_high, "or_low": day.or_low,
+            "proj_high": day.proj_high, "proj_low": day.proj_low,
+            "call_projected_max": day.call.projected_max,
+            "put_projected_max": day.put.projected_max}
+
+
 def sample_entry(day: SpxOptionDay) -> dict:
     return {"type": "sample", "time": _utcnow_iso(),
             "call_mid": day.call.last_mid, "call_stale": day.call.quote_stale,
@@ -228,6 +299,8 @@ def final_entry(day: SpxOptionDay) -> dict:
     return {"type": "final", "time": _utcnow_iso(), "date": day.date,
             "ticker": day.ticker, "spot": day.spot_at_pick,
             "spot_close": day.spot_close,
+            "or_high": day.or_high, "or_low": day.or_low,
+            "proj_high": day.proj_high, "proj_low": day.proj_low,
             "call": asdict(day.call), "put": asdict(day.put)}
 
 
@@ -247,6 +320,13 @@ def rehydrate(entries: list[dict]) -> SpxOptionDay | None:
             except (KeyError, TypeError) as exc:
                 logger.warning("Corrupt spx_options pick row — starting fresh: %s", exc)
                 return None
+        elif etype == "projection" and day is not None:
+            day.or_high = e.get("or_high")
+            day.or_low = e.get("or_low")
+            day.proj_high = e.get("proj_high")
+            day.proj_low = e.get("proj_low")
+            for side, prefix in ((day.call, "call"), (day.put, "put")):
+                side.projected_max = e.get(f"{prefix}_projected_max")
         elif etype == "sample" and day is not None:
             for side, prefix in ((day.call, "call"), (day.put, "put")):
                 mid = e.get(f"{prefix}_mid")
