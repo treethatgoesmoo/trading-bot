@@ -20,6 +20,11 @@ SWING_ENABLED = _flag("SWING_ENABLED")
 # API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+# Massive (formerly Polygon.io) — optional primary source for 0DTE SPX option
+# premiums (chain snapshot + contract day bars). yfinance stays the fallback
+# when unset or on any error. Free tier: 5 calls/min, 15-min delayed data.
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY", "")
+MASSIVE_CALLS_PER_MIN = int(os.getenv("MASSIVE_CALLS_PER_MIN", "5"))
 
 # Rate limits
 TWELVEDATA_CALLS_PER_MIN = 7
@@ -99,6 +104,24 @@ FORECAST_END_MINUTE = 0
 # Morning day forecast: direction + ATR-projected high/low posted once the
 # daily bias is set (~9:35 ET).
 DAY_FORECAST_ENABLED = _flag("DAY_FORECAST_ENABLED")
+
+# ── 0DTE SPX option range capture ────────────────────────────────────────
+# Pick one same-day-expiry ATM call + put on the SPX chain once the opening
+# range is set, sample their premiums through the session, and post the
+# effective min/max at the close. The min is floored to settlement intrinsic
+# — an OTM finish is worth 0 even though the quoted low never prints it.
+# The initial projection follows the Opening Range Breakout (ORB) playbook:
+# the first SPX_OPTIONS_ORB_MINUTES set the range, measured-move targets sit
+# SPX_OPTIONS_ORB_TARGET_MULT x the range height beyond it, and each side's
+# projected max is intrinsic at its breakout target.
+SPX_OPTIONS_ENABLED = _flag("SPX_OPTIONS_ENABLED")
+SPX_OPTIONS_TICKER = os.getenv("SPX_OPTIONS_TICKER", "^SPX").upper()
+SPX_OPTIONS_ORB_MINUTES = int(os.getenv("SPX_OPTIONS_ORB_MINUTES", "15"))
+SPX_OPTIONS_ORB_TARGET_MULT = float(os.getenv("SPX_OPTIONS_ORB_TARGET_MULT", "1.0"))
+# Contracts are picked when the ORB window closes (9:45 ET by default).
+SPX_OPTIONS_PICK_DELAY_MINUTES = int(os.getenv("SPX_OPTIONS_PICK_DELAY_MINUTES",
+                                               str(SPX_OPTIONS_ORB_MINUTES)))
+SPX_OPTIONS_SAMPLE_MINUTES = int(os.getenv("SPX_OPTIONS_SAMPLE_MINUTES", "5"))
 
 # Post the latest git change to the alert channel when the bot (re)starts.
 STARTUP_CHANGELOG_ENABLED = _flag("STARTUP_CHANGELOG_ENABLED")

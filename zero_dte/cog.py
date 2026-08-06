@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 from discord.ext import commands, tasks
@@ -42,6 +42,12 @@ from config import (
     FORECAST_END_MINUTE,
     RSI_WATCH_ENABLED,
     RSI_WATCH_INTERVAL_SECONDS,
+    SPX_OPTIONS_ENABLED,
+    SPX_OPTIONS_ORB_MINUTES,
+    SPX_OPTIONS_ORB_TARGET_MULT,
+    SPX_OPTIONS_PICK_DELAY_MINUTES,
+    SPX_OPTIONS_SAMPLE_MINUTES,
+    SPX_OPTIONS_TICKER,
     VIX_WATCH_ENABLED,
 )
 from core import market_calendar
@@ -79,6 +85,7 @@ from zero_dte.tracker import (
     log_filters,
     evaluate_bias,
 )
+from zero_dte import spx_options
 from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.embeds import (
     bias_embed,
@@ -93,6 +100,8 @@ from zero_dte.embeds import (
     range_embed,
     rsi_alert_embed,
     signal_embed,
+    spx_pick_embed,
+    spx_range_embed,
     vix_alert_embed,
 )
 from zero_dte.views import ForecastView, MenuView, ReportDetailsView, TradeSignalView
@@ -117,14 +126,25 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self._menu_view_registered = False
         self._catchup_done = False
 
+        # 0DTE SPX option range tracking (own loop, per-day done-flags)
+        self.spx_day: spx_options.SpxOptionDay | None = None
+        self._spx_date: str | None = None
+        self._spx_last_sample: datetime | None = None
+        self._spx_pick_attempts = 0
+
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     async def cog_load(self):
         self.market_monitor.start()
         logger.info("Market monitor loop started (every %ds)", POLL_INTERVAL_SECONDS)
+        if SPX_OPTIONS_ENABLED:
+            self.spx_options_monitor.start()
+            logger.info("SPX 0DTE option range loop started (%s, sampled every %dm)",
+                        SPX_OPTIONS_TICKER, SPX_OPTIONS_SAMPLE_MINUTES)
 
     async def cog_unload(self):
         self.market_monitor.cancel()
+        self.spx_options_monitor.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -615,6 +635,20 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             return
         await self.run_test(ctx, resolved)
 
+    @commands.command(name="spxrange")
+    async def cmd_spxrange(self, ctx):
+        """Show today's tracked 0DTE SPX call/put premium range so far."""
+        if not SPX_OPTIONS_ENABLED:
+            await ctx.send("SPX 0DTE range tracking is disabled (SPX_OPTIONS_ENABLED=0).")
+            return
+        day = self.spx_day
+        if day is None:
+            await ctx.send(f"No {SPX_OPTIONS_TICKER} 0DTE contracts tracked yet today — "
+                           f"the ATM call/put are picked ~{SPX_OPTIONS_PICK_DELAY_MINUTES} min "
+                           "after the open on trading days.")
+            return
+        await ctx.send(embed=spx_range_embed(day))
+
     @commands.command(name="menu")
     async def cmd_menu(self, ctx):
         """Show the interactive control panel."""
@@ -1102,3 +1136,111 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         logger.exception("Market monitor loop crashed: %s — restarting in 30s", exc)
         await asyncio.sleep(30)
         self.market_monitor.restart()
+
+    # ── SPX 0DTE option range tracking ───────────────────────────────────
+
+    async def _project_spx_ranges(self, day, now, today_str: str) -> bool:
+        """Seed the projected premium ranges from the ORB opening range (first
+        SPX_OPTIONS_ORB_MINUTES of the session). The last 5-min bar of the
+        window can lag a poll or two — callers retry until this returns True
+        (or the day ends without one)."""
+        orb = await asyncio.to_thread(
+            spx_options.fetch_opening_range, day.ticker, now.date(), SPX_OPTIONS_ORB_MINUTES)
+        if orb is None:
+            return False
+        spx_options.apply_orb_projection(day, orb[0], orb[1], SPX_OPTIONS_ORB_TARGET_MULT)
+        if day.proj_high is None:
+            return False
+        append_jsonl("spx_options", today_str, spx_options.projection_entry(day))
+        logger.info("[SPX 0DTE] Opening range $%.2f-$%.2f -> breakout targets $%.2f / $%.2f | "
+                    "call could reach ~$%.2f, put ~$%.2f",
+                    day.or_low, day.or_high, day.proj_low, day.proj_high,
+                    day.call.projected_max, day.put.projected_max)
+        return True
+
+    @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
+    async def spx_options_monitor(self):
+        """Pick an ATM 0DTE call + put shortly after the open, sample their
+        premiums through the session, and post the effective min/max at the
+        close (min floored to settlement intrinsic — OTM finishes are worth 0)."""
+        now = datetime.now(ET)
+        if not market_calendar.is_trading_day(now.date()):
+            return
+        today_str = now.strftime("%Y-%m-%d")
+
+        if self._spx_date != today_str:
+            self._spx_date = today_str
+            self.spx_day = None
+            self._spx_last_sample = None
+            self._spx_pick_attempts = 0
+            try:
+                self.spx_day = spx_options.rehydrate(load_jsonl("spx_options", today_str))
+                if self.spx_day is not None:
+                    logger.info("[SPX 0DTE] Rehydrated %s tracking from data/ (finalized=%s)",
+                                self.spx_day.ticker, self.spx_day.finalized)
+            except Exception as exc:
+                logger.warning("[SPX 0DTE] Rehydration failed (starting fresh): %s", exc)
+
+        day = self.spx_day
+        if day is not None and day.finalized:
+            return
+
+        session_close = market_calendar.session_close(now)
+        pick_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE,
+                                second=0, microsecond=0) + timedelta(minutes=SPX_OPTIONS_PICK_DELAY_MINUTES)
+        channel = self.bot.get_channel(ALERT_CHANNEL_ID)
+
+        # Step 1: pick the day's contracts (retry a few polls, then give up
+        # for the day — no chain before ~9:35 is normal, 10 misses is not).
+        if day is None:
+            if now < pick_time or now >= session_close or self._spx_pick_attempts >= 10:
+                return
+            self._spx_pick_attempts += 1
+            day = await asyncio.to_thread(
+                spx_options.pick_day_contracts, SPX_OPTIONS_TICKER, now.date())
+            if day is None:
+                return
+            self.spx_day = day
+            self._spx_last_sample = now
+            append_jsonl("spx_options", today_str, spx_options.pick_entry(day))
+            await self._project_spx_ranges(day, now, today_str)
+            logger.info("[SPX 0DTE] Tracking %s: call %s @ $%.2f | put %s @ $%.2f (spot $%.2f)",
+                        day.date, day.call.strike, day.call.open_mid,
+                        day.put.strike, day.put.open_mid, day.spot_at_pick)
+            if channel:
+                await channel.send(embed=spx_pick_embed(day))
+            return
+
+        # Step 2: sample premiums until the close.
+        if now < session_close:
+            if (self._spx_last_sample is not None and
+                    (now - self._spx_last_sample).total_seconds() < SPX_OPTIONS_SAMPLE_MINUTES * 60 - 30):
+                return
+            self._spx_last_sample = now
+            if day.proj_high is None:
+                await self._project_spx_ranges(day, now, today_str)
+            if await asyncio.to_thread(spx_options.sample_day, day):
+                append_jsonl("spx_options", today_str, spx_options.sample_entry(day))
+            return
+
+        # Step 3: past the close — settle and post the effective range once.
+        spot_close = await asyncio.to_thread(spx_options.fetch_close_spot, day.ticker)
+        await asyncio.to_thread(spx_options.finalize_day, day, spot_close)
+        append_jsonl("spx_options", today_str, spx_options.final_entry(day))
+        logger.info("[SPX 0DTE] Final: call %s eff $%.2f-$%.2f | put %s eff $%.2f-$%.2f (close $%s)",
+                    day.call.strike, day.call.effective_min, day.call.effective_max,
+                    day.put.strike, day.put.effective_min, day.put.effective_max,
+                    day.spot_close)
+        if channel:
+            await channel.send(embed=spx_range_embed(day))
+
+    @spx_options_monitor.before_loop
+    async def before_spx_options(self):
+        await self.bot.wait_until_ready()
+
+    @spx_options_monitor.error
+    async def spx_options_error(self, exc):
+        """An unhandled exception kills a tasks.loop permanently — log and restart it."""
+        logger.exception("SPX 0DTE range loop crashed: %s — restarting in 30s", exc)
+        await asyncio.sleep(30)
+        self.spx_options_monitor.restart()
