@@ -19,13 +19,16 @@ below — price each side's projected max as intrinsic at its breakout target
 (fetch_opening_range / apply_orb_projection).
 
 Option premiums prefer the Massive (formerly Polygon.io) REST API when
-MASSIVE_API_KEY is set, using free-tier endpoints only — the reference
-contracts list and per-contract aggregates (snapshot endpoints return
-NOT_AUTHORIZED on the free plan). Each side's session bars carry the traded
-high/low so far, so extremes between samples are captured; calls are
-throttled to the free tier's 5 calls/min, and data is 15-min delayed (the
-day-bar catch-up at finalize covers the tail). Index bars (spot, opening
-range, settlement close) and any Massive failure use yfinance.
+MASSIVE_API_KEY is set, using whatever the plan is entitled to: the
+reference contracts list plus per-contract aggregates. A 403 latches that
+endpoint class off until the next day and routes to yfinance instead. On
+the free tier (verified live) snapshots AND same-day aggregates are blocked
+— data there is end-of-day — so intraday sampling runs on yfinance and
+Massive contributes the day-bar catch-up at finalize; on plans with
+intraday option aggregates, Massive automatically carries the session
+(bars hold the traded high/low, so extremes between samples are captured).
+Calls are throttled to MASSIVE_CALLS_PER_MIN (5/min on the free tier).
+Index bars (spot, opening range, settlement close) always use yfinance.
 
 Everything here is synchronous (yfinance/requests are blocking) — the cog
 calls it via asyncio.to_thread(...). Failures always degrade: pick returns
@@ -139,6 +142,18 @@ _MASSIVE_WINDOW_SECONDS = 60.0
 _massive_lock = threading.Lock()
 _massive_calls: deque[float] = deque()
 
+# Entitlement latch: a 403 (NOT_AUTHORIZED / plan timeframe) marks that
+# endpoint class off until the next ET day, so an un-entitled endpoint costs
+# one call and one warning per day instead of hammering the budget all
+# session. Verified live on the free tier: the reference contracts list is
+# entitled, same-day (intraday) aggregates and snapshots are not.
+_massive_denied: set[str] = set()
+_massive_denied_date: str | None = None
+
+
+def massive_denied(feature: str) -> bool:
+    return feature in _massive_denied
+
 
 def _massive_throttle() -> None:
     """Block until a call slot is free in the sliding 1-minute window. Holding
@@ -155,16 +170,30 @@ def _massive_throttle() -> None:
         _massive_calls.append(time_mod.monotonic())
 
 
-def _massive_get(path: str, params: dict | None = None) -> dict | None:
+def _massive_get(path: str, params: dict | None = None,
+                 feature: str = "") -> dict | None:
     """Rate-limited GET returning parsed JSON, or None on any failure so the
-    caller falls back to yfinance."""
+    caller falls back to yfinance. `feature` names the endpoint class for the
+    daily entitlement latch."""
+    global _massive_denied_date
     if not MASSIVE_API_KEY:
+        return None
+    today_iso = datetime.now(ET).strftime("%Y-%m-%d")
+    if _massive_denied_date != today_iso:
+        _massive_denied_date = today_iso
+        _massive_denied.clear()
+    if feature and feature in _massive_denied:
         return None
     _massive_throttle()
     try:
         resp = requests.get(f"{MASSIVE_BASE}{path}",
                             params={**(params or {}), "apiKey": MASSIVE_API_KEY},
                             timeout=15)
+        if resp.status_code == 403 and feature:
+            _massive_denied.add(feature)
+            logger.warning("Massive %s not in this plan (HTTP 403) — using yfinance for it "
+                           "until tomorrow: %s", feature, resp.text[:200])
+            return None
         if resp.status_code != 200:
             logger.warning("Massive %s -> HTTP %s: %s", path, resp.status_code, resp.text[:200])
             return None
@@ -188,7 +217,7 @@ def _massive_contracts(ticker: str, expiry_iso: str, strike_lo: float,
         "strike_price.gte": strike_lo,
         "strike_price.lte": strike_hi,
         "limit": 250,
-    })
+    }, feature="contracts list")
     if data is None:
         return None
     return data.get("results") or []
@@ -201,7 +230,7 @@ def _massive_session_bars(contract_symbol: str, date_iso: str) -> dict | None:
     None on API failure or when the contract hasn't traded yet."""
     data = _massive_get(
         f"/v2/aggs/ticker/O:{contract_symbol}/range/5/minute/{date_iso}/{date_iso}",
-        {"limit": 500, "sort": "asc"})
+        {"limit": 500, "sort": "asc"}, feature="intraday aggregates")
     results = (data or {}).get("results") or []
     closes = [_num(b.get("c")) for b in results]
     highs = [h for b in results if (h := _num(b.get("h"))) > 0]
@@ -228,6 +257,8 @@ def _pick_via_massive(ticker: str, today: date, spot: float) -> SpxOptionDay | N
     """ATM pick from the reference contracts list + each contract's session
     bars (3 calls total). The nearest strike per type is priced off its first
     traded bar; an ATM 0DTE that hasn't traded by pick time isn't ready yet."""
+    if massive_denied("intraday aggregates"):
+        return None  # can't price a pick without session bars — yfinance it is
     today_iso = today.strftime("%Y-%m-%d")
     rows = _massive_contracts(ticker, today_iso, round(spot * 0.995), round(spot * 1.005))
     if not rows:
@@ -244,7 +275,8 @@ def _pick_via_massive(ticker: str, today: date, spot: float) -> SpxOptionDay | N
         symbol = str(row.get("ticker", "")).removeprefix("O:")
         bars = _massive_session_bars(symbol, today_iso)
         if bars is None:
-            logger.warning("[%s] Massive 0DTE %s %s has no trades yet", ticker, kind, symbol)
+            if not massive_denied("intraday aggregates"):
+                logger.warning("[%s] Massive 0DTE %s %s has no trades yet", ticker, kind, symbol)
             return None
         side = TrackedSide(
             contract_symbol=symbol,
@@ -276,7 +308,8 @@ def _sample_via_massive(day: SpxOptionDay) -> bool | None:
 
 def _massive_day_bar(contract_symbol: str, date_iso: str) -> tuple[float, float] | None:
     """The contract's daily high/low from Massive aggregates."""
-    data = _massive_get(f"/v2/aggs/ticker/O:{contract_symbol}/range/1/day/{date_iso}/{date_iso}")
+    data = _massive_get(f"/v2/aggs/ticker/O:{contract_symbol}/range/1/day/{date_iso}/{date_iso}",
+                        feature="daily aggregates")
     results = (data or {}).get("results") or []
     if not results:
         return None
@@ -575,7 +608,15 @@ def _self_test() -> int:
                       f"exp={r.get('expiration_date')} type={r.get('contract_type')}")
                 bars = _massive_session_bars(str(r.get("ticker", "")).removeprefix("O:"),
                                              today.strftime("%Y-%m-%d"))
-                print(f"      session bars today: {bars if bars else 'none (normal outside trading hours)'}")
+                if bars:
+                    print(f"      session bars today: {bars}")
+                elif massive_denied("intraday aggregates"):
+                    print("      intraday aggregates NOT in this plan (free tier is EOD-only) — "
+                          "live sampling will use yfinance; the day-bar pass at the close "
+                          "still tries Massive")
+                else:
+                    print("      session bars today: none (normal outside trading hours "
+                          "or an untraded contract)")
     else:
         print("[1/4] MASSIVE_API_KEY not set — yfinance only")
 

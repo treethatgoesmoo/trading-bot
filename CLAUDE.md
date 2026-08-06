@@ -37,7 +37,7 @@ python -c "import main, bot.core, zero_dte.cog, swing.cog, core.analytics"
 python -m zero_dte.spx_options        # live self-test of the 0DTE SPX range feed (Massive + yfinance; read-only)
 ```
 
-Requires a `.env` (see `.env.example`): `DISCORD_TOKEN`, `ALERT_CHANNEL_ID`, optionally `TWELVEDATA_API_KEY` / `FINNHUB_API_KEY` (else yfinance only), `MASSIVE_API_KEY` (Massive, formerly Polygon.io — primary source for 0DTE SPX option premiums, free tier 5 calls/min, 15-min delayed; else yfinance), `ZERO_DTE_ENABLED` / `SWING_ENABLED` toggles, `SWING_TICKERS`, `SWING_ALERT_CHANNEL_ID`.
+Requires a `.env` (see `.env.example`): `DISCORD_TOKEN`, `ALERT_CHANNEL_ID`, optionally `TWELVEDATA_API_KEY` / `FINNHUB_API_KEY` (else yfinance only), `MASSIVE_API_KEY` (Massive, formerly Polygon.io — 0DTE SPX option premiums where the plan allows; free tier is EOD-only so intraday sampling falls back to yfinance, a 403 latches the endpoint off for the day), `ZERO_DTE_ENABLED` / `SWING_ENABLED` toggles, `SWING_TICKERS`, `SWING_ALERT_CHANNEL_ID`.
 
 ## Architecture
 
