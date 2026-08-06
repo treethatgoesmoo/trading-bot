@@ -140,7 +140,9 @@ async def backfill_ticker(ticker: str, days: int,
             "trend": bias.trend, "gap_direction": bias.gap_direction, "gap_pct": bias.gap_pct,
             "multi_day": bias.multi_day, "current_price": bias.current_price,
             "sma_value": bias.sma_value, "rsi": bias.rsi,
-            "actual_direction": actual_dir, "correct": bias.direction == actual_dir,
+            "actual_direction": actual_dir,
+            # NEUTRAL made no call — ungraded, matching tracker.evaluate_bias
+            "correct": None if bias.direction == "NEUTRAL" else bias.direction == actual_dir,
         })
         n_bias += 1
 

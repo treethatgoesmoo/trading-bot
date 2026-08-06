@@ -69,6 +69,7 @@ from zero_dte.strategy import (
     TradeOutcome,
 )
 from zero_dte.tracker import (
+    direction_record,
     log_forecast,
     log_day_forecast,
     evaluate_forecasts,
@@ -440,7 +441,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         try:
             result = await check_for_setup(test_state, self.client, resolved)
             if isinstance(result, TradeSignal):
-                await ctx.send("**Signal detected!**", embed=signal_embed(result))
+                await ctx.send("**Signal detected!**",
+                               embed=signal_embed(result, record=direction_record(result.direction)))
             elif isinstance(result, FilteredSignal):
                 await ctx.send("**Setup found but filtered:**", embed=filtered_embed(result))
             else:
@@ -1075,7 +1077,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, result.direction, result.entry_price,
                                     result.stop_loss, result.target, filter_str)
                         log_filters(ticker, result.direction, result.filters, fired=True, now=now)
-                        await channel.send("@everyone", embed=signal_embed(result),
+                        await channel.send("@everyone",
+                                           embed=signal_embed(result, record=direction_record(result.direction)),
                                            view=TradeSignalView(result, self.states))
                     elif isinstance(result, FilteredSignal):
                         failed = ", ".join(f"{f.name}: {f.reason}" for f in result.failed_filters)

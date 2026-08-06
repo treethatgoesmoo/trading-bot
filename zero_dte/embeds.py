@@ -22,13 +22,20 @@ from zero_dte.rsi_watcher import RSIAlert, TF_LABEL
 
 
 def bias_embed(bias: DailyBias) -> discord.Embed:
-    color = 0x00CC66 if bias.direction == "BULLISH" else 0xFF4444
-    emoji = "\U0001f7e2" if bias.direction == "BULLISH" else "\U0001f534"
+    if bias.direction == "BULLISH":
+        color, emoji = 0x00CC66, "\U0001f7e2"
+    elif bias.direction == "BEARISH":
+        color, emoji = 0xFF4444, "\U0001f534"
+    else:  # NEUTRAL — signals conflict, no entries today
+        color, emoji = 0xFFAA00, "\U0001f7e1"
     trend_emoji = "\U0001f7e2" if bias.trend == "BULLISH" else "\U0001f534"
     gap_emoji = "\U0001f7e2" if bias.gap_direction == "GAP_UP" else ("\U0001f534" if bias.gap_direction == "GAP_DOWN" else "\U0001f7e1")
     md_emoji = "\U0001f7e2" if bias.multi_day == "BULLISH" else ("\U0001f534" if bias.multi_day == "BEARISH" else "\U0001f7e1")
 
     embed = discord.Embed(title=f"{emoji} Daily Bias: {bias.direction}", color=color)
+    if bias.direction == "NEUTRAL":
+        embed.description = ("First candle, gap and 50 SMA trend disagree — no majority. "
+                             "No break-and-retest entries today.")
     embed.add_field(name="Ticker", value=bias.ticker, inline=True)
     embed.add_field(name="Gap", value=f"{gap_emoji} {bias.gap_direction} ({bias.gap_pct:+.2f}%)", inline=True)
     embed.add_field(name="Prev Day Range", value=f"${bias.prev_low} - ${bias.prev_high}", inline=True)
@@ -36,7 +43,7 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
     embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
-    embed.set_footer(text="Bias: first candle direction + gap + RSI contrarian")
+    embed.set_footer(text="Bias: 2-of-3 vote (first candle + gap + 50 SMA trend), RSI contrarian override")
     return embed
 
 
@@ -197,7 +204,11 @@ def premarket_embed(pm: PremarketLevels) -> discord.Embed:
     return embed
 
 
-def signal_embed(signal: TradeSignal) -> discord.Embed:
+def signal_embed(signal: TradeSignal,
+                 record: tuple[int, int, float] | None = None) -> discord.Embed:
+    """Trade alert embed. `record` is (wins, total, total_r) of resolved live
+    trades in this direction — shown so a historically weak side (e.g. LONG)
+    is visible at decision time instead of only in !stats after the fact."""
     color = 0x00CC66 if signal.direction == "LONG" else 0xFF4444
     emoji = "\U0001f7e2" if signal.direction == "LONG" else "\U0001f534"
     arrow = "⬆️" if signal.direction == "LONG" else "⬇️"
@@ -226,6 +237,14 @@ def signal_embed(signal: TradeSignal) -> discord.Embed:
     if signal.filters:
         filter_lines = [f"✅ {f.name}: {f.reason}" for f in signal.filters]
         embed.add_field(name="Filters", value="\n".join(filter_lines), inline=False)
+    if record is not None:
+        wins, total, total_r = record
+        if total > 0:
+            pct = wins / total * 100
+            line = f"{signal.direction} signals so far: {wins}/{total} wins ({pct:.0f}%), {total_r:+.1f}R"
+            if total >= 3 and pct < 34:
+                line += "\n⚠️ This side has been below breakeven (needs >33% at 2R) — size accordingly."
+            embed.add_field(name="📊 Track record", value=line, inline=False)
     embed.set_footer(text=f"Signal at {signal.timestamp} | First Candle Strategy")
     return embed
 
