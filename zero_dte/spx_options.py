@@ -545,3 +545,71 @@ def rehydrate(entries: list[dict]) -> SpxOptionDay | None:
             except (KeyError, TypeError) as exc:
                 logger.warning("Corrupt spx_options final row ignored: %s", exc)
     return day
+
+
+# ── Live self-test ───────────────────────────────────────────────────────
+# `python -m zero_dte.spx_options` from the repo root exercises the real
+# APIs with the .env credentials: Massive connectivity/entitlement, spot,
+# opening range, the ATM pick, and one premium sample. Read-only — it never
+# writes to data/ or touches the bot's state.
+
+def _self_test() -> int:
+    import sys
+
+    from config import SPX_OPTIONS_ORB_MINUTES, SPX_OPTIONS_TICKER
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    ticker = sys.argv[1].upper() if len(sys.argv) > 1 else SPX_OPTIONS_TICKER
+    today = datetime.now(ET).date()
+    print(f"Self-test for {ticker} on {today} (ET)")
+
+    if MASSIVE_API_KEY:
+        print(f"[1/4] Massive key set ({MASSIVE_API_KEY[:4]}...) — checking the chain snapshot...")
+        data = _massive_get(f"/v3/snapshot/options/{_massive_underlying(ticker)}", {"limit": 5})
+        if data is None:
+            print("      FAIL: no response (see the warning above — bad key, no "
+                  "entitlement for this underlying, or no network). "
+                  "yfinance fallback would be used live.")
+        else:
+            results = data.get("results") or []
+            print(f"      OK: status={data.get('status')} contracts_returned={len(results)}")
+            if results:
+                r = results[0]
+                print(f"      sample row: {(r.get('details') or {}).get('ticker')} "
+                      f"quote={r.get('last_quote')} day={r.get('day')}")
+    else:
+        print("[1/4] MASSIVE_API_KEY not set — yfinance only")
+
+    print("[2/4] Spot via yfinance...")
+    spot = _spot(yf.Ticker(ticker))
+    print(f"      {'OK: $%.2f' % spot if spot else 'FAIL: no spot (market data unavailable?)'}")
+
+    print(f"[3/4] Opening range (first {SPX_OPTIONS_ORB_MINUTES}m) via yfinance...")
+    orb = fetch_opening_range(ticker, today, SPX_OPTIONS_ORB_MINUTES)
+    if orb:
+        print(f"      OK: ${orb[1]:,.2f} – ${orb[0]:,.2f}")
+    else:
+        print("      not available (normal before ~9:45 ET, on non-trading days, "
+              "or when yfinance has no 5m bars yet)")
+
+    print("[4/4] ATM 0DTE pick + one premium sample...")
+    day = pick_day_contracts(ticker, today)
+    if day is None:
+        print("      no pick (normal outside trading days — needs a same-day expiry "
+              "and a quotable ATM chain)")
+        return 0
+    if orb:
+        apply_orb_projection(day, orb[0], orb[1])
+    sample_day(day)
+    for side in (day.call, day.put):
+        proj = f" projected_max=${side.projected_max:,.2f}" if side.projected_max else ""
+        print(f"      {side.kind.upper()} {side.strike:g} {side.contract_symbol}: "
+              f"open=${side.open_mid:,.2f} last=${side.last_mid:,.2f} "
+              f"range=${side.obs_low:,.2f}–${side.obs_high:,.2f}"
+              f"{' (stale quote)' if side.quote_stale else ''}{proj}")
+    print("Done — all live paths reachable.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_self_test())
