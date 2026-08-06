@@ -100,6 +100,16 @@ FORECAST_END_MINUTE = 0
 # daily bias is set (~9:35 ET).
 DAY_FORECAST_ENABLED = _flag("DAY_FORECAST_ENABLED")
 
+# ── 0DTE SPX option range capture ────────────────────────────────────────
+# Pick one same-day-expiry ATM call + put on the SPX chain shortly after the
+# open, sample their premiums through the session, and post the effective
+# min/max at the close. The min is floored to settlement intrinsic — an OTM
+# finish is worth 0 even though the quoted low never prints it.
+SPX_OPTIONS_ENABLED = _flag("SPX_OPTIONS_ENABLED")
+SPX_OPTIONS_TICKER = os.getenv("SPX_OPTIONS_TICKER", "^SPX").upper()
+SPX_OPTIONS_PICK_DELAY_MINUTES = int(os.getenv("SPX_OPTIONS_PICK_DELAY_MINUTES", "5"))
+SPX_OPTIONS_SAMPLE_MINUTES = int(os.getenv("SPX_OPTIONS_SAMPLE_MINUTES", "5"))
+
 # Post the latest git change to the alert channel when the bot (re)starts.
 STARTUP_CHANGELOG_ENABLED = _flag("STARTUP_CHANGELOG_ENABLED")
 
