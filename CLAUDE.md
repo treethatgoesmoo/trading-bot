@@ -35,7 +35,7 @@ python analyze_days.py                        # per-day accuracy summary
 python -c "import main, bot.core, zero_dte.cog, swing.cog, core.analytics"
 ```
 
-Requires a `.env` (see `.env.example`): `DISCORD_TOKEN`, `ALERT_CHANNEL_ID`, optionally `TWELVEDATA_API_KEY` / `FINNHUB_API_KEY` (else yfinance only), `ZERO_DTE_ENABLED` / `SWING_ENABLED` toggles, `SWING_TICKERS`, `SWING_ALERT_CHANNEL_ID`.
+Requires a `.env` (see `.env.example`): `DISCORD_TOKEN`, `ALERT_CHANNEL_ID`, optionally `TWELVEDATA_API_KEY` / `FINNHUB_API_KEY` (else yfinance only), `MASSIVE_API_KEY` (Massive, formerly Polygon.io — primary source for 0DTE SPX option premiums, free tier 5 calls/min, 15-min delayed; else yfinance), `ZERO_DTE_ENABLED` / `SWING_ENABLED` toggles, `SWING_TICKERS`, `SWING_ALERT_CHANNEL_ID`.
 
 ## Architecture
 

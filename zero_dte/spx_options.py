@@ -18,21 +18,35 @@ range high + mult x range height above, range low - mult x range height
 below — price each side's projected max as intrinsic at its breakout target
 (fetch_opening_range / apply_orb_projection).
 
-Everything here is synchronous (yfinance is blocking) — the cog calls it via
-asyncio.to_thread(...). Failures always degrade: pick returns None (the loop
-retries next poll), a failed sample is skipped (the next one is minutes away),
-and finalize falls back to the sampled extremes per side rather than raising.
+Option premiums prefer the Massive (formerly Polygon.io) REST API when
+MASSIVE_API_KEY is set — its chain snapshot carries each contract's running
+day high/low, so extremes between samples are captured, throttled to the
+free tier's 5 calls/min (data is 15-min delayed there; the day-bar catch-up
+at finalize covers the tail). Index bars (spot, opening range, settlement
+close) and any Massive failure use yfinance.
+
+Everything here is synchronous (yfinance/requests are blocking) — the cog
+calls it via asyncio.to_thread(...). Failures always degrade: pick returns
+None (the loop retries next poll), a failed sample is skipped (the next one
+is minutes away), and finalize falls back to the sampled extremes per side
+rather than raising.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import threading
+import time as time_mod
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 
 import pytz
+import requests
 import yfinance as yf
+
+from config import MASSIVE_API_KEY, MASSIVE_CALLS_PER_MIN
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -109,9 +123,187 @@ def _spot(tk) -> float | None:
     return None
 
 
+# ── Massive (formerly Polygon.io) REST client ────────────────────────────
+# Primary source for option premiums when MASSIVE_API_KEY is set. Contract
+# tickers are OCC symbols with an "O:" prefix (O:SPXW260806C06400000), and an
+# index underlying maps ^SPX -> I:SPX. Index bars (spot / opening range /
+# settlement close) intentionally stay on yfinance — index data is a separate
+# Massive entitlement, and any Massive failure here falls back to yfinance.
+
+MASSIVE_BASE = "https://api.massive.com"
+_MASSIVE_WINDOW_SECONDS = 60.0
+_massive_lock = threading.Lock()
+_massive_calls: deque[float] = deque()
+
+
+def _massive_throttle() -> None:
+    """Block until a call slot is free in the sliding 1-minute window. Holding
+    the lock through the sleep deliberately serializes concurrent callers."""
+    with _massive_lock:
+        now = time_mod.monotonic()
+        while _massive_calls and now - _massive_calls[0] > _MASSIVE_WINDOW_SECONDS:
+            _massive_calls.popleft()
+        if len(_massive_calls) >= MASSIVE_CALLS_PER_MIN:
+            time_mod.sleep(_MASSIVE_WINDOW_SECONDS - (now - _massive_calls[0]) + 0.1)
+            now = time_mod.monotonic()
+            while _massive_calls and now - _massive_calls[0] > _MASSIVE_WINDOW_SECONDS:
+                _massive_calls.popleft()
+        _massive_calls.append(time_mod.monotonic())
+
+
+def _massive_get(path: str, params: dict | None = None) -> dict | None:
+    """Rate-limited GET returning parsed JSON, or None on any failure so the
+    caller falls back to yfinance."""
+    if not MASSIVE_API_KEY:
+        return None
+    _massive_throttle()
+    try:
+        resp = requests.get(f"{MASSIVE_BASE}{path}",
+                            params={**(params or {}), "apiKey": MASSIVE_API_KEY},
+                            timeout=15)
+        if resp.status_code != 200:
+            logger.warning("Massive %s -> HTTP %s: %s", path, resp.status_code, resp.text[:200])
+            return None
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Massive %s failed: %s", path, exc)
+        return None
+
+
+def _massive_underlying(ticker: str) -> str:
+    return "I:" + ticker[1:] if ticker.startswith("^") else ticker
+
+
+def _massive_premium(row: dict) -> tuple[float, bool]:
+    """Premium from a snapshot row: quote midpoint when the ask is live, else
+    the last trade, else the day's close — the latter two flagged stale."""
+    q = row.get("last_quote") or {}
+    bid, ask = _num(q.get("bid")), _num(q.get("ask"))
+    if ask > 0:
+        return round((bid + ask) / 2, 2), False
+    last = _num((row.get("last_trade") or {}).get("price"))
+    if last > 0:
+        return round(last, 2), True
+    return round(_num((row.get("day") or {}).get("close")), 2), True
+
+
+def _apply_massive_row(side: TrackedSide, row: dict) -> bool:
+    """Fold one snapshot row into a side: quote -> last_mid/extremes, and the
+    row's running day high/low -> extremes (catches moves between samples)."""
+    updated = False
+    d = row.get("day") or {}
+    day_high, day_low = _num(d.get("high")), _num(d.get("low"))
+    if day_high > 0:
+        side.obs_high = max(side.obs_high, round(day_high, 2))
+        updated = True
+    if day_low > 0:
+        side.obs_low = min(side.obs_low, round(day_low, 2))
+        updated = True
+    mid, stale = _massive_premium(row)
+    if mid > 0:
+        side.last_mid = mid
+        side.quote_stale = stale
+        side.samples += 1
+        side.obs_high = max(side.obs_high, mid)
+        side.obs_low = min(side.obs_low, mid)
+        updated = True
+    return updated
+
+
+def _massive_chain(ticker: str, expiry_iso: str, strike_lo: float,
+                   strike_hi: float) -> list[dict] | None:
+    data = _massive_get(f"/v3/snapshot/options/{_massive_underlying(ticker)}", {
+        "expiration_date": expiry_iso,
+        "strike_price.gte": strike_lo,
+        "strike_price.lte": strike_hi,
+        "limit": 250,
+    })
+    if data is None:
+        return None
+    return data.get("results") or []
+
+
+def _pick_via_massive(ticker: str, today: date, spot: float) -> SpxOptionDay | None:
+    """ATM pick from a Massive chain snapshot (one call covers both types)."""
+    today_iso = today.strftime("%Y-%m-%d")
+    rows = _massive_chain(ticker, today_iso, round(spot * 0.995), round(spot * 1.005))
+    if not rows:
+        if rows is not None:
+            logger.warning("[%s] Massive returned no 0DTE contracts near $%.2f", ticker, spot)
+        return None
+    sides = {}
+    for kind in ("call", "put"):
+        cands = [r for r in rows if (r.get("details") or {}).get("contract_type") == kind]
+        cands.sort(key=lambda r: abs(_num((r.get("details") or {}).get("strike_price")) - spot))
+        for row in cands:
+            mid, stale = _massive_premium(row)
+            if mid <= 0:
+                continue
+            details = row.get("details") or {}
+            side = TrackedSide(
+                contract_symbol=str(details.get("ticker", "")).removeprefix("O:"),
+                kind=kind,
+                strike=round(_num(details.get("strike_price")), 2),
+                expiry=today_iso,
+                open_mid=mid,
+                obs_high=mid,
+                obs_low=mid,
+                last_mid=mid,
+                quote_stale=stale,
+            )
+            _apply_massive_row(side, row)  # seed extremes with the 9:30+ day bar
+            sides[kind] = side
+            break
+        if kind not in sides:
+            logger.warning("[%s] Massive 0DTE %s side has no usable quote yet", ticker, kind)
+            return None
+    return SpxOptionDay(date=today_iso, ticker=ticker, spot_at_pick=round(spot, 2),
+                        call=sides["call"], put=sides["put"])
+
+
+def _sample_via_massive(day: SpxOptionDay) -> bool | None:
+    """One snapshot call covering both tracked strikes. None means Massive was
+    unavailable (caller falls back to yfinance); bool is the update status."""
+    lo, hi = sorted((day.call.strike, day.put.strike))
+    rows = _massive_chain(day.ticker, day.call.expiry, lo, hi)
+    if rows is None:
+        return None
+    updated = False
+    for side in (day.call, day.put):
+        row = next((r for r in rows
+                    if (r.get("details") or {}).get("contract_type") == side.kind
+                    and abs(_num((r.get("details") or {}).get("strike_price")) - side.strike) < 0.01),
+                   None)
+        if row is not None:
+            updated = _apply_massive_row(side, row) or updated
+    return updated
+
+
+def _massive_day_bar(contract_symbol: str, date_iso: str) -> tuple[float, float] | None:
+    """The contract's daily high/low from Massive aggregates."""
+    data = _massive_get(f"/v2/aggs/ticker/O:{contract_symbol}/range/1/day/{date_iso}/{date_iso}")
+    results = (data or {}).get("results") or []
+    if not results:
+        return None
+    return _num(results[0].get("h")), _num(results[0].get("l"))
+
+
+# ── Pick / sample / finalize (Massive first, yfinance fallback) ──────────
+
 def pick_day_contracts(ticker: str, today: date) -> SpxOptionDay | None:
     """Pick the ATM call + put expiring today. None (retry later) when the
     chain, a same-day expiry, the spot, or a usable ATM quote isn't there yet."""
+    if MASSIVE_API_KEY:
+        spot = _spot(yf.Ticker(ticker))
+        if spot is not None:
+            day = _pick_via_massive(ticker, today, spot)
+            if day is not None:
+                return day
+        logger.info("[%s] Massive pick unavailable — falling back to yfinance", ticker)
+    return _pick_via_yfinance(ticker, today)
+
+
+def _pick_via_yfinance(ticker: str, today: date) -> SpxOptionDay | None:
     today_iso = today.strftime("%Y-%m-%d")
     try:
         tk = yf.Ticker(ticker)
@@ -157,6 +349,10 @@ def pick_day_contracts(ticker: str, today: date) -> SpxOptionDay | None:
 def sample_day(day: SpxOptionDay) -> bool:
     """Requote both tracked contracts once and update the running extremes.
     Returns True when at least one side recorded a quote."""
+    if MASSIVE_API_KEY:
+        result = _sample_via_massive(day)
+        if result is not None:
+            return result
     try:
         chain = yf.Ticker(day.ticker).option_chain(day.call.expiry)
     except Exception as exc:
@@ -245,17 +441,22 @@ def finalize_day(day: SpxOptionDay, spot_close: float | None) -> None:
     missing close leaves the settlement floor off rather than aborting."""
     day.spot_close = round(spot_close, 2) if spot_close is not None else None
     for side in (day.call, day.put):
-        try:
-            bars = yf.Ticker(side.contract_symbol).history(period="1d")
-            if not bars.empty:
-                hi, lo = _num(bars["High"].iloc[-1]), _num(bars["Low"].iloc[-1])
-                if hi > 0:
-                    side.obs_high = max(side.obs_high, round(hi, 2))
-                if lo > 0:
-                    side.obs_low = min(side.obs_low, round(lo, 2))
-        except Exception as exc:
-            logger.info("[%s] No day bar for %s (%s) — using sampled extremes",
-                        day.ticker, side.contract_symbol, exc)
+        hi = lo = 0.0
+        bar = _massive_day_bar(side.contract_symbol, day.date) if MASSIVE_API_KEY else None
+        if bar is not None:
+            hi, lo = bar
+        else:
+            try:
+                bars = yf.Ticker(side.contract_symbol).history(period="1d")
+                if not bars.empty:
+                    hi, lo = _num(bars["High"].iloc[-1]), _num(bars["Low"].iloc[-1])
+            except Exception as exc:
+                logger.info("[%s] No day bar for %s (%s) — using sampled extremes",
+                            day.ticker, side.contract_symbol, exc)
+        if hi > 0:
+            side.obs_high = max(side.obs_high, round(hi, 2))
+        if lo > 0:
+            side.obs_low = min(side.obs_low, round(lo, 2))
         if day.spot_close is not None:
             intrinsic = (day.spot_close - side.strike if side.kind == "call"
                          else side.strike - day.spot_close)
