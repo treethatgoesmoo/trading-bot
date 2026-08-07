@@ -265,6 +265,22 @@ class SharedCog(commands.Cog, name="Shared"):
 
     # ── Commands ─────────────────────────────────────────────────────────
 
+    @commands.command(name="cmd", aliases=["cmds"])
+    async def cmd_cmd(self, ctx):
+        """List all available commands grouped by feature."""
+        embed = discord.Embed(title="\U0001f4d6 Available Commands", color=0x5865F2)
+        # Built from the loaded cogs, so the list always matches the feature
+        # toggles and new commands show up via their docstrings.
+        for cog_name, cog in self.bot.cogs.items():
+            visible = [c for c in cog.get_commands() if not c.hidden]
+            if not visible:
+                continue
+            lines = [f"`{ctx.prefix}{c.name}` — {c.short_doc or 'No description.'}"
+                     for c in sorted(visible, key=lambda c: c.name)]
+            embed.add_field(name=cog_name, value="\n".join(lines)[:1024], inline=False)
+        embed.set_footer(text="[arg] optional · <arg> required")
+        await ctx.send(embed=embed)
+
     @commands.command(name="events")
     async def cmd_events(self, ctx, days: int = None):
         """Show upcoming major economic events (Kalshi). Usage: !events [days]"""

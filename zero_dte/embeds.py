@@ -5,7 +5,13 @@ from datetime import datetime
 import discord
 import pytz
 
-from config import ATR_OVEREXTENDED_MULT, FILTER_COOLDOWN_MINUTES, FORECAST_INTERVAL_MINUTES
+from config import (
+    ATR_OVEREXTENDED_MULT,
+    FILTER_COOLDOWN_MINUTES,
+    FORECAST_INTERVAL_MINUTES,
+    SPX_OPTIONS_ORB_MINUTES,
+    SPX_OPTIONS_SAMPLE_MINUTES,
+)
 from zero_dte.strategy import (
     DailyBias,
     DayForecast,
@@ -433,4 +439,68 @@ def vix_alert_embed(alert) -> discord.Embed:
         embed.add_field(name="Move", value=f"{alert.change_pct:+.1f}%", inline=True)
     embed.add_field(name="SPY implication", value=f"{arrow} {alert.direction}", inline=True)
     embed.set_footer(text="VIX is inverse to SPY — confirm with price action")
+    return embed
+
+
+def spx_pick_embed(day) -> discord.Embed:
+    """The morning pick of today's tracked 0DTE call + put (SpxOptionDay)."""
+    embed = discord.Embed(
+        title=f"\U0001f3af 0DTE Range Watch — {day.ticker} exp {day.date}",
+        description=(f"Tracking today's ATM call + put from spot ${day.spot_at_pick:,.2f}. "
+                     "Effective premium range posts at the close."),
+        color=0x5865F2,
+    )
+    for side in (day.call, day.put):
+        icon = "\U0001f7e2" if side.kind == "call" else "\U0001f534"
+        stale = " (last trade)" if side.quote_stale else ""
+        lines = [f"Open mid ${side.open_mid:,.2f}{stale}"]
+        if side.projected_max is not None:
+            lines.append(f"Could reach ~${side.projected_max:,.2f} on an ORB breakout")
+        lines.append(f"`{side.contract_symbol}`")
+        embed.add_field(
+            name=f"{icon} {side.kind.upper()} {side.strike:g}",
+            value="\n".join(lines),
+            inline=True,
+        )
+    if day.or_high is not None:
+        embed.add_field(
+            name=f"Opening range (first {SPX_OPTIONS_ORB_MINUTES}m)",
+            value=(f"${day.or_low:,.2f} – ${day.or_high:,.2f} · "
+                   f"breakout targets ${day.proj_low:,.2f} / ${day.proj_high:,.2f}"),
+            inline=False,
+        )
+    embed.set_footer(text=f"Sampled every {SPX_OPTIONS_SAMPLE_MINUTES} min · !spxrange for the live range")
+    return embed
+
+
+def spx_range_embed(day) -> discord.Embed:
+    """Premium range of the tracked 0DTE contracts — live (so far) or final.
+
+    Final embeds show the *effective* range: the observed low is floored to
+    settlement intrinsic (0 on an OTM finish), the high widened by the
+    contract's own daily bar when available.
+    """
+    title = f"\U0001f4cf 0DTE Effective Range — {day.ticker} {day.date}"
+    if not day.finalized:
+        title += " (so far)"
+    embed = discord.Embed(title=title, color=0x2ECC71 if day.finalized else 0x5865F2)
+    if day.finalized and day.spot_close is not None:
+        embed.description = (f"Spot ${day.spot_at_pick:,.2f} at pick → "
+                             f"${day.spot_close:,.2f} at close")
+    for side in (day.call, day.put):
+        icon = "\U0001f7e2" if side.kind == "call" else "\U0001f534"
+        lines = [f"Open ${side.open_mid:,.2f} → last ${side.last_mid:,.2f}"]
+        if day.finalized and side.effective_min is not None:
+            lines.append(f"**Effective ${side.effective_min:,.2f} – ${side.effective_max:,.2f}**")
+            if side.settlement is not None:
+                settle = ("expired worthless" if side.settlement == 0
+                          else f"settled ${side.settlement:,.2f}")
+                lines.append(f"Observed ${side.obs_low:,.2f} – ${side.obs_high:,.2f} · {settle}")
+        else:
+            lines.append(f"Range ${side.obs_low:,.2f} – ${side.obs_high:,.2f}")
+        if side.projected_max is not None:
+            lines.append(f"ORB projected max ~${side.projected_max:,.2f}")
+        lines.append(f"{side.samples} quotes · `{side.contract_symbol}`")
+        embed.add_field(name=f"{icon} {side.kind.upper()} {side.strike:g}", value="\n".join(lines), inline=True)
+    embed.set_footer(text="Effective min floors at settlement intrinsic — an OTM 0DTE finish is worth $0")
     return embed

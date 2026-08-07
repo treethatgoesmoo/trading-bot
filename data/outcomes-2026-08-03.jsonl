@@ -1,0 +1,1 @@
+{"ticker": "SPY", "time": "2026-08-03T17:19:55.355527+00:00", "direction": "LONG", "result": "TARGET_HIT", "entry_price": 751.7, "exit_price": 756.73, "stop_loss": 749.18, "target": 756.73, "pnl": 5.03, "r_multiple": 2.0}
