@@ -1,0 +1,12 @@
+{"ticker": "SPY", "time": "2026-08-07T15:42:00.771926+00:00", "timeframe": "1", "band": "lower", "price": 773.03, "band_value": 773.11, "middle": 773.54}
+{"ticker": "SPY", "time": "2026-08-07T16:23:00.727162+00:00", "timeframe": "1", "band": "lower", "price": 772.65, "band_value": 772.75, "middle": 773.09}
+{"ticker": "SPY", "time": "2026-08-07T16:30:00.919099+00:00", "timeframe": "5", "band": "lower", "price": 771.74, "band_value": 772.07, "middle": 773.01}
+{"ticker": "SPY", "time": "2026-08-07T17:01:02.973830+00:00", "timeframe": "1", "band": "lower", "price": 771.85, "band_value": 771.85, "middle": 772.36}
+{"ticker": "SPY", "time": "2026-08-07T17:25:00.814632+00:00", "timeframe": "1", "band": "lower", "price": 771.91, "band_value": 771.97, "middle": 772.17}
+{"ticker": "SPY", "time": "2026-08-07T17:40:00.781981+00:00", "timeframe": "1", "band": "upper", "price": 772.37, "band_value": 772.33, "middle": 772.08}
+{"ticker": "SPY", "time": "2026-08-07T18:14:00.802973+00:00", "timeframe": "1", "band": "lower", "price": 771.64, "band_value": 771.76, "middle": 772.11}
+{"ticker": "SPY", "time": "2026-08-07T18:16:03.841092+00:00", "timeframe": "5", "band": "lower", "price": 771.58, "band_value": 771.7, "middle": 772.16}
+{"ticker": "SPY", "time": "2026-08-07T18:36:01.140475+00:00", "timeframe": "1", "band": "lower", "price": 771.21, "band_value": 771.31, "middle": 771.58}
+{"ticker": "SPY", "time": "2026-08-07T19:02:00.774331+00:00", "timeframe": "1", "band": "upper", "price": 772.13, "band_value": 771.94, "middle": 771.36}
+{"ticker": "SPY", "time": "2026-08-07T19:16:02.368008+00:00", "timeframe": "5", "band": "upper", "price": 772.9, "band_value": 772.87, "middle": 771.87}
+{"ticker": "SPY", "time": "2026-08-07T19:58:00.697291+00:00", "timeframe": "1", "band": "upper", "price": 773.12, "band_value": 773.1, "middle": 772.83}
