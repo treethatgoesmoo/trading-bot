@@ -34,6 +34,16 @@ def pivots(vals: np.ndarray, order: int) -> tuple[list[int], list[int]]:
     return highs, lows
 
 
+def bollinger(closes: pd.Series, period: int = 20,
+              num_std: float = 2.0) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Bollinger bands: (upper, middle, lower). Middle is the SMA(period);
+    bands are +/- num_std rolling standard deviations (population, ddof=0 —
+    the convention used by most charting platforms)."""
+    mid = closes.rolling(window=period, min_periods=period).mean()
+    std = closes.rolling(window=period, min_periods=period).std(ddof=0)
+    return mid + num_std * std, mid, mid - num_std * std
+
+
 def sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(window=period, min_periods=period).mean()
 

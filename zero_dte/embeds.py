@@ -377,6 +377,54 @@ def rsi_alert_embed(alert: RSIAlert) -> discord.Embed:
     return embed
 
 
+def bb_alert_embed(alert) -> discord.Embed:
+    """A Bollinger band touch ping (1m/5m upper or lower band)."""
+    from zero_dte.bb_watcher import BB_TF_LABEL
+    if alert.band == "upper":
+        color, arrow, side = 0xFF4444, "⬆️", "Upper"   # stretched high → mean-reversion risk down
+    else:
+        color, arrow, side = 0x00CC66, "⬇️", "Lower"
+    tf = BB_TF_LABEL[alert.timeframe]
+    embed = discord.Embed(
+        title=f"\U0001f3af {arrow} Bollinger {side} Band — {alert.ticker} ({tf})",
+        color=color,
+    )
+    embed.add_field(name="Signal", value=alert.message, inline=False)
+    embed.add_field(name="Close", value=f"${alert.price}", inline=True)
+    embed.add_field(name=f"{side} band", value=f"${alert.band_value}", inline=True)
+    embed.add_field(name="Mid (SMA)", value=f"${alert.middle}", inline=True)
+    embed.set_footer(text=f"Band touch at {alert.bar_time} — stretched, not a direction call; confirm with price action")
+    return embed
+
+
+def option_projection_embed(ticker: str, day_fc, projections: list) -> discord.Embed:
+    """The 0DTE ATM call/put quoted at capture, each with its projected price
+    range from the day forecast's projected high/low (BS reprice at capture
+    IV; theta not modeled — the intrinsic floor shows the value if the level
+    is only reached at the close)."""
+    embed = discord.Embed(
+        title=f"\U0001f4b0 0DTE Option Projection — {ticker}",
+        description=(f"Spot **${projections[0].spot}** · projected range "
+                     f"**${day_fc.exp_low} – ${day_fc.exp_high}** (day forecast: {day_fc.direction})"),
+        color=0x3498DB,
+    )
+    for p in projections:
+        stale = " (indicative — stale quote)" if p.quote_stale else ""
+        fav = p.exp_high if p.kind == "call" else p.exp_low
+        adv = p.exp_low if p.kind == "call" else p.exp_high
+        lines = [
+            f"**{p.contract_symbol}** · strike ${p.strike:g}",
+            f"Premium now ~**${p.premium:.2f}**{stale}",
+            f"If {ticker} hits ${fav:g}: ~**${p.proj_high:.2f}** (≥${p.proj_high_intrinsic:.2f} at close)",
+            f"If {ticker} hits ${adv:g}: ~**${p.proj_low:.2f}**",
+        ]
+        if p.implied_vol:
+            lines.append(f"IV {p.implied_vol * 100:.0f}% ({p.iv_source})")
+        embed.add_field(name=p.kind.upper(), value="\n".join(lines), inline=True)
+    embed.set_footer(text="BS reprice at capture IV — theta/IV drift not modeled; graded vs actual at EOD")
+    return embed
+
+
 def vix_alert_embed(alert) -> discord.Embed:
     """A VIX regime-cross or spike ping (risk-off / calming)."""
     if alert.direction == "BULLISH":

@@ -4,14 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Discord alert bot (no order execution) with two features running side by side:
+A personal Discord alert bot whose signals inform the owner's **manual trades** — it never executes orders. The goal is decision support: post a signal only when it carries information (change-driven posting, VOLATILE class for contradicting reads, per-direction track records on alerts), grade every prediction against actuals, and let the graded history drive what stays in the system. Strategy ideas are validated with backtests before going live and rejected with recorded evidence when they fail — see `docs/strategy-log.md` for what has been tried, adopted, and rejected.
 
-- **zero_dte/** — the intraday "First Candle Strategy": daily bias from the 50 SMA + opening gap + first 5-minute candle (plus a morning day forecast with an ATR-projected high/low), break-and-retest entries alerted with stop/2R target, intraday weighted-vote forecasts every `FORECAST_INTERVAL_MINUTES` (default 15) plus a 5-min companion stream (`FORECAST_5M_ENABLED`; directional calls under `FORECAST_VOLATILE_CONFIDENCE` post as VOLATILE, and each forecast embed carries the morning day forecast's projected high/low). Every computed forecast is logged/graded, but posting is change-driven by default (`FORECAST_POST_MODE=change`): direction flip, confidence jump, projected-range breach, or hourly heartbeat. RSI/VIX watchers. A separate 60s loop captures the 0DTE SPX option range (`SPX_OPTIONS_ENABLED`): picks the same-day-expiry ATM call + put once the ORB opening range is set (first `SPX_OPTIONS_ORB_MINUTES`, default 9:45 ET; each side's projected max = intrinsic at its measured-move breakout target), samples premiums every `SPX_OPTIONS_SAMPLE_MINUTES`, and posts each side's effective min/max at the close — min floored to settlement intrinsic (an OTM finish is worth 0), max widened by the contract's own daily bar (`zero_dte/spx_options.py`, `!spxrange`, `data/spx_options-*.jsonl`).
+
+Two features run side by side:
+
+- **zero_dte/** — the intraday "First Candle Strategy": daily bias from the 50 SMA + opening gap + first 5-minute candle (plus a morning day forecast with an ATR-projected high/low), break-and-retest entries alerted with stop/2R target, intraday weighted-vote forecasts every `FORECAST_INTERVAL_MINUTES` (default 15) plus a 5-min companion stream (`FORECAST_5M_ENABLED`; directional calls under `FORECAST_VOLATILE_CONFIDENCE` post as VOLATILE, and each forecast embed carries the morning day forecast's projected high/low). Every computed forecast is logged/graded, but posting is change-driven by default (`FORECAST_POST_MODE=change`): direction flip, confidence jump, projected-range breach, or hourly heartbeat. RSI/VIX watchers, plus a Bollinger band touch watcher (`BB_WATCH_ENABLED`, 1m+5m closes vs BB(20, 2.0), yfinance-only — no API budget, fires once per touch and re-arms after a close back inside). When the morning day forecast posts, an 0DTE option projection follows (`OPTION_PROJECTION_ENABLED`): the ATM same-day call/put quoted and Black-Scholes-repriced at the projected high/low (IV calibrated from the observed mid), logged to `option_projections` and graded at EOD against each contract's actual daily OHLC (`option_outcomes`) for tuning.
 - **swing/** — daily-timeframe weighted-vote signals on popular names (default TSLA/AMD/GOOG/META) suggesting 1–2 week option buys, with a specific 7–14 DTE contract picked from the yfinance chain. Scans twice daily (pre-open + midday confirmation of open signals).
 
 Both features grade their own predictions against actuals and feed a self-tuning loop.
 
 There is no test suite and no linter. Verify changes by running the relevant script (a backtest for strategy changes, the import/assembly smoke tests below for refactors).
+
+## AI workflow commands
+
+Slash-command prompt templates live in `.pi/prompts/*.md` (pi) and `.claude/commands/*.md` (Claude Code) — same content, different frontmatter comment. Use them instead of ad hoc requests when they fit:
+
+| Command | Use for |
+|---|---|
+| `/initiate <description>` | Starting new work — env/git sanity check, figure out which area (zero_dte/swing/core/bot) is affected, ask clarifying questions before planning |
+| `/backtest <what changed>` | Pick the right backtest script for a strategy change and summarize pass/fail |
+| `/pr [description]` | Pre-PR checklist — smoke test, diagnostics, diff summary, draft commit message |
+| `/tune [zero_dte\|swing\|both] [--write]` | Retune indicator weights and report before/after deltas |
 
 ## Commands
 
@@ -55,7 +69,7 @@ Package layout with a strict dependency direction — `config`/`core.paths` ← 
 
 ## Conventions & gotchas
 
-- `data/` is committed trading history — auto-committed after close ("Capture trading history" commits). Don't hand-edit or delete files there. Existing 0DTE file kinds (`forecasts`, `bias`, `outcomes`, `filters`, `votes`, `trade_decisions`, `results`) must keep their names; swing kinds are `swing_signals`/`swing_checks`/`swing_outcomes` + `swing_open.json` registry.
+- `data/` is committed trading history — auto-committed after close ("Capture trading history" commits). Don't hand-edit or delete files there. Existing 0DTE file kinds (`forecasts`, `bias`, `outcomes`, `filters`, `votes`, `trade_decisions`, `results`, `bb_alerts`, `option_projections`, `option_outcomes`) must keep their names; swing kinds are `swing_signals`/`swing_checks`/`swing_outcomes` + `swing_open.json` registry.
 - All user-facing times are ET strings; all stored timestamps are UTC ISO. Mixing these up is the most common source of bugs.
 - Config lives in `config.py`, env-overridable (use the `_flag()` helper for booleans); add new knobs there rather than hardcoding.
 - Strategy/tracker modules never import discord; embeds/views live in each feature's `embeds.py`/`views.py` and `bot/shared_cog.py`.
@@ -63,3 +77,4 @@ Package layout with a strict dependency direction — `config`/`core.paths` ← 
 - `YFINANCE_PERIOD["D"]` must stay ≥ 2y — the swing evaluator needs a 300-bar daily window (SMA200 + 52-week high).
 - On Windows, delete `__pycache__` dirs after moving files with git — stale bytecode masks import errors (`make clean`).
 - `docs/robinhood-level2.md` is completed research (no code yet) for an optional Level II order-book signal via Robinhood Gold; decision: derived-signal-only, never post raw depth.
+- **`docs/strategy-log.md` is the record of every strategy experiment** — adopted, adjusted, or rejected, with the backtest/live numbers and commits. Newest entries on top. **Update it whenever a strategy experiment concludes** (a signal/filter/threshold is adopted, retuned with evidence, or rejected). Check it before proposing a new signal idea — it may have already been tried and rejected (e.g. Dow reversal rule, prev-day-candle bias).

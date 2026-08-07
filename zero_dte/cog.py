@@ -49,6 +49,10 @@ from config import (
     SPX_OPTIONS_SAMPLE_MINUTES,
     SPX_OPTIONS_TICKER,
     VIX_WATCH_ENABLED,
+    BB_WATCH_ENABLED,
+    BB_TICKERS,
+    OPTION_PROJECTION_ENABLED,
+    OPTION_PROJECTION_TICKERS,
 )
 from core import market_calendar
 from core import vix as vix_mod
@@ -76,8 +80,10 @@ from zero_dte.strategy import (
 )
 from zero_dte.tracker import (
     direction_record,
+    grade_option_projections,
     log_forecast,
     log_day_forecast,
+    log_option_projections,
     evaluate_forecasts,
     evaluate_votes,
     log_trade_outcome,
@@ -87,13 +93,17 @@ from zero_dte.tracker import (
 )
 from zero_dte import spx_options
 from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
+from zero_dte.bb_watcher import BBWatcher
+from zero_dte.options0dte import build_projections
 from zero_dte.embeds import (
+    bb_alert_embed,
     bias_embed,
     daily_summary_embed,
     day_forecast_embed,
     filtered_embed,
     forecast_embed,
     forecast_results_embed,
+    option_projection_embed,
     outcome_embed,
     overextended_embed,
     premarket_embed,
@@ -123,6 +133,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self.rsi_watchers: dict[str, RSIWatcher] = {t: RSIWatcher(t) for t in self.active_tickers}
         self._rsi_last_run: datetime | None = None
         self.vix_watcher = vix_mod.VixWatcher()
+        self.bb_watchers: dict[str, BBWatcher] = {t: BBWatcher(t) for t in BB_TICKERS}
         self._menu_view_registered = False
         self._catchup_done = False
 
@@ -219,6 +230,32 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 for i in range(0, len(embeds), 10):
                     await channel.send(content if i == 0 else None, embeds=embeds[i:i + 10])
 
+    async def run_bb_watch(self, channel) -> None:
+        """Poll Bollinger band touches on 1m+5m and post any pings."""
+        if not BB_WATCH_ENABLED:
+            return
+        for ticker, watcher in self.bb_watchers.items():
+            try:
+                alerts = await watcher.check()
+            except Exception as exc:
+                logger.warning("[%s] BB watch error: %s", ticker, exc)
+                continue
+            for alert in alerts:
+                logger.info("[%s] BB alert: %s %s close=%s band=%s | %s",
+                            ticker, alert.timeframe, alert.band, alert.price,
+                            alert.band_value, alert.message)
+                try:
+                    append_jsonl("bb_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
+                        "ticker": ticker, "time": datetime.now(pytz.UTC).isoformat(),
+                        "timeframe": alert.timeframe, "band": alert.band,
+                        "price": alert.price, "band_value": alert.band_value,
+                        "middle": alert.middle,
+                    })
+                except Exception:
+                    pass
+                if channel:
+                    await channel.send(embed=bb_alert_embed(alert))
+
     async def run_vix_watch(self, channel) -> None:
         """Poll VIX for regime crossings / spikes and post any risk pings."""
         if not VIX_WATCH_ENABLED:
@@ -312,6 +349,25 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         except Exception as exc:
             logger.warning("[%s] Day forecast recovery failed (attempt %d): %s",
                            ticker, st.day_forecast_attempts, exc)
+
+    async def _post_option_projection(self, channel, ticker: str, day_fc, now) -> None:
+        """Quote the ATM 0DTE call/put and post their projected price ranges
+        derived from the day forecast. Logs every projection for EOD grading.
+        Never raises — a chain failure must not break the bias step."""
+        if not OPTION_PROJECTION_ENABLED or ticker not in OPTION_PROJECTION_TICKERS:
+            return
+        try:
+            projections = await build_projections(
+                ticker, day_fc.open_price, day_fc.exp_high, day_fc.exp_low)
+            if not projections:
+                return
+            log_option_projections(projections, now)
+            await channel.send(embed=option_projection_embed(ticker, day_fc, projections))
+            logger.info("[%s] Option projection posted: %s", ticker,
+                        ", ".join(f"{p.kind} {p.strike:g} ~${p.premium:.2f} → [{p.proj_low:.2f}..{p.proj_high:.2f}]"
+                                  for p in projections))
+        except Exception as exc:
+            logger.warning("[%s] Option projection error: %s", ticker, exc)
 
     def build_status_embed(self) -> discord.Embed:
         now = datetime.now(ET)
@@ -817,6 +873,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 self.states[ticker].reset(today_str)
                 self.rsi_watchers.setdefault(ticker, RSIWatcher(ticker)).reset()
             self.vix_watcher.reset()
+            for watcher in self.bb_watchers.values():
+                watcher.reset()
             self._rehydrate_state(today_str)
 
             # Only send "Monitoring started" if we're within the monitoring window (market open to end)
@@ -885,6 +943,13 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         await evaluate_bias(self.client, ticker, today_str)
                     except Exception as exc:
                         logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
+                    try:
+                        graded = await grade_option_projections(ticker, today_str)
+                        if graded:
+                            logger.info("[%s] [%s] Option projections graded: %d contract(s) → data/option_outcomes-%s.jsonl",
+                                        time_str, ticker, len(graded), today_str)
+                    except Exception as exc:
+                        logger.warning("[%s] [%s] Option projection grading error: %s", time_str, ticker, exc)
                     try:
                         results = await evaluate_forecasts(self.client, ticker, today_str)
                         if results:
@@ -997,6 +1062,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             if RSI_WATCH_ENABLED:
                 await self.run_rsi_watch(channel)
             await self.run_vix_watch(channel)
+            await self.run_bb_watch(channel)
 
         if past_monitoring:
             return
@@ -1097,6 +1163,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     log_day_forecast(day_fc, now)
                                     if first_post:
                                         await channel.send(embed=day_forecast_embed(day_fc))
+                                        await self._post_option_projection(channel, ticker, day_fc, now)
                             except Exception as exc:
                                 logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:
