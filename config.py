@@ -141,6 +141,26 @@ RSI_ALERT_COOLDOWN_MINUTES = int(os.getenv("RSI_ALERT_COOLDOWN_MINUTES", "30"))
 RSI_DIV_RSI_GATE = 50.0     # divergence pings only while RSI is still on the reversal side
 RSI_FS_STALE_MARGIN = 10.0  # failure-swing break further than this past its trigger is stale
 
+# Bollinger band touch watcher — pings when a closed 1m/5m candle closes at
+# or beyond the upper/lower band. Fires once per touch (re-arms only after a
+# close back inside the band) with a per-band cooldown as a backstop.
+# Fetches 1m bars from yfinance directly — zero Twelve Data/Finnhub budget.
+BB_WATCH_ENABLED = _flag("BB_WATCH_ENABLED")
+BB_TICKERS = [t.strip().upper() for t in os.getenv("BB_TICKERS", "SPY").split(",") if t.strip()]
+BB_PERIOD = int(os.getenv("BB_PERIOD", "20"))
+BB_STD = float(os.getenv("BB_STD", "2.0"))
+BB_ALERT_COOLDOWN_MINUTES = int(os.getenv("BB_ALERT_COOLDOWN_MINUTES", "15"))
+
+# 0DTE option projection — posted with the morning day forecast: quote the
+# ATM same-day call and put, then Black-Scholes-reprice each at the day
+# forecast's projected high/low so the alert shows the option's potential
+# price range, not just the premium at capture. Logged to
+# data/option_projections-*.jsonl and graded at EOD against the contract's
+# actual daily OHLC (data/option_outcomes-*.jsonl) to tune the projections.
+OPTION_PROJECTION_ENABLED = _flag("OPTION_PROJECTION_ENABLED")
+OPTION_PROJECTION_TICKERS = [t.strip().upper() for t in os.getenv("OPTION_PROJECTION_TICKERS", "SPY").split(",") if t.strip()]
+OPTION_RISK_FREE_RATE = float(os.getenv("OPTION_RISK_FREE_RATE", "0.045"))  # annualized, for BS repricing
+
 # VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
 VIX_WATCH_ENABLED = _flag("VIX_WATCH_ENABLED")
 VIX_ELEVATED = 20.0   # regime thresholds

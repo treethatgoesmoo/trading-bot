@@ -149,6 +149,67 @@ def log_day_forecast(day_fc, now: datetime) -> None:
     })
 
 
+def log_option_projections(projections: list, now: datetime) -> None:
+    """Persist the morning 0DTE option projections (one entry per contract) —
+    the capture side of the projection-vs-actual tuning loop."""
+    from zero_dte.options0dte import projection_dict
+    date_str = now.astimezone(ET).strftime("%Y-%m-%d")
+    for proj in projections:
+        _append_jsonl("option_projections", date_str, projection_dict(proj))
+
+
+async def grade_option_projections(ticker: str, date_str: str) -> list[dict]:
+    """EOD: compare each logged projection against the contract's actual daily
+    OHLC bar (the contract's own Yahoo ticker) and append graded outcomes to
+    option_outcomes-*.jsonl. Idempotent per (date, contract): already-graded
+    contracts are skipped so catch-up passes can't double-write."""
+    from zero_dte.options0dte import fetch_contract_ohlc
+    projections = [e for e in load_jsonl("option_projections", date_str)
+                   if e.get("ticker") == ticker]
+    if not projections:
+        return []
+    already = {e.get("contract_symbol") for e in load_jsonl("option_outcomes", date_str)}
+    graded = []
+    for proj in projections:
+        symbol = proj.get("contract_symbol")
+        if not symbol or symbol in already:
+            continue
+        actual = await fetch_contract_ohlc(symbol)
+        if actual is None:
+            continue  # no traded bar — retried by the next catch-up pass
+        proj_high = proj.get("proj_high") or 0.0
+        proj_low = proj.get("proj_low") or 0.0
+        entry = {
+            "ticker": ticker,
+            "time": datetime.now(pytz.UTC).isoformat(),
+            "contract_symbol": symbol,
+            "kind": proj.get("kind"),
+            "strike": proj.get("strike"),
+            "premium": proj.get("premium"),
+            "iv": proj.get("implied_vol"),
+            "iv_source": proj.get("iv_source"),
+            "spot": proj.get("spot"),
+            "exp_high": proj.get("exp_high"),
+            "exp_low": proj.get("exp_low"),
+            "proj_high": proj_high,
+            "proj_low": proj_low,
+            "proj_high_intrinsic": proj.get("proj_high_intrinsic"),
+            "proj_low_intrinsic": proj.get("proj_low_intrinsic"),
+            "actual_high": actual["high"],
+            "actual_low": actual["low"],
+            "actual_close": actual["close"],
+            "actual_volume": actual["volume"],
+            # Signed errors (projected − actual): positive = projection was rich.
+            "high_error": round(proj_high - actual["high"], 2),
+            "low_error": round(proj_low - actual["low"], 2),
+            # Did the actual traded range stay inside the projected envelope?
+            "within_range": bool(actual["high"] <= proj_high and actual["low"] >= proj_low),
+        }
+        _append_jsonl("option_outcomes", date_str, entry)
+        graded.append(entry)
+    return graded
+
+
 def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime) -> None:
     """Persist the filter pass/fail breakdown for a setup (fired or filtered)."""
     _append_jsonl("filters", now.astimezone(ET).strftime("%Y-%m-%d"), {
