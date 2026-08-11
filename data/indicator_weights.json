@@ -1,12 +1,17 @@
 {
+<<<<<<< HEAD
   "generated": "2026-08-11T16:22:47.951744+00:00",
+=======
+  "generated": "2026-08-11T20:10:00.430821+00:00",
+>>>>>>> b89df4f (Capture trading history for 2026-08-11)
   "days": 30,
   "date_range": [
-    "2026-06-29",
-    "2026-08-10"
+    "2026-06-30",
+    "2026-08-11"
   ],
   "min_samples": 20,
   "samples": {
+<<<<<<< HEAD
     "5": {
       "EMA": 491,
       "VWAP": 491,
@@ -53,5 +58,27 @@
       "Momentum": 1.0,
       "VIX": 0.3
     }
+=======
+    "RSI": 567,
+    "EMA": 1090,
+    "VWAP": 1090,
+    "MACD": 1090,
+    "MACD_Mom": 1090,
+    "Volume": 210,
+    "Momentum": 1090,
+    "VIX": 589,
+    "Divergence": 330
+  },
+  "weights": {
+    "RSI": 0.9,
+    "EMA": 0.3,
+    "VWAP": 0.5,
+    "MACD": 0.6,
+    "MACD_Mom": 0.3,
+    "Divergence": 0.3,
+    "Volume": 0.3,
+    "Momentum": 0.3,
+    "VIX": 0.3
+>>>>>>> b89df4f (Capture trading history for 2026-08-11)
   }
 }
