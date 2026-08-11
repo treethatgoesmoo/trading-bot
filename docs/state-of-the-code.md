@@ -59,6 +59,24 @@ materially; the strategy log stays the append-only history.
    (options trade to 16:15), and the promised catch-up didn't exist. Fixed,
    then removed same-day at the owner's request (SPX only).
 
+## Fixed in the 2026-08-11 review round 2 (branch `claude/repo-review-u9qq0t`)
+
+1. **Forecast grading asymmetry** — NEUTRAL/VOLATILE graded correct on flat
+   windows but only ungraded on real moves: 101 free wins over the last 10
+   result files (headline 63.4% vs 54.6% directional-only). Now symmetric.
+2. **Swing option P&L** — the contemporaneous-requote branch was unreachable
+   (grading is pre-open, lag always ≥ 1), so every outcome used the
+   optimistic delta estimate; requote now accepted at lag ≤ 1. Grading made
+   idempotent (no duplicate outcomes after a crash between writes).
+3. **Restart recovery** — no more duplicate Daily Summary / Report Card after
+   a late restart; open trades restored from levels now persisted in the
+   fired `filters` row; swing done-flags persisted (no pre-open replay with a
+   stale entry price mid-session; late first pass grades but doesn't scan).
+4. **Ops** — nightly auto-commit scoped to `data/` only; push-after-commit
+   failures reported honestly; `evaluate_bias` no longer rewrites bias files
+   nightly on NEUTRAL days; EXPIRED trades excluded from the per-direction
+   track record; `!stats` tolerates legacy outcomes without option P&L.
+
 ## Known data caveats
 
 - `bias-*.jsonl` before 2026-08-06: old bias rule — don't judge the current
@@ -68,6 +86,10 @@ materially; the strategy log stays the append-only history.
   excluded from tuning (reported as the "mixed" stream in analytics).
 - `option_projections`/`option_outcomes` (2026-08-10 only): produced by the
   removed feature, capture-spot bug applies — historical record only.
+- `results-*.json` graded before 2026-08-11 evening carry the old one-sided
+  NEUTRAL/VOLATILE grades (free wins on flat windows, ungraded on moves) —
+  headline accuracy isn't comparable across that boundary. Per-indicator
+  numbers are unaffected (always directional-only).
 
 ## Open decisions / next steps
 

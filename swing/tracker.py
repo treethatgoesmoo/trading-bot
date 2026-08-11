@@ -115,6 +115,22 @@ def last_signal_dates(lookback_days: int = 30) -> dict[tuple[str, str], str]:
 
 # ── Grading ──────────────────────────────────────────────────────────────
 
+def _graded_signal_ids() -> set[str]:
+    """signal_ids that already have a swing_outcomes row.
+
+    Grading must be idempotent: the outcome append and the registry removal
+    are two writes, and a crash between them would re-grade the signal on the
+    next pass — a duplicate row that double-counts in analytics and the tuner.
+    """
+    from core.tracking import available_dates, load_jsonl
+    ids: set[str] = set()
+    for d in available_dates("swing_outcomes"):
+        for e in load_jsonl("swing_outcomes", d):
+            if e.get("signal_id"):
+                ids.add(e["signal_id"])
+    return ids
+
+
 def _horizon_end(sig: dict) -> datetime.date:
     start = datetime.strptime(sig["signal_date"], "%Y-%m-%d").date()
     end = start + timedelta(days=sig["horizon_days"])
@@ -214,7 +230,12 @@ async def _option_pnl(sig: dict, move_pct: float, resolution_date, today) -> dic
     lag_days = (today - resolution_date).days
     meta = {"priced_asof": resolution_date.strftime("%Y-%m-%d"), "quote_lag_days": lag_days}
 
-    if lag_days <= 0 and expiry and today <= expiry:
+    # Grading is a pre-open pass over completed candles, so the earliest a
+    # resolution can be requoted is the next morning — lag 1, where yfinance
+    # returns the prior session's closing bid/ask, i.e. the resolution day's
+    # close: exactly the exit quote wanted. Requiring lag <= 0 made this
+    # branch unreachable and sent every outcome to the optimistic delta model.
+    if lag_days <= 1 and expiry and today <= expiry:
         quote = await asyncio.to_thread(
             requote, sig["ticker"], contract["expiry"], float(contract["strike"]), contract["kind"])
         if quote is not None:
@@ -240,7 +261,13 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
     """
     today = now_et.date()
     outcomes = []
+    already_graded = _graded_signal_ids()
     for sig in load_open_signals():
+        if sig["signal_id"] in already_graded:
+            # Outcome row exists but the registry entry survived (crash
+            # between the two writes) — finish the removal, don't re-grade.
+            close_signal(sig["signal_id"])
+            continue
         due = today > _horizon_end(sig) or sig.get("status") in ("TARGET", "INVALIDATED")
         # Also try grading anything whose horizon end is today or earlier —
         # the walk decides whether it actually resolved.

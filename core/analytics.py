@@ -331,7 +331,8 @@ def swing_report(days: int | None = None) -> dict:
     wins = sum(1 for o in outcomes if o.get("win"))
     graded = len(outcomes)
     moves = [o["move_pct"] for o in outcomes if o.get("move_pct") is not None]
-    opt_pnls = [o["option"]["pnl_pct"] for o in outcomes if o.get("option")]
+    opt_pnls = [o["option"]["pnl_pct"] for o in outcomes
+                if o.get("option") and o["option"].get("pnl_pct") is not None]
     # Split by how the exit was priced. A live requote is the real fill only
     # when it was taken the day the signal resolved; delta_est carries no
     # timing error but ignores theta, so it reads optimistic. Averaging them

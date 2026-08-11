@@ -28,6 +28,17 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-08-11 — Review round 2: grading asymmetry, swing P&L pricing, restart recovery
+
+**Status:** ⚠️ bugs fixed (measurement + recovery; no vote/threshold logic changed)
+
+- **NEUTRAL/VOLATILE forecasts had a one-sided report card**: correct on a flat window but merely *ungraded* on a real move. Over the last 10 `results-*.json`, 101 such free wins inflated headline accuracy to **63.4% vs 54.6% directional-only**. Grading is now symmetric (wrong on a real move). The weight tuner was never affected (it only counts directional actuals) — this was the human-facing number that drives keep/kill decisions. **Results files graded before this fix keep the old asymmetric grades** (re-grading history needs market data); accuracy across the boundary isn't comparable.
+- **Swing option P&L was always the optimistic delta estimate**: grading runs pre-open, so `lag_days` is always ≥ 1 and the "contemporaneous requote" branch was unreachable. A next-morning requote returns the prior session's close — exactly the resolution-day exit quote wanted — so the branch now accepts lag ≤ 1. Grading is also idempotent now (a crash between the outcome append and the registry removal no longer double-counts a signal into analytics/tuner).
+- **EXPIRED 0DTE trades no longer count as losses** in the per-direction track record shown on signal alerts (they're unresolved, not losses; was latent — no EXPIRED rows exist yet).
+- **`evaluate_bias` re-rewrote history forever on NEUTRAL days** (its idempotence guard keyed on `correct`, which NEUTRAL leaves `None` permanently) — now keys on `actual_direction`.
+- **Restart recovery** (the rehydration half that was missing): a restart after 11:00/16:00 ET no longer re-posts a degraded Daily Summary / Forecast Report Card; fired signals now persist their levels in the `filters` row (additive key) so an open trade survives a restart and still grades instead of vanishing; swing pre-open/midday done-flags persist to `.swing_daily_state.json` so a mid-session restart can't replay the pre-open pass, and a genuinely-late first pass (long outage) grades but skips the scan rather than posting an entry priced off a session-stale close.
+- Ops: the nightly auto-commit is now pathspec-scoped (`git commit -- data`) so staged dev work can't be swept into a "Capture trading history" commit; a push failure after a successful commit reports "committed locally" instead of "nothing committed"; provider-agnostic `!stats` no longer crashes on a legacy outcome whose `option` dict lacks `pnl_pct`.
+
 ## 2026-08-11 — SPY option projection/grading removed (owner trades SPX only)
 
 **Status:** ❌ removed at owner's request

@@ -34,7 +34,8 @@ from config import (
 )
 from core import market_calendar
 from core.market_data import MarketDataClient
-from core.paths import SWING_WATCHLIST_FILE
+from core.paths import SWING_STATE_FILE, SWING_WATCHLIST_FILE
+from core.tracking import write_atomic
 from swing.embeds import (
     swing_analysis_embed,
     swing_check_embed,
@@ -65,6 +66,7 @@ class SwingCog(commands.Cog, name="Swing"):
         self._load_watchlist()
         self._preopen_done_date: str | None = None
         self._midday_done_date: str | None = None
+        self._load_daily_state()
 
     async def cog_load(self):
         self.swing_monitor.start()
@@ -88,10 +90,32 @@ class SwingCog(commands.Cog, name="Swing"):
 
     def _save_watchlist(self):
         try:
-            with open(SWING_WATCHLIST_FILE, "w") as f:
-                json.dump(self.watchlist, f)
-        except Exception:
+            write_atomic(SWING_WATCHLIST_FILE, json.dumps(self.watchlist))
+        except Exception as exc:
+            logger.warning("Swing watchlist save failed: %s", exc)
+
+    # ── Done-flag persistence ────────────────────────────────────────────
+    # The per-day done-flags must survive restarts: in-process-only flags
+    # replayed the full pre-open pass after any mid-session restart, posting
+    # a fresh @everyone signal priced off a session-stale close.
+
+    def _load_daily_state(self):
+        try:
+            with open(SWING_STATE_FILE) as f:
+                saved = json.load(f)
+            self._preopen_done_date = saved.get("preopen")
+            self._midday_done_date = saved.get("midday")
+        except FileNotFoundError:
             pass
+        except Exception as exc:
+            logger.warning("Swing daily-state load failed (flags reset): %s", exc)
+
+    def _save_daily_state(self):
+        try:
+            write_atomic(SWING_STATE_FILE, json.dumps(
+                {"preopen": self._preopen_done_date, "midday": self._midday_done_date}))
+        except Exception as exc:
+            logger.warning("Swing daily-state save failed: %s", exc)
 
     # ── Scheduled passes ─────────────────────────────────────────────────
 
@@ -110,10 +134,12 @@ class SwingCog(commands.Cog, name="Swing"):
 
         if now >= preopen_t and self._preopen_done_date != today:
             self._preopen_done_date = today  # set first — a crash must not retry every minute
+            self._save_daily_state()
             await self._preopen_pass(now)
 
         if now >= midday_t and self._midday_done_date != today:
             self._midday_done_date = today
+            self._save_daily_state()
             await self._midday_pass(now)
 
     @swing_monitor.before_loop
@@ -144,7 +170,18 @@ class SwingCog(commands.Cog, name="Swing"):
         except Exception as exc:
             logger.exception("Swing grading error: %s", exc)
 
-        # 2. Scan for new signals.
+        # 2. Scan for new signals — only while the morning context holds. After
+        # a long outage this pass can first run mid-afternoon: the scan would
+        # sign off yesterday's close as the entry price (a full session stale)
+        # and the midday confirmation for it has already passed. Grading above
+        # still ran (that's the self-heal); new signals wait for tomorrow.
+        midday_t = now.replace(hour=SWING_MIDDAY_HOUR, minute=SWING_MIDDAY_MINUTE,
+                               second=0, microsecond=0)
+        if now >= midday_t:
+            logger.info("Swing scan skipped — pre-open pass first ran at %s (past midday)",
+                        now.strftime("%I:%M %p ET"))
+            return
+
         open_tickers = {s["ticker"] for s in load_open_signals()}
         recent = last_signal_dates(SWING_COOLDOWN_DAYS + 30)
         today = now.date()

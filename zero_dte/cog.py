@@ -737,9 +737,19 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         files so already-alerted signals/forecasts/bias don't fire again."""
         try:
             bias_tickers = {e.get("ticker") for e in load_jsonl("bias", today_str)}
-            fired_tickers = {e.get("ticker") for e in load_jsonl("filters", today_str) if e.get("fired")}
+            # Keep the whole fired row: it carries the signal levels needed to
+            # rebuild an open trade (one signal per ticker per day).
+            fired_rows = {e.get("ticker"): e for e in load_jsonl("filters", today_str) if e.get("fired")}
+            fired_tickers = set(fired_rows)
             outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
             day_fcs = {e.get("ticker"): e for e in load_jsonl("day_forecast", today_str)}
+            # Tickers whose forecast report card already graded/posted today —
+            # re-running the EOD evaluation would re-post the whole embed.
+            results_tickers = set()
+            results_path = os.path.join(DATA_DIR, f"results-{today_str}.json")
+            if os.path.exists(results_path):
+                with open(results_path) as f:
+                    results_tickers = {r.get("ticker") for r in json.load(f)}
             last_fc: dict[str, dict] = {}
             last_fc_5m: dict[str, dict] = {}
             for e in load_jsonl("forecasts", today_str):
@@ -755,10 +765,22 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             return
 
         any_activity = bool(bias_tickers or last_fc or last_fc_5m or fired_tickers)
+        now = datetime.now(ET)
+        monitoring_cutoff = now.replace(hour=MONITORING_END_HOUR, minute=MONITORING_END_MINUTE,
+                                        second=0, microsecond=0)
         for ticker in self.active_tickers:
             st = self.states[ticker]
             if any_activity:
                 st.monitoring_started_posted = True  # already announced before the restart
+                if now >= monitoring_cutoff:
+                    # Restarted after the monitoring window on a day with
+                    # activity: the daily summary either posted at the cutoff
+                    # before the restart or the moment passed during downtime.
+                    # Either way, don't post a duplicate — with pre-restart
+                    # state gone it would render degraded ("bias: —").
+                    st.monitoring_ended = True
+            if ticker in results_tickers:
+                st.forecast_eval_done = True  # report card already posted today
             if ticker in bias_tickers:
                 st.bias_logged = True  # don't re-log/re-post bias or day forecast
             if ticker in last_fc:
@@ -814,8 +836,29 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         timestamp="restored after restart",
                     )
                 else:
-                    logger.warning("[%s] Signal fired before restart but no outcome recorded — "
-                                   "its trade can't be tracked further", ticker)
+                    row = fired_rows.get(ticker) or {}
+                    lv = row.get("signal")
+                    if lv:
+                        st.active_trade = TradeSignal(
+                            ticker=ticker,
+                            direction=row.get("direction", "?"),
+                            entry_price=lv.get("entry_price", 0.0),
+                            stop_loss=lv.get("stop_loss", 0.0),
+                            target=lv.get("target", 0.0),
+                            risk=lv.get("risk", 0.0),
+                            reward=lv.get("reward", 0.0),
+                            timestamp=lv.get("timestamp", ""),
+                            created_at=lv.get("created_at", ""),
+                            retest_level=lv.get("retest_level", 0.0),
+                        )
+                        logger.info("[%s] Open %s trade restored from filters log "
+                                    "(entry=$%s stop=$%s target=$%s) — tracking resumes",
+                                    ticker, st.active_trade.direction, st.active_trade.entry_price,
+                                    st.active_trade.stop_loss, st.active_trade.target)
+                    else:
+                        # Rows written before the levels were persisted.
+                        logger.warning("[%s] Signal fired before restart but no levels/outcome "
+                                       "recorded — its trade can't be tracked further", ticker)
         if any_activity:
             logger.info("Rehydrated today's state from data/ (bias=%s fired=%s forecasts=%s)",
                         sorted(t for t in bias_tickers if t), sorted(t for t in fired_tickers if t),
@@ -1144,7 +1187,15 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         logger.info("[%s] [%s] SIGNAL FIRED: %s entry=$%s stop=$%s target=$%s | %s",
                                     time_str, ticker, result.direction, result.entry_price,
                                     result.stop_loss, result.target, filter_str)
-                        log_filters(ticker, result.direction, result.filters, fired=True, now=now)
+                        log_filters(ticker, result.direction, result.filters, fired=True, now=now,
+                                    signal={"entry_price": result.entry_price,
+                                            "stop_loss": result.stop_loss,
+                                            "target": result.target,
+                                            "risk": result.risk,
+                                            "reward": result.reward,
+                                            "retest_level": result.retest_level,
+                                            "timestamp": result.timestamp,
+                                            "created_at": result.created_at})
                         await channel.send("@everyone",
                                            embed=signal_embed(result, record=direction_record(result.direction)),
                                            view=TradeSignalView(result, self.states))
