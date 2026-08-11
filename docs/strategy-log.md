@@ -10,7 +10,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
-| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ✅ adopted | 65% vs 50% for old first-candle-wins (60-day replay) |
+| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
 | LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
 | Dow Theory reversal rule as swing voter | ❌ rejected | 50.5–51.3% at +10 bars vs 55% Structure voter, 60% constant-BULLISH baseline |
 | VWAP as hard veto filter | ⚠️ demoted to advisory | Only filter that vetoed would-be winners; never correct as sole veto |
@@ -25,6 +25,15 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-11 — Daily-bias replay harness had lookahead; 65% validation number invalidated
+
+**Status:** ⚠️ harness fixed, revalidation pending
+
+- Investigating "the daily forecast seems to be a coin flip": the live graded record is **18/32 = 56%** overall (June–July, under the old first-candle-wins rule: exactly 50%; bearish calls 5/13 = 38.5%), and only 6 graded days (5/6) exist under the 2-of-3 vote adopted 2026-08-06 — so most of what the channel shows *is* the old coin-flip rule.
+- Worse: the **65% vs 50%** replay that justified the 2-of-3 vote was contaminated. `backfill.py` truncated the daily frame with `date <= d`, so `get_daily_bias` read the replay day's **completed bar** as its latest row at 9:35 AM — the 50 SMA trend vote compared the day's own close against the SMA, and the RSI ≥70/≤30 contrarian override used end-of-day RSI, while grading is close-vs-open. The trend/RSI components were peeking at the answer.
+- Live had the mirror-image hazard: `get_daily_bias` used `iloc[-1]`/`iloc[-2]` raw, so its meaning depended on whether the provider includes today's in-progress daily bar (included → trend used the partial 9:35 close; omitted → gap and pivots were computed off the day-before-yesterday). `compute_day_forecast` already filtered to completed days; the bias didn't.
+- Fix: `get_daily_bias` now drops any bar dated today (ET) and reads all of trend/gap-base/pivots/RSI/multi-day from the last **completed** session; backfill truncates strictly (`date < d`). Live and replay now see identical information. The honest accuracy of the 2-of-3 vote is unknown until the 60-day replay is re-run (`python backfill.py 60 SPY` + `python analyze_days.py` — needs network access to yfinance). **Lesson: an as-of replay must slice with a strict inequality — `<=` on the decision day hands the harness the label it is predicting.**
 
 ## 2026-08-06 — Daily bias reworked to 2-of-3 vote; LONG side of break-and-retest flagged
 

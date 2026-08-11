@@ -328,22 +328,35 @@ async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: floa
     # same logic runs as-of a historical day; otherwise fetch the latest.
     if daily is None:
         daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
-    if daily.empty or len(daily) < SMA_PERIOD:
+    if daily.empty:
+        return None
+
+    # Completed days only — during the session providers include today's
+    # in-progress daily bar, which would leak today's (partial) close into the
+    # trend/RSI/multi-day components; a provider that omits it would instead
+    # shift prev_* (gap base, pivots) onto the wrong day. The backfill replay
+    # must truncate its frame the same way (dates strictly before the replay
+    # day) so live and replayed bias see identical information.
+    timestamps = pd.to_datetime(daily["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    today = datetime.now(ET).date()
+    daily = daily[(timestamps.dt.tz_convert(ET).dt.date < today).values].copy()
+    if len(daily) < SMA_PERIOD:
         return None
 
     daily["SMA"] = daily["close"].rolling(window=SMA_PERIOD).mean()
-    latest = daily.iloc[-1]
+    latest = daily.iloc[-1]          # last completed session (yesterday)
     sma_val = float(latest["SMA"])
     close_val = float(latest["close"])
     distance_pct = ((close_val - sma_val) / sma_val) * 100
 
     trend = "BULLISH" if close_val > sma_val else "BEARISH"
 
-    prev = daily.iloc[-2] if len(daily) >= 2 else latest
-    prev_open = float(prev["open"])
-    prev_close = float(prev["close"])
-    prev_high = float(prev["high"])
-    prev_low = float(prev["low"])
+    prev_open = float(latest["open"])
+    prev_close = float(latest["close"])
+    prev_high = float(latest["high"])
+    prev_low = float(latest["low"])
 
     # Gap analysis: today's open vs yesterday's close
     if today_open is not None and prev_close > 0:
