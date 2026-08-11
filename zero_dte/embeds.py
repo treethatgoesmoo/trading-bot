@@ -9,12 +9,9 @@ from config import (
     ATR_OVEREXTENDED_MULT,
     FILTER_COOLDOWN_MINUTES,
     FORECAST_INTERVAL_MINUTES,
-    SPX_OPTIONS_ORB_MINUTES,
-    SPX_OPTIONS_SAMPLE_MINUTES,
 )
 from zero_dte.strategy import (
     DailyBias,
-    DayForecast,
     DirectionForecast,
     FilteredSignal,
     FirstCandleRange,
@@ -24,7 +21,6 @@ from zero_dte.strategy import (
 )
 
 ET = pytz.timezone("US/Eastern")
-from zero_dte.rsi_watcher import RSIAlert, TF_LABEL
 
 
 def bias_embed(bias: DailyBias) -> discord.Embed:
@@ -49,11 +45,12 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
     embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
-    embed.set_footer(text="Bias: 2-of-3 vote (first candle + gap + 50 SMA trend), RSI contrarian override")
+    embed.set_footer(text="Informational only — entries fire either direction (graded 50.9% vs "
+                          "52.6% always-BULLISH over 60d; NEUTRAL still stands down)")
     return embed
 
 
-def forecast_embed(fc: DirectionForecast, day_fc: DayForecast | None = None) -> discord.Embed:
+def forecast_embed(fc: DirectionForecast) -> discord.Embed:
     if fc.direction == "BULLISH":
         color, emoji = 0x00CC66, "\U0001f7e2"
     elif fc.direction == "BEARISH":
@@ -90,14 +87,12 @@ def forecast_embed(fc: DirectionForecast, day_fc: DayForecast | None = None) -> 
     if fc.rsi_caution:
         embed.add_field(name="RSI Watch", value=f"⚠️ {fc.rsi_caution}", inline=False)
 
-    # Day context: the morning day forecast + its ATR-projected range
-    if day_fc is not None:
-        day_icon = ("\U0001f7e2" if day_fc.direction == "BULLISH"
-                    else "\U0001f534" if day_fc.direction == "BEARISH" else "\U0001f7e1")
+    # Day context: the ACTUAL session range so far (replaced the projected
+    # day forecast — tracked fact, not an estimate).
+    if fc.day_high is not None and fc.day_low is not None:
         embed.add_field(
-            name="Day Forecast",
-            value=(f"{day_icon} {day_fc.direction} ({day_fc.strength}) · "
-                   f"Proj High ~${day_fc.exp_high} · Proj Low ~${day_fc.exp_low}"),
+            name="Today so far",
+            value=f"High ${fc.day_high} · Low ${fc.day_low}",
             inline=False,
         )
 
@@ -111,29 +106,6 @@ def forecast_embed(fc: DirectionForecast, day_fc: DayForecast | None = None) -> 
         embed.add_field(name="Signals", value=" | ".join(sig_lines), inline=False)
 
     embed.set_footer(text=f"Forecast at {fc.timestamp} | Next {fc.interval} min outlook")
-    return embed
-
-
-def day_forecast_embed(fc: DayForecast) -> discord.Embed:
-    if fc.direction == "BULLISH":
-        color, emoji = 0x00CC66, "\U0001f7e2"
-    elif fc.direction == "BEARISH":
-        color, emoji = 0xFF4444, "\U0001f534"
-    else:
-        color, emoji = 0xFFAA00, "\U0001f7e1"
-
-    embed = discord.Embed(
-        title=f"{emoji} \U0001f5fa️ Day Forecast — {fc.ticker}: {fc.direction}",
-        description=f"Bias strength: **{fc.strength}** · daily ATR ${fc.day_atr}",
-        color=color,
-    )
-    embed.add_field(name="Open", value=f"${fc.open_price}", inline=True)
-    embed.add_field(name="Projected High", value=f"~${fc.exp_high}", inline=True)
-    embed.add_field(name="Projected Low", value=f"~${fc.exp_low}", inline=True)
-    embed.add_field(name="Pivot", value=f"${fc.pivot}", inline=True)
-    embed.add_field(name="R1 / S1", value=f"${fc.r1} / ${fc.s1}", inline=True)
-    embed.add_field(name="Prev High / Low", value=f"${fc.prev_high} / ${fc.prev_low}", inline=True)
-    embed.set_footer(text=f"ATR-projected range at {fc.timestamp} — estimates, not levels to trade blindly")
     return embed
 
 
@@ -211,10 +183,12 @@ def premarket_embed(pm: PremarketLevels) -> discord.Embed:
 
 
 def signal_embed(signal: TradeSignal,
-                 record: tuple[int, int, float] | None = None) -> discord.Embed:
+                 record: tuple[int, int, float] | None = None,
+                 session: tuple[float, float] | None = None) -> discord.Embed:
     """Trade alert embed. `record` is (wins, total, total_r) of resolved live
     trades in this direction — shown so a historically weak side (e.g. LONG)
-    is visible at decision time instead of only in !stats after the fact."""
+    is visible at decision time instead of only in !stats after the fact.
+    `session` is (high, low) of the session so far."""
     color = 0x00CC66 if signal.direction == "LONG" else 0xFF4444
     emoji = "\U0001f7e2" if signal.direction == "LONG" else "\U0001f534"
     arrow = "⬆️" if signal.direction == "LONG" else "⬇️"
@@ -240,6 +214,8 @@ def signal_embed(signal: TradeSignal,
                 f"${signal.retest_level}."
             ),
             inline=False)
+    if session is not None:
+        embed.add_field(name="Today so far", value=f"High ${session[0]} · Low ${session[1]}", inline=False)
     if signal.filters:
         filter_lines = [f"✅ {f.name}: {f.reason}" for f in signal.filters]
         embed.add_field(name="Filters", value="\n".join(filter_lines), inline=False)
@@ -255,7 +231,8 @@ def signal_embed(signal: TradeSignal,
     return embed
 
 
-def filtered_embed(fs: FilteredSignal) -> discord.Embed:
+def filtered_embed(fs: FilteredSignal,
+                   session: tuple[float, float] | None = None) -> discord.Embed:
     embed = discord.Embed(
         title=f"⚠️ Setup Filtered: {fs.direction} {fs.ticker}",
         color=0xFFA500,
@@ -263,6 +240,8 @@ def filtered_embed(fs: FilteredSignal) -> discord.Embed:
     embed.add_field(name="Entry (would be)", value=f"${fs.entry_price}", inline=True)
     embed.add_field(name="Time", value=fs.timestamp, inline=True)
     embed.add_field(name="Cooldown", value=f"{FILTER_COOLDOWN_MINUTES} min", inline=True)
+    if session is not None:
+        embed.add_field(name="Today so far", value=f"High ${session[0]} · Low ${session[1]}", inline=False)
     lines = []
     for f in fs.filters:
         icon = "✅" if f.passed else "❌"
@@ -324,6 +303,8 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
             lines.append(f"Intraday now: {fc_icon} {dir_txt} ({fc.confidence}%, {fc.timestamp})")
         if st.first_candle:
             lines.append(f"Range: ${st.first_candle.high} / ${st.first_candle.low} (${st.first_candle.range_size:.2f})")
+        if st.session_high is not None and st.session_low is not None:
+            lines.append(f"Day H/L: ${st.session_high} / ${st.session_low}")
         if st.first_candle_overextended:
             lines.append("Skipped: Overextended opening")
         elif st.trade_outcome:
@@ -348,32 +329,6 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
 
     embed.set_footer(text=f"Morning bias (~9:35 ET) drove today's entries; 'Intraday now' is the latest "
                           f"{FORECAST_INTERVAL_MINUTES}-min forecast and can diverge as the tape changes")
-    return embed
-
-
-_RSI_KIND_LABEL = {
-    "THRESHOLD": "RSI Threshold",
-    "DIVERGENCE": "RSI Divergence",
-    "FAILURE_SWING": "RSI Failure Swing",
-}
-
-
-def rsi_alert_embed(alert: RSIAlert) -> discord.Embed:
-    """A reversal-watcher ping for a single RSI signal."""
-    if alert.direction == "BULLISH":
-        color, arrow = 0x00CC66, "⬆️"
-    else:
-        color, arrow = 0xFF4444, "⬇️"
-    tier = f" [{alert.tier.upper()}]" if alert.tier else ""
-    kind = _RSI_KIND_LABEL.get(alert.kind, alert.kind)
-    title = f"\U0001f514 {arrow} {kind}{tier} — {alert.ticker} ({TF_LABEL[alert.timeframe]})"
-    embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="Signal", value=alert.message, inline=False)
-    embed.add_field(name="RSI", value=f"{alert.rsi}", inline=True)
-    embed.add_field(name="Implied", value=f"{alert.direction} reversal ({alert.stage})", inline=True)
-    if alert.confirmed:
-        embed.add_field(name="Confirmation", value="✅ 5m + 15m agree", inline=True)
-    embed.set_footer(text="RSI reversal watcher — confirm with price action before acting")
     return embed
 
 
@@ -414,65 +369,3 @@ def vix_alert_embed(alert) -> discord.Embed:
     return embed
 
 
-def spx_pick_embed(day) -> discord.Embed:
-    """The morning pick of today's tracked 0DTE call + put (SpxOptionDay)."""
-    embed = discord.Embed(
-        title=f"\U0001f3af 0DTE Range Watch — {day.ticker} exp {day.date}",
-        description=(f"Tracking today's ATM call + put from spot ${day.spot_at_pick:,.2f}. "
-                     "Effective premium range posts at the close."),
-        color=0x5865F2,
-    )
-    for side in (day.call, day.put):
-        icon = "\U0001f7e2" if side.kind == "call" else "\U0001f534"
-        stale = " (last trade)" if side.quote_stale else ""
-        lines = [f"Open mid ${side.open_mid:,.2f}{stale}"]
-        if side.projected_max is not None:
-            lines.append(f"Could reach ~${side.projected_max:,.2f} on an ORB breakout")
-        lines.append(f"`{side.contract_symbol}`")
-        embed.add_field(
-            name=f"{icon} {side.kind.upper()} {side.strike:g}",
-            value="\n".join(lines),
-            inline=True,
-        )
-    if day.or_high is not None:
-        embed.add_field(
-            name=f"Opening range (first {SPX_OPTIONS_ORB_MINUTES}m)",
-            value=(f"${day.or_low:,.2f} – ${day.or_high:,.2f} · "
-                   f"breakout targets ${day.proj_low:,.2f} / ${day.proj_high:,.2f}"),
-            inline=False,
-        )
-    embed.set_footer(text=f"Sampled every {SPX_OPTIONS_SAMPLE_MINUTES} min · !spxrange for the live range")
-    return embed
-
-
-def spx_range_embed(day) -> discord.Embed:
-    """Premium range of the tracked 0DTE contracts — live (so far) or final.
-
-    Final embeds show the *effective* range: the observed low is floored to
-    settlement intrinsic (0 on an OTM finish), the high widened by the
-    contract's own daily bar when available.
-    """
-    title = f"\U0001f4cf 0DTE Effective Range — {day.ticker} {day.date}"
-    if not day.finalized:
-        title += " (so far)"
-    embed = discord.Embed(title=title, color=0x2ECC71 if day.finalized else 0x5865F2)
-    if day.finalized and day.spot_close is not None:
-        embed.description = (f"Spot ${day.spot_at_pick:,.2f} at pick → "
-                             f"${day.spot_close:,.2f} at close")
-    for side in (day.call, day.put):
-        icon = "\U0001f7e2" if side.kind == "call" else "\U0001f534"
-        lines = [f"Open ${side.open_mid:,.2f} → last ${side.last_mid:,.2f}"]
-        if day.finalized and side.effective_min is not None:
-            lines.append(f"**Effective ${side.effective_min:,.2f} – ${side.effective_max:,.2f}**")
-            if side.settlement is not None:
-                settle = ("expired worthless" if side.settlement == 0
-                          else f"settled ${side.settlement:,.2f}")
-                lines.append(f"Observed ${side.obs_low:,.2f} – ${side.obs_high:,.2f} · {settle}")
-        else:
-            lines.append(f"Range ${side.obs_low:,.2f} – ${side.obs_high:,.2f}")
-        if side.projected_max is not None:
-            lines.append(f"ORB projected max ~${side.projected_max:,.2f}")
-        lines.append(f"{side.samples} quotes · `{side.contract_symbol}`")
-        embed.add_field(name=f"{icon} {side.kind.upper()} {side.strike:g}", value="\n".join(lines), inline=True)
-    embed.set_footer(text="Effective min floors at settlement intrinsic — an OTM 0DTE finish is worth $0")
-    return embed

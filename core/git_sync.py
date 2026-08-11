@@ -65,23 +65,33 @@ def commit_data_history(message: str, push: bool = True) -> tuple[bool, str]:
         if _git("diff", "--cached", "--quiet", "--", "data").returncode == 0:
             return False, "no new history to commit"
 
-        commit = _git("commit", "-m", message)
+        # Pathspec-limited commit: anything else the user left staged (e.g. a
+        # half-finished refactor on the dev machine) must not be swept into a
+        # "Capture trading history" commit — it stays staged, untouched.
+        commit = _git("commit", "-m", message, "--", "data")
         if commit.returncode != 0:
             return False, f"git commit failed: {(commit.stderr or commit.stdout).strip()}"
 
         if not push:
             return True, "committed (push skipped)"
 
-        pull = _git("pull", "--rebase", "--autostash")
-        if pull.returncode != 0:
-            # A failed rebase leaves the repo mid-rebase, which would make
-            # every future commit fail — abort it (the local commit survives).
-            _git("rebase", "--abort")
-            return True, f"committed locally, but pull --rebase failed: {pull.stderr.strip()}"
+        try:
+            pull = _git("pull", "--rebase", "--autostash")
+            if pull.returncode != 0:
+                # A failed rebase leaves the repo mid-rebase, which would make
+                # every future commit fail — abort it (the local commit survives).
+                _git("rebase", "--abort")
+                return True, f"committed locally, but pull --rebase failed: {pull.stderr.strip()}"
 
-        push_res = _git("push")
-        if push_res.returncode != 0:
-            return True, f"committed locally, but push failed: {push_res.stderr.strip()}"
+            push_res = _git("push")
+            if push_res.returncode != 0:
+                return True, f"committed locally, but push failed: {push_res.stderr.strip()}"
+        except Exception as exc:
+            # The commit already succeeded — a pull/push exception (e.g. a
+            # subprocess timeout on a slow network) must not report "nothing
+            # committed", which would suppress any retry logic upstream.
+            logger.exception("git_sync push error: %s", exc)
+            return True, f"committed locally, but push errored: {exc}"
 
         return True, "committed and pushed"
     except Exception as exc:  # subprocess timeout, git missing, etc.

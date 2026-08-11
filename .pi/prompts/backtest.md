@@ -20,9 +20,10 @@ Map the change to the correct script(s) — run more than one if the change span
 
 | Area of change | Script |
 |---|---|
-| zero_dte break-and-retest entries/stops/targets, daily bias, ATR overextension | `python backtest.py <DATE> <TICKER> --verbose` (pick a recent representative trading day + ticker; default `2026-04-13 SPY` if none obvious) |
-| zero_dte 30-min / intraday forecast voting or weights | `python backtest_30m.py` |
+| zero_dte break-and-retest entries/stops/targets, daily bias | **No honest harness** — backtest.py was deleted 2026-08-12 (lookahead bias). For the bias use `python backfill.py 60 SPY --bias-report`; for entries a new as-of harness must be built first |
+| zero_dte intraday forecast voting or weights | **No honest harness** — backtest_30m.py was deleted 2026-08-12 (stale fork). Build an as-of replay on `compute_30m_forecast(data=, asof=)` before validating changes |
 | zero_dte filter/veto logic (entry filters) | `python backtest_filters.py` |
+| candlestick pattern detectors (`core/indicators.py::detect_candlestick_patterns`) | `python backtest_patterns.py --tickers SPY,QQQ --years 10` |
 | swing signal thresholds, weighted-vote logic, DTE/contract selection | `python backtest_swing.py --start 2023-01-01 --sweep` |
 | Anything touching `core/indicators.py`, `core/market_data.py`, or `core/market_calendar.py` | run **both** the zero_dte and swing backtests above — shared infra affects both features |
 

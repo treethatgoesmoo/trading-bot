@@ -2,6 +2,9 @@
 
     python backfill.py            # last 30 trading days, configured tickers
     python backfill.py 20 SPY QQQ # last 20 days for SPY and QQQ
+    python backfill.py 60 SPY --bias-report   # replay + grade the daily bias
+                                  # only; prints the accuracy summary, writes
+                                  # NOTHING (not blocked by existing live days)
 
 Pulls real intraday history from yfinance and replays the EXACT live logic
 (strategy.compute_30m_forecast and get_daily_bias) at each historical 30-min
@@ -75,10 +78,13 @@ def _forecast_entry(ticker: str, fc, slot_dt: datetime) -> dict:
 
 
 async def backfill_ticker(ticker: str, days: int,
-                          out: dict[str, dict[str, list]]) -> tuple[int, int]:
+                          out: dict[str, dict[str, list]],
+                          bias_only: bool = False) -> tuple[int, int]:
     tk = yf.Ticker(ticker)
     thirty = _normalize(tk.history(period="60d", interval="30m"), intraday=True)
-    five = _normalize(tk.history(period="1mo", interval="5m"), intraday=True)
+    # 60d is Yahoo's intraday limit — anything shorter silently caps how far
+    # back the bias replay (which needs each day's 9:30 5m candle) can reach.
+    five = _normalize(tk.history(period="60d", interval="5m"), intraday=True)
     daily = _normalize(tk.history(period="1y", interval="1d"), intraday=False)
     if thirty.empty or daily.empty:
         print(f"  {ticker}: no data from yfinance — skipped")
@@ -91,7 +97,7 @@ async def backfill_ticker(ticker: str, days: int,
         ds = d.strftime("%Y-%m-%d")
 
         # ── Forecasts for each 30-min slot ───────────────────────────────
-        for h, m in SLOTS:
+        for h, m in ([] if bias_only else SLOTS):
             slot_dt = ET.localize(datetime.combine(d, time(h, m)))
             window = thirty[thirty["timestamp"] < slot_dt].tail(50)
             if len(window) < 15:
@@ -182,10 +188,45 @@ def _write(out: dict[str, dict[str, list]], force: bool = False) -> None:
               f"(--force overwrites): {', '.join(sorted(skipped))}")
 
 
+def _bias_report(out: dict[str, dict[str, list]]) -> None:
+    """Summarize the replayed-and-graded bias entries. Report-only — the whole
+    point is to measure the CURRENT bias rule over history without touching
+    data/ (the overwrite guard otherwise discards replayed days that already
+    have live files, which is how the last validation quietly lost most of its
+    sample)."""
+    entries = [e for kinds in sorted(out.items()) for e in kinds[1].get("bias", [])]
+    if not entries:
+        print("\nNo bias days could be replayed (need the 9:30 5m candle per day).")
+        return
+    dates = sorted({e["time"][:10] for e in entries})
+    graded = [e for e in entries if e["correct"] is not None]
+    neutral = len(entries) - len(graded)
+    correct = sum(1 for e in graded if e["correct"])
+    bull = [e for e in graded if e["direction"] == "BULLISH"]
+    bear = [e for e in graded if e["direction"] == "BEARISH"]
+    up_days = sum(1 for e in graded if e["actual_direction"] == "BULLISH")
+
+    def pct(a: int, b: int) -> str:
+        return f"{100 * a / b:.1f}%" if b else "—"
+
+    print(f"\n{'=' * 65}")
+    print(f"  DAILY BIAS REPLAY (current 2-of-3 rule) — {dates[0]} -> {dates[-1]}")
+    print(f"{'=' * 65}")
+    print(f"  Days replayed:      {len(entries)}  (NEUTRAL/no-call: {neutral})")
+    print(f"  Directional calls:  {correct}/{len(graded)} correct ({pct(correct, len(graded))})")
+    print(f"  Always-BULLISH bar: {pct(up_days, len(graded))} on the same days")
+    print(f"  Bullish calls:      {sum(1 for e in bull if e['correct'])}/{len(bull)} ({pct(sum(1 for e in bull if e['correct']), len(bull))})")
+    print(f"  Bearish calls:      {sum(1 for e in bear if e['correct'])}/{len(bear)} ({pct(sum(1 for e in bear if e['correct']), len(bear))})")
+    print(f"{'=' * 65}")
+    print("  Nothing was written to data/. The rule earns its keep only by")
+    print("  beating the always-BULLISH bar, not 50%.")
+
+
 async def main() -> None:
     args = sys.argv[1:]
     days = 30
     force = "--force" in args
+    bias_report = "--bias-report" in args
     tickers = []
     for a in args:
         if a.startswith("-"):
@@ -196,13 +237,18 @@ async def main() -> None:
             tickers.append(a.upper())
     tickers = tickers or list(cfg.TICKERS)
 
-    print(f"Backfilling {days} trading days for {', '.join(tickers)} ...")
+    mode = "bias replay (report only)" if bias_report else "backfill"
+    print(f"Running {mode} over {days} trading days for {', '.join(tickers)} ...")
     out: dict[str, dict[str, list]] = {}
     totals = (0, 0)
     for t in tickers:
-        fc, bias = await backfill_ticker(t, days, out)
+        fc, bias = await backfill_ticker(t, days, out, bias_only=bias_report)
         print(f"  {t}: {fc} forecasts, {bias} bias days")
         totals = (totals[0] + fc, totals[1] + bias)
+
+    if bias_report:
+        _bias_report(out)
+        return
 
     _write(out, force=force)
     print(f"Wrote {len(out)} day-files to {ft.DATA_DIR}")

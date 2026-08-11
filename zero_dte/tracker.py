@@ -103,6 +103,12 @@ def direction_record(direction: str) -> tuple[int, int, float]:
         for e in load_jsonl("outcomes", date_str):
             if e.get("direction") != direction:
                 continue
+            # An EXPIRED trade (no target or stop by close) is unresolved,
+            # not a loss — counting it in the denominator would drag the
+            # track record (and its breakeven warning) on a side that never
+            # actually lost.
+            if e.get("result") == "EXPIRED":
+                continue
             total += 1
             r = e.get("r_multiple") or 0.0
             total_r += r
@@ -127,38 +133,26 @@ def log_bias(bias, now: datetime) -> None:
     })
 
 
-def log_day_forecast(day_fc, now: datetime) -> None:
-    """Persist the morning day forecast (projected high/low) so a mid-day
-    restart can restore the exact numbers shown on intraday forecast embeds
-    instead of losing them with the process."""
-    _append_jsonl("day_forecast", now.astimezone(ET).strftime("%Y-%m-%d"), {
-        "ticker": day_fc.ticker,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        "direction": day_fc.direction,
-        "strength": day_fc.strength,
-        "open_price": day_fc.open_price,
-        "exp_high": day_fc.exp_high,
-        "exp_low": day_fc.exp_low,
-        "day_atr": day_fc.day_atr,
-        "pivot": day_fc.pivot,
-        "r1": day_fc.r1,
-        "s1": day_fc.s1,
-        "prev_high": day_fc.prev_high,
-        "prev_low": day_fc.prev_low,
-        "timestamp": day_fc.timestamp,
-    })
+def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime,
+                signal: dict | None = None) -> None:
+    """Persist the filter pass/fail breakdown for a setup (fired or filtered).
 
-
-def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime) -> None:
-    """Persist the filter pass/fail breakdown for a setup (fired or filtered)."""
-    _append_jsonl("filters", now.astimezone(ET).strftime("%Y-%m-%d"), {
+    For fired setups `signal` carries the trade levels (entry/stop/target/...)
+    so a mid-day restart can rebuild the open trade and keep tracking it to an
+    outcome — without this the trade silently vanished from the record.
+    (Additive key on the existing `filters` kind; older rows simply lack it.)
+    """
+    entry = {
         "ticker": ticker,
         "time": now.astimezone(pytz.UTC).isoformat(),
         "direction": direction,
         "fired": fired,
         "filters": [{"name": f.name, "passed": f.passed, "reason": f.reason,
                      "advisory": f.advisory} for f in filters],
-    })
+    }
+    if signal is not None:
+        entry["signal"] = signal
+    _append_jsonl("filters", now.astimezone(ET).strftime("%Y-%m-%d"), entry)
 
 
 async def evaluate_bias(client, ticker: str, date_str: str) -> None:
@@ -168,7 +162,10 @@ async def evaluate_bias(client, ticker: str, date_str: str) -> None:
     with `actual_direction` and `correct` added to this ticker's entries.
     """
     entries = load_jsonl("bias", date_str)
-    if not entries or all(e.get("correct") is not None for e in entries if e["ticker"] == ticker):
+    # Idempotence keys on actual_direction, not correct — NEUTRAL days write
+    # correct=None permanently, which made a correct-based guard re-fetch and
+    # rewrite the file on every pass for the rest of history.
+    if not entries or all(e.get("actual_direction") is not None for e in entries if e["ticker"] == ticker):
         return
 
     data = await client.fetch_candles(ticker, interval="D", count=10)
@@ -186,7 +183,7 @@ async def evaluate_bias(client, ticker: str, date_str: str) -> None:
 
     changed = False
     for e in entries:
-        if e["ticker"] == ticker and e.get("correct") is None:
+        if e["ticker"] == ticker and e.get("actual_direction") is None:
             e["actual_direction"] = actual
             # NEUTRAL days made no directional call — record the actual but
             # leave them ungraded (analytics filters correct=None).
@@ -270,7 +267,9 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
     Volatility-scaled deadband: windows whose |move| is under
     FORECAST_DEADBAND_ATR_MULT x the interval ATR(14) at that candle grade as
     actual=FLAT — a directional call on a flat window goes ungraded (noise,
-    not a miss) and a NEUTRAL/VOLATILE call on it grades correct.
+    not a miss) and a NEUTRAL/VOLATILE call on it grades correct. On a
+    directional window NEUTRAL/VOLATILE grade wrong — the hedge classes get a
+    symmetric payoff, not free wins.
     """
     forecasts = [e for e in load_forecasts(date_str) if e["ticker"] == ticker]
     if not forecasts:
@@ -326,9 +325,12 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
             else:
                 actual = "BULLISH" if move > 0 else "BEARISH"
                 result["actual"] = actual
-                # NEUTRAL/VOLATILE on a real move stay on-record but ungraded
-                # (their per-indicator votes still feed the tuner).
-                result["correct"] = entry["direction"] == actual if entry["direction"] in ("BULLISH", "BEARISH") else None
+                # NEUTRAL/VOLATILE grade symmetrically: correct on a flat
+                # window (above), wrong on a real move. Leaving them ungraded
+                # here while collecting the flat-window wins gave the hedging
+                # classes a one-sided payoff that inflated headline accuracy
+                # (63.4% reported vs 54.6% directional-only when found).
+                result["correct"] = entry["direction"] == actual
             results.append(result)
 
     if not results:

@@ -10,7 +10,8 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
-| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
+| Candlestick patterns → next-bar direction (daily AND weekly) | ❌ rejected both horizons | Daily: 48.3% (n=1066) vs 54.3% drift. Weekly, 25y × 4 ETFs: 52.4% (n=1283) vs 50.9% weighted bar; every "edge" flipped sign on out-of-sample DIA (Hammer +18.6p IWM / −11.2p DIA) |
+| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ demoted to informational | 50.9% (29/57) vs 52.6% always-BULLISH; direction gate removed from break-and-retest 2026-08-11; NEUTRAL still stands down; still logged/graded |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
 | Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
 | LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
@@ -27,6 +28,56 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-12 — Declutter: day forecast + SPX range feed removed; actual session H/L on every alert
+
+**Status:** ❌ removed at owner's request (noise reduction; no strategy logic changed)
+
+- **Morning day forecast removed** (direction + ATR-projected high/low, plus its embed, recovery path, and `day_forecast` data kind — retired). Its direction was the demoted no-edge bias; its projected range was an estimate nobody could act on. Replaced by the **actual session high/low**, computed from data already fetched (no new API calls), tracked live in `StrategyState` and shown on every forecast/signal/filtered alert, the daily summary, and `!status`. The change-driven posting trigger "projected-range breach" became "new session high/low" (0.1% hysteresis).
+- **SPX 0DTE range feed removed** (`zero_dte/spx_options.py`, its loop, `!spxrange`, `SPX_OPTIONS_*` config; `spx_options` kind retired). With the SPY projection already gone 2026-08-11, the bot now has no options coverage — signals are underlying-price alerts informing manual SPX trades. Removed code is in git history (`d20d240`..this commit) if wanted back.
+- The bias embed stays (informational, graded nightly, drives the NEUTRAL stand-down) — decided 2026-08-11.
+- **Round 2 (same day): dead/misleading code deleted.** `backtest.py` + `backtest_30m.py` (both stale forks — oracle bias in the daily-bias replay, phantom indicators/wrong interval in the forecast one; any number they printed was misinformation; there is now NO harness for the intraday ensemble or break-and-retest until an honest as-of replay is built) and the standalone RSI watcher + `!rsi` (~300 lines, pings already default-off and folded into the forecast's RSI-caution line; `rsi_alerts` kind retired). Kept on evidence/owner choice: the 5m forecast stream (still graded — its role is an open question) and the econ-events briefing.
+
+## 2026-08-12 — Weekly candlestick patterns: rejected after out-of-sample split
+
+**Status:** ❌ rejected (closes the candlestick question at both horizons)
+
+- Follow-up to the daily rejection: same detectors resampled to completed weekly candles, graded vs next-week close-vs-open, 25y × SPY/QQQ/IWM/DIA (~1,244 weeks each; per-ticker tables + combined). Pre-committed bar: positive edge holding its **sign on every ticker**, with avg-move agreeing with hit rate.
+- Initial SPY+QQQ pool looked suggestive (ALL 54.2%, Hammer +9.5p, engulfings positive) — the four-ticker split showed **QQQ was carrying the pool** (55.7% all-directional) while never-touched **DIA came back 48.8% with nearly every pattern negative**. Sign flips everywhere: Hammer +14.4p QQQ / +18.6p IWM / **−11.2p DIA**; Bullish Engulfing +8.0p QQQ / **−2.1p DIA**. Combined ALL directional 52.4% (n=1283) vs a 50.9% direction-weighted bar ≈ 1.1σ.
+- **Bearish Engulfing confirmed the accuracy-without-expectancy trap**: +4.9p combined hit rate but −0.04% combined avg move (market flat-to-up after the pattern on SPY/QQQ) — right slightly more often, wrong bigger.
+- Indecision reads: Doji 49.4% / Inside Bar 46.5% combined at predicting a quiet week — no chop signal either.
+- **Candlesticks are now closed at both tested horizons** (daily next-day, weekly next-week) for index ETFs: explicit geometry, prior-move context conditioning, drift-honest baselines, out-of-sample tickers — no standalone directional edge survives. Detectors (`core/indicators.py`) and harness (`backtest_patterns.py`, `--weekly`) remain for any future variant (different horizon/conditioning/single names), which must clear the same bar.
+
+## 2026-08-11 — 2-of-3 bias vote revalidated honestly: no edge over always-BULLISH
+
+**Status:** ❌ validation failed → **direction gate removed same day (owner decision)**
+
+- First honest measurement of the current bias rule, via the new report-only replay (`python backfill.py 60 SPY --bias-report` — fixed harness, strict `< day` truncation, nothing written): **29/57 directional calls correct (50.9%) vs 52.6% always-BULLISH over the same days** (2026-05-15 → 2026-08-11, 3 NEUTRAL days). Bullish calls 20/38 = 52.6% — exactly the drift rate, i.e. zero information; bearish calls **9/19 = 47.4%**.
+- The **65% replay that justified adopting the vote on 2026-08-06 is confirmed to have been lookahead artifact** (the harness fed the replay day's own close to the trend/RSI components — logged 2026-08-11). The 5/6 live record since adoption was small-sample luck.
+- The bearish leg is now weak across **both** bias rules and both measurement eras: 38.5% live under the old first-candle rule, 47.4% replayed under the 2-of-3 vote. Whatever the morning information set contains, "today will be red" has never been extractable from it here.
+- Statistical honesty: n=57 → ±13p at 95%, so this does not prove the vote is worse than always-BULLISH — but the adoption evidence is gone and nothing measurable remains in its favor. Third strike for morning-direction signals overall (old bias rule 50%, daily candlestick patterns 48.3%, 2-of-3 vote 50.9% vs 52.6% bar).
+- **Decision (owner): break-and-retest no longer gates entry direction on the bias.** Either side may fire on a break-and-retest; the filter stack is the quality gate; the per-direction lifetime record + below-breakeven warning on each alert (the 2026-08-06 precedent) is the honest decision-time signal. **NEUTRAL mornings still stand down entirely** — that rule is about a conflicted signal set, not direction. The bias itself keeps computing/logging/grading (evidence accumulates; the embed footer now states it's informational and shows the graded number), and the day-forecast ATR skew still uses it. Watch item: gate removal un-suppresses LONG setups on non-BULLISH days — LONGs are 3/34 lifetime, so the direction record warning matters more now.
+
+## 2026-08-11 — Daily candlestick patterns as a bias/forecast source: rejected
+
+**Status:** ❌ rejected (backtest evidence; nothing wired live)
+
+- Idea (owner, from multi-timeframe pattern-trading doctrine): read named candlestick patterns off SPY's completed daily candles each morning, use the pattern's direction as (or alongside) the day forecast, confirm on 1-4h, then refine intraday. Detectors + as-of replay built first per house rule (`core/indicators.py::detect_candlestick_patterns`, `backtest_patterns.py` — strict `< day` slicing, graded close-vs-open like `evaluate_bias`, baselined against each direction's unconditional drift, not 50%).
+- 10y SPY+QQQ (4,904 graded days, up-day drift 54.3%): **all directional patterns 48.3% (n=1066)** — at or below drift nearly everywhere. High-n patterns: Bullish Marubozu −0.9p (n=236), Bearish Engulfing −1.8p (n=182), Bearish Marubozu **−6.9p** (n=170), Bullish Engulfing −1.6p (n=150), Hammer −4.3p (n=98). Best result Shooting Star **+6.8p at n=80 ≈ 1.2σ** (noise needs ~±11p at that n to clear 95%) — and the same pattern "won" +16.1p on a pure random-walk synthetic run, best-of-8 selection doing the work. Trend-conditioned splits: no cell both significant and consistent across tickers' pooled run.
+- Indecision reads failed too: Doji 47.4% (n=498) / Inside Bar 48.1% (n=507) at predicting a below-median-range next day — no chop signal for the VOLATILE/deadband layer.
+- Bearish Marubozu's below-drift read (market tends to bounce after a full-body red day) is a mild mean-reversion echo, but inverting a fitted-to-history pattern is the exact overfit path the removed RSI-divergence inversion documented — declined.
+- Third independent no-signal result for daily candle shapes here (prev-day candle bias 48%; candle-direction voter 48.8%). Multi-timeframe confirmation layers (steps 2-3 of the idea) are moot without a step-1 signal to confirm. Detectors and the harness stay in the repo — reusable if a pattern idea returns at a different horizon or conditioning.
+
+## 2026-08-11 — Review round 2: grading asymmetry, swing P&L pricing, restart recovery
+
+**Status:** ⚠️ bugs fixed (measurement + recovery; no vote/threshold logic changed)
+
+- **NEUTRAL/VOLATILE forecasts had a one-sided report card**: correct on a flat window but merely *ungraded* on a real move. Over the last 10 `results-*.json`, 101 such free wins inflated headline accuracy to **63.4% vs 54.6% directional-only**. Grading is now symmetric (wrong on a real move). The weight tuner was never affected (it only counts directional actuals) — this was the human-facing number that drives keep/kill decisions. **Results files graded before this fix keep the old asymmetric grades** (re-grading history needs market data); accuracy across the boundary isn't comparable.
+- **Swing option P&L was always the optimistic delta estimate**: grading runs pre-open, so `lag_days` is always ≥ 1 and the "contemporaneous requote" branch was unreachable. A next-morning requote returns the prior session's close — exactly the resolution-day exit quote wanted — so the branch now accepts lag ≤ 1. Grading is also idempotent now (a crash between the outcome append and the registry removal no longer double-counts a signal into analytics/tuner).
+- **EXPIRED 0DTE trades no longer count as losses** in the per-direction track record shown on signal alerts (they're unresolved, not losses; was latent — no EXPIRED rows exist yet).
+- **`evaluate_bias` re-rewrote history forever on NEUTRAL days** (its idempotence guard keyed on `correct`, which NEUTRAL leaves `None` permanently) — now keys on `actual_direction`.
+- **Restart recovery** (the rehydration half that was missing): a restart after 11:00/16:00 ET no longer re-posts a degraded Daily Summary / Forecast Report Card; fired signals now persist their levels in the `filters` row (additive key) so an open trade survives a restart and still grades instead of vanishing; swing pre-open/midday done-flags persist to `.swing_daily_state.json` so a mid-session restart can't replay the pre-open pass, and a genuinely-late first pass (long outage) grades but skips the scan rather than posting an entry priced off a session-stale close.
+- Ops: the nightly auto-commit is now pathspec-scoped (`git commit -- data`) so staged dev work can't be swept into a "Capture trading history" commit; a push failure after a successful commit reports "committed locally" instead of "nothing committed"; provider-agnostic `!stats` no longer crashes on a legacy outcome whose `option` dict lacks `pnl_pct`.
 
 ## 2026-08-11 — SPY option projection/grading removed (owner trades SPX only)
 

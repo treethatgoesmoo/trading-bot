@@ -1,6 +1,6 @@
 # ── Trading Bot Makefile ─────────────────────────────────────
 
-.PHONY: install run start stop restart status backtest logs clean
+.PHONY: install run start stop restart status logs clean
 
 PID_FILE = .bot.pid
 
@@ -46,12 +46,9 @@ status:
 		echo "Bot is not running."; \
 	fi
 
-# Run backtest (usage: make backtest DATE=2026-04-13 TICKER=SPY)
-DATE ?= 2026-04-13
-TICKER ?= SPY
+# (make backtest removed 2026-08-12 — backtest.py graded with lookahead
+# bias; use backfill.py --bias-report / backtest_filters.py instead)
 VERBOSE ?=
-backtest:
-	python backtest.py $(DATE) $(TICKER) $(if $(VERBOSE),--verbose)
 
 # Backtest the swing options strategy (usage: make backtest-swing START=2023-01-01)
 START ?= 2023-01-01
