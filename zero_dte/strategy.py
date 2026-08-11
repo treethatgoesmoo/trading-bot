@@ -230,6 +230,8 @@ class DirectionForecast:
     rsi_caution: str | None = None    # RSI reversal watch/trigger caution line
     lean: str | None = None           # winning side when direction == VOLATILE
     interval: int = FORECAST_INTERVAL_MINUTES  # candle interval/window (minutes)
+    day_high: float | None = None     # actual session high so far (not a projection)
+    day_low: float | None = None      # actual session low so far
 
 
 def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
@@ -274,8 +276,8 @@ class StrategyState:
         self.last_forecast_time: datetime | None = None
         self.last_forecast: DirectionForecast | None = None
         self.last_forecast_5m_time: datetime | None = None
-        self.day_forecast: DayForecast | None = None
-        self.day_forecast_attempts: int = 0  # mid-day recovery tries (capped)
+        self.session_high: float | None = None  # actual session extremes so far,
+        self.session_low: float | None = None   # updated by forecasts + setup scans
         # Change-driven posting: the last forecast actually POSTED to Discord
         # (shared across the 15m/5m streams — a change is a change regardless
         # of which stream noticed it first).
@@ -292,14 +294,14 @@ class StrategyState:
 def forecast_post_reason(fc: DirectionForecast,
                          prev: DirectionForecast | None,
                          last_posted: datetime | None,
-                         day_fc, now: datetime) -> str | None:
+                         now: datetime) -> str | None:
     """Change-driven posting gate: why this forecast deserves a message.
 
     Returns a short human-readable reason, or None to stay quiet. Compared
     against the last POSTED forecast (not the last computed one): direction
-    flip, a confidence move >= FORECAST_REPOST_CONFIDENCE_DELTA, price
-    breaching the day forecast's projected high/low, or a heartbeat so the
-    channel never goes silent longer than FORECAST_HEARTBEAT_MINUTES.
+    flip, a confidence move >= FORECAST_REPOST_CONFIDENCE_DELTA, a new
+    session high/low since the last post, or a heartbeat so the channel
+    never goes silent longer than FORECAST_HEARTBEAT_MINUTES.
     """
     if prev is None:
         return "first read"
@@ -307,19 +309,13 @@ def forecast_post_reason(fc: DirectionForecast,
         return f"read changed: {prev.direction} → {fc.direction}"
     if abs(fc.confidence - prev.confidence) >= FORECAST_REPOST_CONFIDENCE_DELTA:
         return f"confidence {prev.confidence:.0f}% → {fc.confidence:.0f}%"
-    if day_fc is not None:
-        def _zone(price: float) -> str:
-            if price > day_fc.exp_high:
-                return "above"
-            if price < day_fc.exp_low:
-                return "below"
-            return "in"
-        zone = _zone(fc.current_price)
-        # Only breaches ping; drifting back inside the range doesn't.
-        if zone != "in" and zone != _zone(prev.current_price):
-            if zone == "above":
-                return f"price above projected high (${day_fc.exp_high})"
-            return f"price below projected low (${day_fc.exp_low})"
+    # New session extreme since the last posted read (the tracked high/low
+    # replaced the projected-range breach trigger when the day forecast was
+    # removed). Small ticks over the old mark don't ping — 0.1% hysteresis.
+    if fc.day_high is not None and prev.day_high is not None and fc.day_high > prev.day_high * 1.001:
+        return f"new session high (${fc.day_high})"
+    if fc.day_low is not None and prev.day_low is not None and fc.day_low < prev.day_low * 0.999:
+        return f"new session low (${fc.day_low})"
     if last_posted is not None and (now - last_posted).total_seconds() >= FORECAST_HEARTBEAT_MINUTES * 60:
         return "periodic update"
     return None
@@ -445,73 +441,9 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
         bias.direction = "NEUTRAL"
 
 
-@dataclass
-class DayForecast:
-    """Morning outlook: bias direction plus an ATR-projected high/low band."""
-    ticker: str
-    direction: str
-    strength: str            # from DailyBias (SMA distance)
-    open_price: float
-    exp_high: float          # projected session high (estimate)
-    exp_low: float           # projected session low (estimate)
-    day_atr: float           # daily ATR(14)
-    pivot: float             # classic floor-trader pivots from prev day
-    r1: float
-    s1: float
-    prev_high: float
-    prev_low: float
-    timestamp: str           # ET display string
-
-
-async def compute_day_forecast(client: MarketDataClient, ticker: str,
-                               bias: DailyBias, first_candle: FirstCandleRange) -> DayForecast | None:
-    """Project today's likely high/low from the daily ATR, skewed by the bias.
-
-    The daily range tends toward ~1 ATR; with a directional bias more of it
-    lands on the bias side of the open. Pivots come from yesterday's OHLC.
-    """
-    daily = await client.fetch_candles(ticker, interval="D", count=ATR_PERIOD * 3)
-    if daily.empty or len(daily) < ATR_PERIOD + 2:
-        return None
-
-    # Completed days only — during the session providers include today's
-    # in-progress daily bar.
-    timestamps = pd.to_datetime(daily["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC")
-    today = datetime.now(ET).date()
-    daily = daily[(timestamps.dt.tz_convert(ET).dt.date < today).values]
-    if len(daily) < ATR_PERIOD + 1:
-        return None
-
-    day_atr = float(_atr_series(daily, ATR_PERIOD).iloc[-1])
-    if np.isnan(day_atr) or day_atr <= 0:
-        return None
-
-    open_price = first_candle.open_price
-    if bias.direction == "BULLISH":
-        up_share, down_share = 0.70, 0.30
-    elif bias.direction == "BEARISH":
-        up_share, down_share = 0.30, 0.70
-    else:
-        up_share = down_share = 0.50
-
-    pivot = (bias.prev_high + bias.prev_low + bias.prev_close) / 3
-    return DayForecast(
-        ticker=ticker,
-        direction=bias.direction,
-        strength=bias.strength,
-        open_price=round(open_price, 2),
-        exp_high=round(open_price + day_atr * up_share, 2),
-        exp_low=round(open_price - day_atr * down_share, 2),
-        day_atr=round(day_atr, 2),
-        pivot=round(pivot, 2),
-        r1=round(2 * pivot - bias.prev_low, 2),
-        s1=round(2 * pivot - bias.prev_high, 2),
-        prev_high=bias.prev_high,
-        prev_low=bias.prev_low,
-        timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
-    )
+# (The ATR-projected DayForecast was removed 2026-08-12 at the owner's
+# request — replaced by the ACTUAL session high/low tracked on every alert.
+# The removed code is in git history if a projected range is ever wanted.)
 
 
 def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
@@ -896,6 +828,12 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
     if len(candles) < 3:
         return None
 
+    # Keep the tracked session extremes fresh from the 1m data we already have.
+    hi = float(candles["high"].astype(float).max())
+    lo = float(candles["low"].astype(float).min())
+    state.session_high = round(max(state.session_high or hi, hi), 2)
+    state.session_low = round(min(state.session_low or lo, lo), 2)
+
     box_high = state.first_candle.high
     box_low = state.first_candle.low
 
@@ -1076,6 +1014,19 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     current_price = round(float(closes.iloc[-1]), 2)
     now_str = ref_now.strftime("%I:%M %p ET")
 
+    # Actual session high/low so far — the tracked fact that replaced the
+    # ATR-projected day forecast (removed 2026-08-12 at the owner's request).
+    day_high = day_low = None
+    _ts = pd.to_datetime(data["timestamp"])
+    if _ts.dt.tz is None:
+        _ts = _ts.dt.tz_localize("UTC")
+    _ts_et = _ts.dt.tz_convert(ET)
+    session_start = ref_now.replace(hour=9, minute=30, second=0, microsecond=0)
+    session_mask = ((_ts_et.dt.date == ref_now.date()) & (_ts_et >= session_start)).values
+    if session_mask.any():
+        day_high = round(float(highs[session_mask].max()), 2)
+        day_low = round(float(lows[session_mask].min()), 2)
+
     # Defaults + live-tuned overrides for THIS stream (data/indicator_weights.json)
     indicator_weights = {**INDICATOR_WEIGHTS, **_weight_overrides(interval)}
 
@@ -1248,4 +1199,6 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         rsi_caution=_rsi_caution(rsi_prev, rsi_val),
         lean=lean,
         interval=interval,
+        day_high=day_high,
+        day_low=day_low,
     )

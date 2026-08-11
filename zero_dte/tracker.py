@@ -133,28 +133,6 @@ def log_bias(bias, now: datetime) -> None:
     })
 
 
-def log_day_forecast(day_fc, now: datetime) -> None:
-    """Persist the morning day forecast (projected high/low) so a mid-day
-    restart can restore the exact numbers shown on intraday forecast embeds
-    instead of losing them with the process."""
-    _append_jsonl("day_forecast", now.astimezone(ET).strftime("%Y-%m-%d"), {
-        "ticker": day_fc.ticker,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        "direction": day_fc.direction,
-        "strength": day_fc.strength,
-        "open_price": day_fc.open_price,
-        "exp_high": day_fc.exp_high,
-        "exp_low": day_fc.exp_low,
-        "day_atr": day_fc.day_atr,
-        "pivot": day_fc.pivot,
-        "r1": day_fc.r1,
-        "s1": day_fc.s1,
-        "prev_high": day_fc.prev_high,
-        "prev_low": day_fc.prev_low,
-        "timestamp": day_fc.timestamp,
-    })
-
-
 def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime,
                 signal: dict | None = None) -> None:
     """Persist the filter pass/fail breakdown for a setup (fired or filtered).

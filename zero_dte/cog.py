@@ -20,7 +20,6 @@ import pytz
 
 from config import (
     ALERT_CHANNEL_ID,
-    DAY_FORECAST_ENABLED,
     TICKERS,
     FIRST_CANDLE_READY_MINUTE,
     MARKET_OPEN_HOUR,
@@ -42,12 +41,6 @@ from config import (
     FORECAST_END_MINUTE,
     RSI_WATCH_ENABLED,
     RSI_WATCH_INTERVAL_SECONDS,
-    SPX_OPTIONS_ENABLED,
-    SPX_OPTIONS_ORB_MINUTES,
-    SPX_OPTIONS_ORB_TARGET_MULT,
-    SPX_OPTIONS_PICK_DELAY_MINUTES,
-    SPX_OPTIONS_SAMPLE_MINUTES,
-    SPX_OPTIONS_TICKER,
     VIX_WATCH_ENABLED,
     BB_WATCH_ENABLED,
     BB_TICKERS,
@@ -59,7 +52,6 @@ from core.market_data import MarketDataClient, is_market_open
 from core.paths import DATA_DIR, WATCHLIST_FILE
 from core.tracking import append_jsonl, available_dates, load_jsonl
 from zero_dte.strategy import (
-    DayForecast,
     DirectionForecast,
     forecast_post_reason,
     get_daily_bias,
@@ -70,7 +62,6 @@ from zero_dte.strategy import (
     check_trade_outcome,
     compute_atr,
     compute_30m_forecast,
-    compute_day_forecast,
     StrategyState,
     TradeSignal,
     FilteredSignal,
@@ -79,7 +70,6 @@ from zero_dte.strategy import (
 from zero_dte.tracker import (
     direction_record,
     log_forecast,
-    log_day_forecast,
     evaluate_forecasts,
     evaluate_votes,
     log_trade_outcome,
@@ -87,14 +77,12 @@ from zero_dte.tracker import (
     log_filters,
     evaluate_bias,
 )
-from zero_dte import spx_options
 from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.bb_watcher import BBWatcher
 from zero_dte.embeds import (
     bb_alert_embed,
     bias_embed,
     daily_summary_embed,
-    day_forecast_embed,
     filtered_embed,
     forecast_embed,
     forecast_results_embed,
@@ -104,8 +92,6 @@ from zero_dte.embeds import (
     range_embed,
     rsi_alert_embed,
     signal_embed,
-    spx_pick_embed,
-    spx_range_embed,
     vix_alert_embed,
 )
 from zero_dte.views import ForecastView, MenuView, ReportDetailsView, TradeSignalView
@@ -131,25 +117,15 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self._menu_view_registered = False
         self._catchup_done = False
 
-        # 0DTE SPX option range tracking (own loop, per-day done-flags)
-        self.spx_day: spx_options.SpxOptionDay | None = None
-        self._spx_date: str | None = None
-        self._spx_last_sample: datetime | None = None
-        self._spx_pick_attempts = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     async def cog_load(self):
         self.market_monitor.start()
         logger.info("Market monitor loop started (every %ds)", POLL_INTERVAL_SECONDS)
-        if SPX_OPTIONS_ENABLED:
-            self.spx_options_monitor.start()
-            logger.info("SPX 0DTE option range loop started (%s, sampled every %dm)",
-                        SPX_OPTIONS_TICKER, SPX_OPTIONS_SAMPLE_MINUTES)
 
     async def cog_unload(self):
         self.market_monitor.cancel()
-        self.spx_options_monitor.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -283,7 +259,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             # Counts as this window's forecast: keeps the scheduled loop from
             # posting a near-duplicate a minute later.
             st = self.states.get(ticker)
-            day_fc = None
             if st is not None:
                 st.last_forecast_time = now
                 st.last_forecast = fc
@@ -292,8 +267,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 # something actually moves.
                 st.last_posted_forecast = fc
                 st.last_posted_time = now
-                day_fc = st.day_forecast
-            await dest.send(embed=forecast_embed(fc, day_fc), view=ForecastView(ticker, fc, entry["time"]))
+                self._track_session_range(st, fc)
+            await dest.send(embed=forecast_embed(fc), view=ForecastView(ticker, fc, entry["time"]))
         else:
             await dest.send(f"Could not compute forecast for {ticker} (insufficient data).")
 
@@ -302,8 +277,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         decides nothing changed. Returns True if a message was sent."""
         reason = None
         if FORECAST_POST_MODE == "change":
-            reason = forecast_post_reason(fc, st.last_posted_forecast, st.last_posted_time,
-                                          st.day_forecast, now)
+            reason = forecast_post_reason(fc, st.last_posted_forecast, st.last_posted_time, now)
             if reason is None:
                 logger.debug("[%s] %dm forecast unchanged (%s %.0f%%) — not posted",
                              ticker, fc.interval, fc.direction, fc.confidence)
@@ -313,36 +287,23 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         content = None
         if reason and reason not in ("first read", "periodic update"):
             content = f"\U0001f514 {reason}"
-        await channel.send(content, embed=forecast_embed(fc, st.day_forecast),
+        await channel.send(content, embed=forecast_embed(fc),
                            view=ForecastView(ticker, fc, entry["time"]))
         return True
 
-    async def _recover_day_forecast(self, ticker: str, st) -> None:
-        """Rebuild the morning day forecast after a restart that lost it (and
-        that has nothing persisted to restore — e.g. the bot was down at bias
-        time). Quiet: fills in state so intraday forecast embeds regain the
-        projected range, but never posts the day-forecast embed itself."""
-        st.day_forecast_attempts += 1
-        try:
-            if st.first_candle is None:
-                st.first_candle = await get_first_candle_range(self.client, ticker)
-            if st.first_candle is None:
-                return
-            if st.daily_bias is None:
-                bias = await get_daily_bias(self.client, ticker, today_open=st.first_candle.open_price)
-                if bias is None:
-                    return
-                set_bias_from_first_candle(bias, st.first_candle)
-                st.daily_bias = bias
-            day_fc = await compute_day_forecast(self.client, ticker, st.daily_bias, st.first_candle)
-            if day_fc:
-                st.day_forecast = day_fc
-                log_day_forecast(day_fc, datetime.now(ET))
-                logger.info("[%s] Day forecast recovered mid-day: %s high=$%s low=$%s",
-                            ticker, day_fc.direction, day_fc.exp_high, day_fc.exp_low)
-        except Exception as exc:
-            logger.warning("[%s] Day forecast recovery failed (attempt %d): %s",
-                           ticker, st.day_forecast_attempts, exc)
+    @staticmethod
+    def _track_session_range(st, fc) -> None:
+        """Fold a forecast's observed session extremes into the tracked ones."""
+        if fc.day_high is not None:
+            st.session_high = round(max(st.session_high or fc.day_high, fc.day_high), 2)
+        if fc.day_low is not None:
+            st.session_low = round(min(st.session_low or fc.day_low, fc.day_low), 2)
+
+    def _session_range(self, ticker: str) -> tuple[float, float] | None:
+        st = self.states.get(ticker)
+        if st is None or st.session_high is None or st.session_low is None:
+            return None
+        return st.session_high, st.session_low
 
     def build_status_embed(self) -> discord.Embed:
         now = datetime.now(ET)
@@ -368,6 +329,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 f"Candle: {candle_str}",
                 f"ATR: {atr_str}{overext_str}",
             ]
+            if st.session_high is not None and st.session_low is not None:
+                status_lines.append(f"Day H/L: ${st.session_high} / ${st.session_low}")
             if st.last_forecast:
                 fc = st.last_forecast
                 dir_txt = f"VOLATILE, leaning {fc.lean}" if fc.direction == "VOLATILE" and fc.lean else fc.direction
@@ -463,17 +426,12 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             await ctx.send(f"Bias error: {exc}")
             return
 
-        # Step 2.5: intraday forecast (with the day forecast for context)
+        # Step 2.5: intraday forecast
         await ctx.send(f"Computing {FORECAST_INTERVAL_MINUTES}-min forecast...")
-        day_fc = None
-        try:
-            day_fc = await compute_day_forecast(self.client, resolved, bias, fc)
-        except Exception:
-            pass
         try:
             forecast = await compute_30m_forecast(self.client, resolved)
             if forecast:
-                await ctx.send(embed=forecast_embed(forecast, day_fc))
+                await ctx.send(embed=forecast_embed(forecast))
             else:
                 await ctx.send("Could not compute forecast (insufficient data).")
         except Exception as exc:
@@ -666,20 +624,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             return
         await self.run_test(ctx, resolved)
 
-    @commands.command(name="spxrange")
-    async def cmd_spxrange(self, ctx):
-        """Show today's tracked 0DTE SPX call/put premium range so far."""
-        if not SPX_OPTIONS_ENABLED:
-            await ctx.send("SPX 0DTE range tracking is disabled (SPX_OPTIONS_ENABLED=0).")
-            return
-        day = self.spx_day
-        if day is None:
-            await ctx.send(f"No {SPX_OPTIONS_TICKER} 0DTE contracts tracked yet today — "
-                           f"the ATM call/put are picked ~{SPX_OPTIONS_PICK_DELAY_MINUTES} min "
-                           "after the open on trading days.")
-            return
-        await ctx.send(embed=spx_range_embed(day))
-
     @commands.command(name="menu")
     async def cmd_menu(self, ctx):
         """Show the interactive control panel."""
@@ -742,7 +686,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             fired_rows = {e.get("ticker"): e for e in load_jsonl("filters", today_str) if e.get("fired")}
             fired_tickers = set(fired_rows)
             outcomes = {e.get("ticker"): e for e in load_jsonl("outcomes", today_str)}
-            day_fcs = {e.get("ticker"): e for e in load_jsonl("day_forecast", today_str)}
             # Tickers whose forecast report card already graded/posted today —
             # re-running the EOD evaluation would re-post the whole embed.
             results_tickers = set()
@@ -812,18 +755,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     st.last_forecast_5m_time = datetime.fromisoformat(last_fc_5m[ticker]["time"]).astimezone(ET)
                 except ValueError:
                     pass
-            if ticker in day_fcs:
-                e = day_fcs[ticker]
-                try:
-                    st.day_forecast = DayForecast(
-                        ticker=ticker, direction=e["direction"], strength=e["strength"],
-                        open_price=e["open_price"], exp_high=e["exp_high"], exp_low=e["exp_low"],
-                        day_atr=e["day_atr"], pivot=e["pivot"], r1=e["r1"], s1=e["s1"],
-                        prev_high=e["prev_high"], prev_low=e["prev_low"],
-                        timestamp=e.get("timestamp", ""),
-                    )
-                except KeyError as exc:
-                    logger.warning("[%s] Day forecast restore missing field %s", ticker, exc)
             if ticker in fired_tickers:
                 st.signal_fired = True
                 out = outcomes.get(ticker)
@@ -1008,21 +939,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             session_close,
         )
 
-        # Day-forecast recovery: a restart with nothing persisted to rehydrate
-        # (or one after the 11:00 monitoring window, where the bias step no
-        # longer runs) leaves forecasts without the projected range — rebuild
-        # it here. Pre-11:00 first starts are left to the normal bias step so
-        # the bias/day-forecast embeds still post. Throttled to forecast slots
-        # and capped so a bad data day can't hammer the API every 60s.
-        if (DAY_FORECAST_ENABLED and forecast_start <= now < forecast_end
-                and now.minute % FORECAST_5M_INTERVAL_MINUTES < 2):
-            for ticker in list(self.active_tickers):
-                st = self.states.get(ticker)
-                if (st is None or st.day_forecast is not None or st.day_forecast_attempts >= 10
-                        or not (st.bias_logged or past_monitoring)):
-                    continue
-                await self._recover_day_forecast(ticker, st)
-
         if forecast_start <= now < forecast_end and now.minute % FORECAST_INTERVAL_MINUTES < 2:
             for ticker in list(self.active_tickers):
                 st = self.states.get(ticker)
@@ -1035,6 +951,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     if fc:
                         st.last_forecast_time = now
                         st.last_forecast = fc
+                        self._track_session_range(st, fc)
                         entry = log_forecast(ticker, fc, now)
                         logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                     time_str, ticker, FORECAST_INTERVAL_MINUTES, fc.direction, fc.confidence,
@@ -1057,6 +974,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     fc5 = await compute_30m_forecast(self.client, ticker, interval=FORECAST_5M_INTERVAL_MINUTES)
                     if fc5:
                         st.last_forecast_5m_time = now
+                        self._track_session_range(st, fc5)
                         entry = log_forecast(ticker, fc5, now)
                         logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                     time_str, ticker, FORECAST_5M_INTERVAL_MINUTES, fc5.direction, fc5.confidence,
@@ -1158,24 +1076,10 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     time_str, ticker, bias.direction, bias.gap_direction,
                                     bias.gap_pct, st.first_candle.candle_type,
                                     bias.rsi if bias.rsi else "N/A")
-                        first_post = not st.bias_logged
-                        if first_post:
+                        if not st.bias_logged:
                             st.bias_logged = True
                             log_bias(bias, now)
                             await channel.send(embed=bias_embed(bias))
-                        # Compute even when rehydrated after a restart (the
-                        # in-memory day forecast is gone but intraday forecast
-                        # embeds still want it) — only post it the first time.
-                        if DAY_FORECAST_ENABLED and st.day_forecast is None:
-                            try:
-                                day_fc = await compute_day_forecast(self.client, ticker, bias, st.first_candle)
-                                if day_fc:
-                                    st.day_forecast = day_fc
-                                    log_day_forecast(day_fc, now)
-                                    if first_post:
-                                        await channel.send(embed=day_forecast_embed(day_fc))
-                            except Exception as exc:
-                                logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:
                         logger.warning("[%s] [%s] Daily bias returned None — will retry", time_str, ticker)
 
@@ -1197,14 +1101,15 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                             "timestamp": result.timestamp,
                                             "created_at": result.created_at})
                         await channel.send("@everyone",
-                                           embed=signal_embed(result, record=direction_record(result.direction)),
+                                           embed=signal_embed(result, record=direction_record(result.direction),
+                                                              session=self._session_range(ticker)),
                                            view=TradeSignalView(result, self.states))
                     elif isinstance(result, FilteredSignal):
                         failed = ", ".join(f"{f.name}: {f.reason}" for f in result.failed_filters)
                         logger.info("[%s] [%s] Setup FILTERED: %s | Failed: %s | Cooldown %dm",
                                     time_str, ticker, result.direction, failed, FILTER_COOLDOWN_MINUTES)
                         log_filters(ticker, result.direction, result.filters, fired=False, now=now)
-                        await channel.send(embed=filtered_embed(result))
+                        await channel.send(embed=filtered_embed(result, session=self._session_range(ticker)))
                     else:
                         logger.debug("[%s] [%s] No setup detected", time_str, ticker)
 
@@ -1222,110 +1127,3 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         await asyncio.sleep(30)
         self.market_monitor.restart()
 
-    # ── SPX 0DTE option range tracking ───────────────────────────────────
-
-    async def _project_spx_ranges(self, day, now, today_str: str) -> bool:
-        """Seed the projected premium ranges from the ORB opening range (first
-        SPX_OPTIONS_ORB_MINUTES of the session). The last 5-min bar of the
-        window can lag a poll or two — callers retry until this returns True
-        (or the day ends without one)."""
-        orb = await asyncio.to_thread(
-            spx_options.fetch_opening_range, day.ticker, now.date(), SPX_OPTIONS_ORB_MINUTES)
-        if orb is None:
-            return False
-        spx_options.apply_orb_projection(day, orb[0], orb[1], SPX_OPTIONS_ORB_TARGET_MULT)
-        if day.proj_high is None:
-            return False
-        append_jsonl("spx_options", today_str, spx_options.projection_entry(day))
-        logger.info("[SPX 0DTE] Opening range $%.2f-$%.2f -> breakout targets $%.2f / $%.2f | "
-                    "call could reach ~$%.2f, put ~$%.2f",
-                    day.or_low, day.or_high, day.proj_low, day.proj_high,
-                    day.call.projected_max, day.put.projected_max)
-        return True
-
-    @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
-    async def spx_options_monitor(self):
-        """Pick an ATM 0DTE call + put shortly after the open, sample their
-        premiums through the session, and post the effective min/max at the
-        close (min floored to settlement intrinsic — OTM finishes are worth 0)."""
-        now = datetime.now(ET)
-        if not market_calendar.is_trading_day(now.date()):
-            return
-        today_str = now.strftime("%Y-%m-%d")
-
-        if self._spx_date != today_str:
-            self._spx_date = today_str
-            self.spx_day = None
-            self._spx_last_sample = None
-            self._spx_pick_attempts = 0
-            try:
-                self.spx_day = spx_options.rehydrate(load_jsonl("spx_options", today_str))
-                if self.spx_day is not None:
-                    logger.info("[SPX 0DTE] Rehydrated %s tracking from data/ (finalized=%s)",
-                                self.spx_day.ticker, self.spx_day.finalized)
-            except Exception as exc:
-                logger.warning("[SPX 0DTE] Rehydration failed (starting fresh): %s", exc)
-
-        day = self.spx_day
-        if day is not None and day.finalized:
-            return
-
-        session_close = market_calendar.session_close(now)
-        pick_time = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE,
-                                second=0, microsecond=0) + timedelta(minutes=SPX_OPTIONS_PICK_DELAY_MINUTES)
-        channel = self.bot.get_channel(ALERT_CHANNEL_ID)
-
-        # Step 1: pick the day's contracts (retry a few polls, then give up
-        # for the day — no chain before ~9:35 is normal, 10 misses is not).
-        if day is None:
-            if now < pick_time or now >= session_close or self._spx_pick_attempts >= 10:
-                return
-            self._spx_pick_attempts += 1
-            day = await asyncio.to_thread(
-                spx_options.pick_day_contracts, SPX_OPTIONS_TICKER, now.date())
-            if day is None:
-                return
-            self.spx_day = day
-            self._spx_last_sample = now
-            append_jsonl("spx_options", today_str, spx_options.pick_entry(day))
-            await self._project_spx_ranges(day, now, today_str)
-            logger.info("[SPX 0DTE] Tracking %s: call %s @ $%.2f | put %s @ $%.2f (spot $%.2f)",
-                        day.date, day.call.strike, day.call.open_mid,
-                        day.put.strike, day.put.open_mid, day.spot_at_pick)
-            if channel:
-                await channel.send(embed=spx_pick_embed(day))
-            return
-
-        # Step 2: sample premiums until the close.
-        if now < session_close:
-            if (self._spx_last_sample is not None and
-                    (now - self._spx_last_sample).total_seconds() < SPX_OPTIONS_SAMPLE_MINUTES * 60 - 30):
-                return
-            self._spx_last_sample = now
-            if day.proj_high is None:
-                await self._project_spx_ranges(day, now, today_str)
-            if await asyncio.to_thread(spx_options.sample_day, day):
-                append_jsonl("spx_options", today_str, spx_options.sample_entry(day))
-            return
-
-        # Step 3: past the close — settle and post the effective range once.
-        spot_close = await asyncio.to_thread(spx_options.fetch_close_spot, day.ticker)
-        await asyncio.to_thread(spx_options.finalize_day, day, spot_close)
-        append_jsonl("spx_options", today_str, spx_options.final_entry(day))
-        logger.info("[SPX 0DTE] Final: call %s eff $%.2f-$%.2f | put %s eff $%.2f-$%.2f (close $%s)",
-                    day.call.strike, day.call.effective_min, day.call.effective_max,
-                    day.put.strike, day.put.effective_min, day.put.effective_max,
-                    day.spot_close)
-        if channel:
-            await channel.send(embed=spx_range_embed(day))
-
-    @spx_options_monitor.before_loop
-    async def before_spx_options(self):
-        await self.bot.wait_until_ready()
-
-    @spx_options_monitor.error
-    async def spx_options_error(self, exc):
-        """An unhandled exception kills a tasks.loop permanently — log and restart it."""
-        logger.exception("SPX 0DTE range loop crashed: %s — restarting in 30s", exc)
-        await asyncio.sleep(30)
-        self.spx_options_monitor.restart()

@@ -11,10 +11,10 @@ materially; the strategy log stays the append-only history.
 | Feature | Status | Notes |
 |---|---|---|
 | 0DTE first-candle bias + break-and-retest (zero_dte) | live | Bias demoted to informational 2026-08-11 (graded 50.9% vs 52.6% always-BULLISH): entries fire either direction, NEUTRAL still stands down; LONG entries carry a below-breakeven warning (3/34, −21.8R lifetime) |
-| Morning day forecast (direction + ATR-projected high/low) | live | Direction = graded bias; range = 70/30 ATR split by bias side |
+| Morning day forecast (direction + ATR-projected high/low) | **removed 2026-08-12** | Replaced by the actual session high/low tracked on every alert |
 | Intraday weighted-vote forecasts, 15m + 5m streams | live | Change-driven posting; VOLATILE class for conflicts; per-stream tuned weights as of today |
 | RSI / VIX / Bollinger-touch watchers | live | BB watcher added 2026-08-07 (1m+5m, yfinance-only) |
-| SPX 0DTE range feed (`zero_dte/spx_options.py`) | live | The only options coverage — SPX is the traded instrument |
+| SPX 0DTE range feed (`zero_dte/spx_options.py`) | **removed 2026-08-12** | No options coverage remains — alerts are underlying-price signals for manual SPX trades |
 | SPY ATM option projection + EOD grading | **removed 2026-08-11** | Owner trades SPX only; historical `option_projections`/`option_outcomes` files remain, kinds retired |
 | Swing signals (TSLA/AMD/GOOG/META, 7–14 DTE picks) | live | Pre-open scan + midday confirmation; self-heals via `swing_open.json` |
 | Nightly self-tune + git auto-commit of `data/` | live | Both tuners now shrinkage-damped and step-capped (see below) |

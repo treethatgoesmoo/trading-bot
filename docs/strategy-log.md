@@ -29,6 +29,14 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-08-12 — Declutter: day forecast + SPX range feed removed; actual session H/L on every alert
+
+**Status:** ❌ removed at owner's request (noise reduction; no strategy logic changed)
+
+- **Morning day forecast removed** (direction + ATR-projected high/low, plus its embed, recovery path, and `day_forecast` data kind — retired). Its direction was the demoted no-edge bias; its projected range was an estimate nobody could act on. Replaced by the **actual session high/low**, computed from data already fetched (no new API calls), tracked live in `StrategyState` and shown on every forecast/signal/filtered alert, the daily summary, and `!status`. The change-driven posting trigger "projected-range breach" became "new session high/low" (0.1% hysteresis).
+- **SPX 0DTE range feed removed** (`zero_dte/spx_options.py`, its loop, `!spxrange`, `SPX_OPTIONS_*` config; `spx_options` kind retired). With the SPY projection already gone 2026-08-11, the bot now has no options coverage — signals are underlying-price alerts informing manual SPX trades. Removed code is in git history (`d20d240`..this commit) if wanted back.
+- The bias embed stays (informational, graded nightly, drives the NEUTRAL stand-down) — decided 2026-08-11.
+
 ## 2026-08-12 — Weekly candlestick patterns: rejected after out-of-sample split
 
 **Status:** ❌ rejected (closes the candlestick question at both horizons)
