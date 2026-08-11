@@ -10,7 +10,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
-| Daily candlestick patterns → next-day direction | ❌ rejected | All directional 48.3% (n=1066) vs 54.3% drift over 10y SPY+QQQ; best pattern +6.8p at n=80 ≈ 1.2σ (noise); doji/inside-bar chop read 47-48% |
+| Candlestick patterns → next-bar direction (daily AND weekly) | ❌ rejected both horizons | Daily: 48.3% (n=1066) vs 54.3% drift. Weekly, 25y × 4 ETFs: 52.4% (n=1283) vs 50.9% weighted bar; every "edge" flipped sign on out-of-sample DIA (Hammer +18.6p IWM / −11.2p DIA) |
 | Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ demoted to informational | 50.9% (29/57) vs 52.6% always-BULLISH; direction gate removed from break-and-retest 2026-08-11; NEUTRAL still stands down; still logged/graded |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
 | Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
@@ -28,6 +28,16 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-12 — Weekly candlestick patterns: rejected after out-of-sample split
+
+**Status:** ❌ rejected (closes the candlestick question at both horizons)
+
+- Follow-up to the daily rejection: same detectors resampled to completed weekly candles, graded vs next-week close-vs-open, 25y × SPY/QQQ/IWM/DIA (~1,244 weeks each; per-ticker tables + combined). Pre-committed bar: positive edge holding its **sign on every ticker**, with avg-move agreeing with hit rate.
+- Initial SPY+QQQ pool looked suggestive (ALL 54.2%, Hammer +9.5p, engulfings positive) — the four-ticker split showed **QQQ was carrying the pool** (55.7% all-directional) while never-touched **DIA came back 48.8% with nearly every pattern negative**. Sign flips everywhere: Hammer +14.4p QQQ / +18.6p IWM / **−11.2p DIA**; Bullish Engulfing +8.0p QQQ / **−2.1p DIA**. Combined ALL directional 52.4% (n=1283) vs a 50.9% direction-weighted bar ≈ 1.1σ.
+- **Bearish Engulfing confirmed the accuracy-without-expectancy trap**: +4.9p combined hit rate but −0.04% combined avg move (market flat-to-up after the pattern on SPY/QQQ) — right slightly more often, wrong bigger.
+- Indecision reads: Doji 49.4% / Inside Bar 46.5% combined at predicting a quiet week — no chop signal either.
+- **Candlesticks are now closed at both tested horizons** (daily next-day, weekly next-week) for index ETFs: explicit geometry, prior-move context conditioning, drift-honest baselines, out-of-sample tickers — no standalone directional edge survives. Detectors (`core/indicators.py`) and harness (`backtest_patterns.py`, `--weekly`) remain for any future variant (different horizon/conditioning/single names), which must clear the same bar.
 
 ## 2026-08-11 — 2-of-3 bias vote revalidated honestly: no edge over always-BULLISH
 
