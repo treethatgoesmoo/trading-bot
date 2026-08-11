@@ -169,16 +169,6 @@ BB_PERIOD = int(os.getenv("BB_PERIOD", "20"))
 BB_STD = float(os.getenv("BB_STD", "2.0"))
 BB_ALERT_COOLDOWN_MINUTES = int(os.getenv("BB_ALERT_COOLDOWN_MINUTES", "15"))
 
-# 0DTE option projection — posted with the morning day forecast: quote the
-# ATM same-day call and put, then Black-Scholes-reprice each at the day
-# forecast's projected high/low so the alert shows the option's potential
-# price range, not just the premium at capture. Logged to
-# data/option_projections-*.jsonl and graded at EOD against the contract's
-# actual daily OHLC (data/option_outcomes-*.jsonl) to tune the projections.
-OPTION_PROJECTION_ENABLED = _flag("OPTION_PROJECTION_ENABLED")
-OPTION_PROJECTION_TICKERS = [t.strip().upper() for t in os.getenv("OPTION_PROJECTION_TICKERS", "SPY").split(",") if t.strip()]
-OPTION_RISK_FREE_RATE = float(os.getenv("OPTION_RISK_FREE_RATE", "0.045"))  # annualized, for BS repricing
-
 # VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
 VIX_WATCH_ENABLED = _flag("VIX_WATCH_ENABLED")
 VIX_ELEVATED = 20.0   # regime thresholds

@@ -28,6 +28,13 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-08-11 — SPY option projection/grading removed (owner trades SPX only)
+
+**Status:** ❌ removed at owner's request
+
+- The 0DTE ATM option projection + EOD grading (added 2026-08-07, PR #27) quoted **SPY** contracts, but SPX is the traded instrument — the projections were decision noise, and the graded dataset would have tuned a model for options the owner doesn't trade. Removed: `zero_dte/options0dte.py`, `core/options_math.py` (BS pricing, no other consumer), the cog wiring/embed/tracker functions, and the `OPTION_PROJECTION_*` config. SPX options coverage continues via the `zero_dte/spx_options.py` range feed.
+- Only two days ever graded (2026-08-10, both flagged suspect from the capture-spot bug fixed the same day). Historical `option_projections-*`/`option_outcomes-*` files stay in `data/` untouched; the kind names are retired, not to be reused. If an option projection is ever wanted again, build it on SPX quotes — the removed code is in git history (`d20d240`..`090ae0e`).
+
 ## 2026-08-11 — Full-repo review: option-projection grading fixes; tuner snap-back bug
 
 **Status:** ⚠️ bugs fixed (feature logic unchanged)

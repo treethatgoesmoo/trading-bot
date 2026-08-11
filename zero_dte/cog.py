@@ -51,8 +51,6 @@ from config import (
     VIX_WATCH_ENABLED,
     BB_WATCH_ENABLED,
     BB_TICKERS,
-    OPTION_PROJECTION_ENABLED,
-    OPTION_PROJECTION_TICKERS,
 )
 from core import market_calendar
 from core import vix as vix_mod
@@ -80,10 +78,8 @@ from zero_dte.strategy import (
 )
 from zero_dte.tracker import (
     direction_record,
-    grade_option_projections,
     log_forecast,
     log_day_forecast,
-    log_option_projections,
     evaluate_forecasts,
     evaluate_votes,
     log_trade_outcome,
@@ -94,7 +90,6 @@ from zero_dte.tracker import (
 from zero_dte import spx_options
 from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.bb_watcher import BBWatcher
-from zero_dte.options0dte import build_projections
 from zero_dte.embeds import (
     bb_alert_embed,
     bias_embed,
@@ -103,7 +98,6 @@ from zero_dte.embeds import (
     filtered_embed,
     forecast_embed,
     forecast_results_embed,
-    option_projection_embed,
     outcome_embed,
     overextended_embed,
     premarket_embed,
@@ -349,25 +343,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         except Exception as exc:
             logger.warning("[%s] Day forecast recovery failed (attempt %d): %s",
                            ticker, st.day_forecast_attempts, exc)
-
-    async def _post_option_projection(self, channel, ticker: str, day_fc, now) -> None:
-        """Quote the ATM 0DTE call/put and post their projected price ranges
-        derived from the day forecast. Logs every projection for EOD grading.
-        Never raises — a chain failure must not break the bias step."""
-        if not OPTION_PROJECTION_ENABLED or ticker not in OPTION_PROJECTION_TICKERS:
-            return
-        try:
-            projections = await build_projections(
-                ticker, day_fc.open_price, day_fc.exp_high, day_fc.exp_low)
-            if not projections:
-                return
-            log_option_projections(projections, now)
-            await channel.send(embed=option_projection_embed(ticker, day_fc, projections))
-            logger.info("[%s] Option projection posted: %s", ticker,
-                        ", ".join(f"{p.kind} {p.strike:g} ~${p.premium:.2f} → [{p.proj_low:.2f}..{p.proj_high:.2f}]"
-                                  for p in projections))
-        except Exception as exc:
-            logger.warning("[%s] Option projection error: %s", ticker, exc)
 
     def build_status_embed(self) -> discord.Embed:
         now = datetime.now(ET)
@@ -757,23 +732,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 except Exception as exc:
                     logger.warning("Catch-up grading failed for %s on %s: %s", ticker, d, exc)
 
-        # Option projections grade separately (against the contract's own
-        # daily bar, which can lag or be missed entirely during downtime) —
-        # retry any past date whose projections still lack graded outcomes.
-        for d in [x for x in available_dates("option_projections") if x < today_str][-3:]:
-            projections = load_jsonl("option_projections", d)
-            graded_syms = {e.get("contract_symbol") for e in load_jsonl("option_outcomes", d)}
-            pending = {e.get("ticker") for e in projections
-                       if e.get("contract_symbol") and e["contract_symbol"] not in graded_syms}
-            for ticker in sorted(t for t in pending if t):
-                try:
-                    graded = await grade_option_projections(ticker, d)
-                    if graded:
-                        logger.info("Catch-up: graded %d option projection(s) for %s on %s",
-                                    len(graded), ticker, d)
-                except Exception as exc:
-                    logger.warning("Catch-up option grading failed for %s on %s: %s", ticker, d, exc)
-
     def _rehydrate_state(self, today_str: str) -> None:
         """After a mid-day restart, restore per-ticker flags from today's data
         files so already-alerted signals/forecasts/bias don't fire again."""
@@ -952,21 +910,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     log_trade_outcome(st.trade_outcome, now)
                     if channel:
                         await channel.send(f"**{ticker}** trade expired at market close — no target or stop hit.")
-
-                # Grade option projections on their own, later clock: SPY/QQQ
-                # options trade until 15 minutes after the equity close, and
-                # the contract's Yahoo daily bar needs time to settle — grading
-                # at 16:00 would bake an incomplete bar into option_outcomes.
-                if (not st.option_eval_done
-                        and now >= session_close + timedelta(minutes=30)):
-                    st.option_eval_done = True
-                    try:
-                        graded = await grade_option_projections(ticker, today_str)
-                        if graded:
-                            logger.info("[%s] [%s] Option projections graded: %d contract(s) → data/option_outcomes-%s.jsonl",
-                                        time_str, ticker, len(graded), today_str)
-                    except Exception as exc:
-                        logger.warning("[%s] [%s] Option projection grading error: %s", time_str, ticker, exc)
 
                 # Evaluate today's forecasts + bias against actual outcomes (once per day)
                 if not st.forecast_eval_done:
@@ -1188,7 +1131,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     log_day_forecast(day_fc, now)
                                     if first_post:
                                         await channel.send(embed=day_forecast_embed(day_fc))
-                                        await self._post_option_projection(channel, ticker, day_fc, now)
                             except Exception as exc:
                                 logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:
