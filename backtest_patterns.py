@@ -213,6 +213,7 @@ def main() -> None:
         "with_trend": [0, 0], "counter_trend": [0, 0], "chop_correct": 0})
     current: list[tuple[str, str, list[dict]]] = []
 
+    per_ticker: list[tuple[str, dict]] = []
     for ticker in [t.strip().upper() for t in args.tickers.split(",") if t.strip()]:
         df = load_daily(ticker, args.years)
         if df is not None and args.weekly:
@@ -223,13 +224,24 @@ def main() -> None:
         print(f"[{ticker}] {len(df)} {bar} candles "
               f"({pd.to_datetime(df['timestamp'].iloc[0]).date()} -> "
               f"{pd.to_datetime(df['timestamp'].iloc[-1]).date()})")
-        merge(total, replay(df, verbose=args.verbose, ticker=ticker))
+        stats = replay(df, verbose=args.verbose, ticker=ticker)
+        per_ticker.append((ticker, stats))
+        merge(total, stats)
         current.append((ticker, str(pd.to_datetime(df["timestamp"].iloc[-1]).date()),
                         detect_candlestick_patterns(df.tail(DETECT_TAIL))))
 
     if not total:
         print("Nothing to report.")
         return
+
+    # Per-ticker tables first: an edge that's real should hold its SIGN on
+    # every ticker independently — a pooled positive built from one ticker's
+    # win and another's loss is selection noise, not a signal.
+    if len(per_ticker) > 1:
+        for ticker, stats in per_ticker:
+            print(f"\n{'—' * 24} {ticker} {'—' * 24}")
+            report(stats)
+        print(f"\n{'—' * 22} COMBINED {'—' * 22}")
     report(total)
 
     # The forward-looking read the replay is validating: patterns in the last
