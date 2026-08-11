@@ -757,6 +757,23 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 except Exception as exc:
                     logger.warning("Catch-up grading failed for %s on %s: %s", ticker, d, exc)
 
+        # Option projections grade separately (against the contract's own
+        # daily bar, which can lag or be missed entirely during downtime) —
+        # retry any past date whose projections still lack graded outcomes.
+        for d in [x for x in available_dates("option_projections") if x < today_str][-3:]:
+            projections = load_jsonl("option_projections", d)
+            graded_syms = {e.get("contract_symbol") for e in load_jsonl("option_outcomes", d)}
+            pending = {e.get("ticker") for e in projections
+                       if e.get("contract_symbol") and e["contract_symbol"] not in graded_syms}
+            for ticker in sorted(t for t in pending if t):
+                try:
+                    graded = await grade_option_projections(ticker, d)
+                    if graded:
+                        logger.info("Catch-up: graded %d option projection(s) for %s on %s",
+                                    len(graded), ticker, d)
+                except Exception as exc:
+                    logger.warning("Catch-up option grading failed for %s on %s: %s", ticker, d, exc)
+
     def _rehydrate_state(self, today_str: str) -> None:
         """After a mid-day restart, restore per-ticker flags from today's data
         files so already-alerted signals/forecasts/bias don't fire again."""
@@ -936,13 +953,13 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     if channel:
                         await channel.send(f"**{ticker}** trade expired at market close — no target or stop hit.")
 
-                # Evaluate today's forecasts + bias against actual outcomes (once per day)
-                if not st.forecast_eval_done:
-                    st.forecast_eval_done = True
-                    try:
-                        await evaluate_bias(self.client, ticker, today_str)
-                    except Exception as exc:
-                        logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
+                # Grade option projections on their own, later clock: SPY/QQQ
+                # options trade until 15 minutes after the equity close, and
+                # the contract's Yahoo daily bar needs time to settle — grading
+                # at 16:00 would bake an incomplete bar into option_outcomes.
+                if (not st.option_eval_done
+                        and now >= session_close + timedelta(minutes=30)):
+                    st.option_eval_done = True
                     try:
                         graded = await grade_option_projections(ticker, today_str)
                         if graded:
@@ -950,6 +967,14 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                         time_str, ticker, len(graded), today_str)
                     except Exception as exc:
                         logger.warning("[%s] [%s] Option projection grading error: %s", time_str, ticker, exc)
+
+                # Evaluate today's forecasts + bias against actual outcomes (once per day)
+                if not st.forecast_eval_done:
+                    st.forecast_eval_done = True
+                    try:
+                        await evaluate_bias(self.client, ticker, today_str)
+                    except Exception as exc:
+                        logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
                     try:
                         results = await evaluate_forecasts(self.client, ticker, today_str)
                         if results:

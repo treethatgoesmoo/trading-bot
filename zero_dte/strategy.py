@@ -282,6 +282,10 @@ class StrategyState:
         self.last_posted_forecast: DirectionForecast | None = None
         self.last_posted_time: datetime | None = None
         self.forecast_eval_done: bool = False
+        # Option projections grade later than forecasts (options close 16:15
+        # ET + bar-settle delay); idempotent per contract, so a restart that
+        # loses this flag can't double-write.
+        self.option_eval_done: bool = False
         self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
     def reset(self, today: str | None = None):

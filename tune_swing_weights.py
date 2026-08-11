@@ -37,7 +37,7 @@ import pytz
 from config import TUNED_WEIGHT_FLOOR
 from core.paths import SWING_WEIGHTS_FILE
 from core.tracking import available_dates, load_jsonl
-from core.tuning import accuracy_to_weight, shrunk_accuracy, step_limited
+from core.tuning import accuracy_to_weight, load_previous_weights, shrunk_accuracy, step_limited
 from swing.strategy import SWING_INDICATOR_WEIGHTS
 
 ET = pytz.timezone("US/Eastern")
@@ -59,15 +59,7 @@ def indicator_stats(dates: list[str]) -> dict[str, dict]:
 
 
 def _previous_weights() -> dict:
-    """The weights file as last written ({} when absent/unreadable) — the
-    step cap limits each retune's movement relative to these."""
-    try:
-        with open(SWING_WEIGHTS_FILE) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    w = data.get("weights", data)
-    return w if isinstance(w, dict) else {}
+    return load_previous_weights(SWING_WEIGHTS_FILE)
 
 
 def suggest_weights(stats: dict[str, dict], min_samples: int,
@@ -78,11 +70,20 @@ def suggest_weights(stats: dict[str, dict], min_samples: int,
     the shrinkage matters even more here than for the 0DTE streams."""
     weights = dict(SWING_INDICATOR_WEIGHTS)
     prev = prev or {}
+    # Anchor to the last written weights: an indicator whose sample count
+    # drops below min_samples keeps its current tuned value instead of
+    # snapping back to the code default (which would bypass the step cap).
+    for name, val in prev.items():
+        if name in weights:
+            try:
+                weights[name] = float(val)
+            except (TypeError, ValueError):
+                pass
     for name, s in stats.items():
         if s["n"] < min_samples:
             continue
         target = accuracy_to_weight(s["correct"], s["n"])
-        anchor = float(prev.get(name, SWING_INDICATOR_WEIGHTS.get(name, TUNED_WEIGHT_FLOOR)))
+        anchor = weights.get(name, TUNED_WEIGHT_FLOOR)
         weights[name] = step_limited(target, anchor)
     return weights
 

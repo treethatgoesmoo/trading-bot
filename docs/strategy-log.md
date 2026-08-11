@@ -28,6 +28,15 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-08-11 — Full-repo review: option-projection grading fixes; tuner snap-back bug
+
+**Status:** ⚠️ bugs fixed (feature logic unchanged)
+
+- **Option projection captured "spot" as the 9:30 open**, not the price when the projection actually runs (~9:35+). A drifted spot picks the wrong ATM strike and poisons the IV calibration — a mid embedding real intrinsic solved against a spot with zero intrinsic inflates sigma, or falls outside the model's band and silently drops to stale chain IV. Now fetches the live 1m close at capture (open stays as fallback). **The 2026-08-10 `option_projections`/`option_outcomes` rows predate this fix (and were quoted off stale bid/ask at 9:35) — treat them as suspect when tuning.**
+- **Option grading ran at 16:00**, but SPY/QQQ options trade until 16:15 ET and the contract's Yahoo daily bar needs settling time — actuals were captured off an incomplete bar. Grading now waits until session close + 30 min on its own done-flag.
+- **The "retried by the next catch-up pass" for ungraded projections didn't exist** — `_grade_missed_days` never called option grading, and the fetch took Yahoo's latest bar (wrong day after downtime). Catch-up now retries past dates with ungraded contracts, and the fetch selects the bar dated to the contract's expiry.
+- **Tuner snap-back**: an indicator dipping below `min_samples` reverted to its *code default* instead of holding its last tuned value — a 0.3→1.0 jump that bypassed the brand-new step cap. Both tuners now anchor to the previously written file.
+
 ## 2026-08-11 — Tuner made noise-resistant; naive baselines and overlap audit added
 
 **Status:** ✅ adopted (measurement changes; no vote logic touched)

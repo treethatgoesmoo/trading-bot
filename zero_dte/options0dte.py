@@ -74,6 +74,14 @@ def _num(val, default=0.0) -> float:
         return default
 
 
+def _last_price(ticker: str) -> float | None:
+    """Blocking: latest 1-min close (regular hours). Runs in a thread."""
+    df = yf.Ticker(ticker).history(period="1d", interval="1m")
+    if df is None or df.empty:
+        return None
+    return float(df["Close"].iloc[-1])
+
+
 def _quote_atm(ticker: str, spot: float, expiry: str) -> dict | None:
     """Blocking: ATM call + put rows for one expiry. Runs in a thread."""
     chain = yf.Ticker(ticker).option_chain(expiry)
@@ -98,7 +106,8 @@ def _quote_atm(ticker: str, spot: float, expiry: str) -> dict | None:
 async def build_projections(ticker: str, spot: float, exp_high: float,
                             exp_low: float) -> list[OptionProjection]:
     """ATM call + put projections for today's expiry; [] when the ticker has
-    no same-day expiry or quoting fails (never raises)."""
+    no same-day expiry or quoting fails (never raises). `spot` is a fallback
+    (the day's open) — the live price at capture is fetched below."""
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
     try:
@@ -109,6 +118,19 @@ async def build_projections(ticker: str, spot: float, exp_high: float,
     if not expiries or today not in expiries:
         logger.info("[%s] No 0DTE expiry today — option projection skipped", ticker)
         return []
+
+    # Spot at CAPTURE, not the 9:30 open the day forecast anchors to. The
+    # capture runs minutes after the open; if price has drifted, an open-price
+    # spot picks the wrong ATM strike and poisons the IV calibration — a mid
+    # embedding real intrinsic solved against a spot where intrinsic is zero
+    # inflates sigma, or falls outside the model's reachable band and silently
+    # drops to stale chain IV.
+    try:
+        live = await asyncio.to_thread(_last_price, ticker)
+    except Exception:
+        live = None
+    if live:
+        spot = live
 
     try:
         quotes = await asyncio.to_thread(_quote_atm, ticker, spot, today)
@@ -174,14 +196,24 @@ def projection_dict(proj: OptionProjection) -> dict:
     return asdict(proj)
 
 
-async def fetch_contract_ohlc(contract_symbol: str) -> dict | None:
+async def fetch_contract_ohlc(contract_symbol: str,
+                              expiry: str | None = None) -> dict | None:
     """Actual daily OHLC bar for an option contract (its own Yahoo ticker).
-    Used by EOD grading. Returns None when Yahoo has no bar (no trades)."""
+    Used by EOD grading, which may run a day or two late after downtime — so
+    fetch a few days and pick the bar dated `expiry` (a 0DTE contract's only
+    real session) rather than blindly taking the latest row. Returns None
+    when Yahoo has no matching bar (no trades / not yet published)."""
     def _dl():
-        df = yf.Ticker(contract_symbol).history(period="1d")
+        df = yf.Ticker(contract_symbol).history(period="5d")
         if df is None or df.empty:
             return None
-        row = df.iloc[-1]
+        if expiry:
+            match = df[df.index.strftime("%Y-%m-%d") == expiry]
+            if match.empty:
+                return None
+            row = match.iloc[-1]
+        else:
+            row = df.iloc[-1]
         return {
             "high": round(_num(row.get("High")), 2),
             "low": round(_num(row.get("Low")), 2),

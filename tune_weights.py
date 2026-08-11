@@ -40,7 +40,7 @@ import pytz
 from config import TUNED_WEIGHT_FLOOR
 from core.paths import DATA_DIR
 from core.tracking import available_dates
-from core.tuning import accuracy_to_weight, shrunk_accuracy, step_limited
+from core.tuning import accuracy_to_weight, load_previous_weights, shrunk_accuracy, step_limited
 from zero_dte.tracker import load_results
 from zero_dte.strategy import INDICATOR_WEIGHTS
 
@@ -49,7 +49,7 @@ DIRECTIONAL = ("BULLISH", "BEARISH")
 WEIGHTS_PATH = os.path.join(DATA_DIR, "indicator_weights.json")
 
 
-def indicator_stats(dates: list[str]) -> dict[str, dict[str, dict]]:
+def indicator_stats(rows: list[dict]) -> dict[str, dict[str, dict]]:
     """Per-stream accuracy: {interval: {indicator: {n, correct}}}.
 
     The 5m companion stream grades very differently from the main 15m stream
@@ -60,32 +60,23 @@ def indicator_stats(dates: list[str]) -> dict[str, dict[str, dict]]:
     """
     agg: dict[str, dict[str, dict]] = defaultdict(
         lambda: defaultdict(lambda: {"n": 0, "correct": 0}))
-    for d in dates:
-        for r in load_results(d):
-            interval = r.get("interval")
-            if interval is None:
-                continue
-            actual = r.get("actual")
-            if actual not in DIRECTIONAL:
-                continue
-            for name, signal in (r.get("signals") or {}).items():
-                if signal in DIRECTIONAL:
-                    s = agg[str(interval)][name]
-                    s["n"] += 1
-                    s["correct"] += (signal == actual)
+    for r in rows:
+        interval = r.get("interval")
+        if interval is None:
+            continue
+        actual = r.get("actual")
+        if actual not in DIRECTIONAL:
+            continue
+        for name, signal in (r.get("signals") or {}).items():
+            if signal in DIRECTIONAL:
+                s = agg[str(interval)][name]
+                s["n"] += 1
+                s["correct"] += (signal == actual)
     return {iv: dict(names) for iv, names in agg.items()}
 
 
 def _previous_weights() -> dict:
-    """The weights file as last written ({} when absent/unreadable) — the
-    step cap limits each retune's movement relative to these."""
-    try:
-        with open(WEIGHTS_PATH) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    w = data.get("weights", data)
-    return w if isinstance(w, dict) else {}
+    return load_previous_weights(WEIGHTS_PATH)
 
 
 def _prev_for_interval(prev_all: dict, interval: str) -> dict:
@@ -102,11 +93,20 @@ def suggest_weights(stats: dict[str, dict], min_samples: int,
     size, then step-limited against the previous weight (see core/tuning.py)."""
     weights = dict(INDICATOR_WEIGHTS)
     prev = prev or {}
+    # Anchor to the last written weights: an indicator whose sample count
+    # drops below min_samples keeps its current tuned value instead of
+    # snapping back to the code default (which would bypass the step cap).
+    for name, val in prev.items():
+        if name in weights:
+            try:
+                weights[name] = float(val)
+            except (TypeError, ValueError):
+                pass
     for name, s in stats.items():
         if s["n"] < min_samples:
             continue
         target = accuracy_to_weight(s["correct"], s["n"])
-        anchor = float(prev.get(name, INDICATOR_WEIGHTS.get(name, TUNED_WEIGHT_FLOOR)))
+        anchor = weights.get(name, TUNED_WEIGHT_FLOOR)
         weights[name] = step_limited(target, anchor)
     return weights
 
@@ -122,7 +122,7 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         dates = dates[-days:]
     if not dates:
         return None
-    stats = indicator_stats(dates)
+    stats = indicator_stats([r for d in dates for r in load_results(d)])
     if not stats:
         return None
     prev_all = _previous_weights()
@@ -163,7 +163,8 @@ def main() -> None:
         print("No results-*.json files found -- run the bot (or backfill.py) first.")
         return
 
-    stats = indicator_stats(dates)
+    all_rows = [r for d in dates for r in load_results(d)]
+    stats = indicator_stats(all_rows)
     if not stats:
         print(f"No graded indicator signals in {len(dates)} result day(s) "
               "(interval-labeled rows only; pre-2026-07-27 grades are excluded).")
@@ -172,7 +173,6 @@ def main() -> None:
     prev_all = _previous_weights()
     # Naive baselines: an indicator below these is worse than doing nothing.
     from core.analytics import indicator_overlap, stream_baselines
-    all_rows = [r for d in dates for r in load_results(d)]
     baselines = {b["stream"]: b for b in stream_baselines(all_rows)}
     flagged_overlap = [o for o in indicator_overlap(all_rows) if o["flagged"]]
 

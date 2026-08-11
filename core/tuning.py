@@ -11,12 +11,29 @@ measures 65% — so the mapping here applies two dampers:
   2. Step cap: a weight moves at most TUNED_WEIGHT_MAX_STEP per retune from
      its previous value, so one odd day can't swing the live ensemble.
 
-Pure math, no I/O — callers pass the previous weights in.
+The only I/O here is load_previous_weights (reading the last written file);
+everything else is pure math on values the callers pass in.
 """
 
 from __future__ import annotations
 
+import json
+
 from config import TUNED_WEIGHT_FLOOR, TUNED_WEIGHT_MAX_STEP, TUNED_WEIGHT_SHRINKAGE
+
+
+def load_previous_weights(path: str) -> dict:
+    """The weights file as last written ({} when absent/unreadable) — the
+    step cap limits each retune's movement relative to these. Returns the
+    raw 'weights' mapping, which for the 0DTE file may be nested per
+    interval ({"15": {...}, "5": {...}})."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    w = data.get("weights", data)
+    return w if isinstance(w, dict) else {}
 
 
 def shrunk_accuracy(correct: int, n: int, prior: float = TUNED_WEIGHT_SHRINKAGE) -> float:

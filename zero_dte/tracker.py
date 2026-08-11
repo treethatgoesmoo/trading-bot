@@ -174,7 +174,7 @@ async def grade_option_projections(ticker: str, date_str: str) -> list[dict]:
         symbol = proj.get("contract_symbol")
         if not symbol or symbol in already:
             continue
-        actual = await fetch_contract_ohlc(symbol)
+        actual = await fetch_contract_ohlc(symbol, proj.get("expiry"))
         if actual is None:
             continue  # no traded bar — retried by the next catch-up pass
         proj_high = proj.get("proj_high") or 0.0
