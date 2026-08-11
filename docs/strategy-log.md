@@ -11,7 +11,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | Idea | Status | Key number |
 |---|---|---|
 | Daily candlestick patterns → next-day direction | ❌ rejected | All directional 48.3% (n=1066) vs 54.3% drift over 10y SPY+QQQ; best pattern +6.8p at n=80 ≈ 1.2σ (noise); doji/inside-bar chop read 47-48% |
-| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
+| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ validation failed | Honest 60-day replay: 50.9% (29/57) vs 52.6% always-BULLISH on the same days; bearish leg 47.4%; the 65% adoption number was lookahead artifact |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
 | Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
 | LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
@@ -28,6 +28,15 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-11 — 2-of-3 bias vote revalidated honestly: no edge over always-BULLISH
+
+**Status:** ❌ validation failed (live handling decision recorded separately when made)
+
+- First honest measurement of the current bias rule, via the new report-only replay (`python backfill.py 60 SPY --bias-report` — fixed harness, strict `< day` truncation, nothing written): **29/57 directional calls correct (50.9%) vs 52.6% always-BULLISH over the same days** (2026-05-15 → 2026-08-11, 3 NEUTRAL days). Bullish calls 20/38 = 52.6% — exactly the drift rate, i.e. zero information; bearish calls **9/19 = 47.4%**.
+- The **65% replay that justified adopting the vote on 2026-08-06 is confirmed to have been lookahead artifact** (the harness fed the replay day's own close to the trend/RSI components — logged 2026-08-11). The 5/6 live record since adoption was small-sample luck.
+- The bearish leg is now weak across **both** bias rules and both measurement eras: 38.5% live under the old first-candle rule, 47.4% replayed under the 2-of-3 vote. Whatever the morning information set contains, "today will be red" has never been extractable from it here.
+- Statistical honesty: n=57 → ±13p at 95%, so this does not prove the vote is worse than always-BULLISH — but the adoption evidence is gone and nothing measurable remains in its favor. Third strike for morning-direction signals overall (old bias rule 50%, daily candlestick patterns 48.3%, 2-of-3 vote 50.9% vs 52.6% bar).
 
 ## 2026-08-11 — Daily candlestick patterns as a bias/forecast source: rejected
 
