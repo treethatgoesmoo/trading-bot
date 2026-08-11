@@ -114,31 +114,15 @@ KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com
 ECON_EVENTS_ENABLED = _flag("ECON_EVENTS_ENABLED")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
-# RSI reversal watcher (real-time alerts on 5m + 15m).
-# Standalone pings default OFF: they duplicated/contradicted the intraday
-# forecast posted alongside them — RSI reversal state now stamps a caution
-# line on the forecast embed instead (see compute_30m_forecast.rsi_caution).
-# `!rsi` still checks live on demand; set RSI_WATCH_ENABLED=1 to re-enable.
-RSI_WATCH_ENABLED = _flag("RSI_WATCH_ENABLED", "0")
-RSI_PERIOD = 14
+# RSI thresholds used by the intraday forecast (rsi_caution line + the
+# pivot-based divergence voter). The standalone RSI watcher was removed
+# 2026-08-12 — its reversal state had already been folded into the forecast.
 RSI_OB_WARN = 70.0     # overbought warning
-RSI_OB_EXTREME = 80.0  # overbought extreme
 RSI_OS_WARN = 30.0     # oversold warning
-RSI_OS_EXTREME = 20.0  # oversold extreme
-RSI_DIV_LOOKBACK = 40  # bars to scan for divergence / failure-swing pivots
+RSI_DIV_LOOKBACK = 40  # bars to scan for divergence pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
-# Which divergence directions to alert on: both | bullish | bearish | off.
-# Default off: standalone divergence pings contradicted the forecast posted
-# moments earlier — divergence now votes inside the intraday forecast instead
-# (compute_30m_forecast checks the forecast frame, then 5m).
-RSI_DIVERGENCE_DIRECTIONS = os.getenv("RSI_DIVERGENCE_DIRECTIONS", "off").lower()
-RSI_WATCH_INTERVAL_SECONDS = 60  # min seconds between watcher runs
-# Anti-spam: identical (timeframe, kind, direction, stage) alerts are
-# suppressed for this long — RSI oscillating around 30/70 otherwise pings on
-# every crossing, and sliding-window pivots re-fire the same divergence.
-RSI_ALERT_COOLDOWN_MINUTES = int(os.getenv("RSI_ALERT_COOLDOWN_MINUTES", "30"))
-RSI_DIV_RSI_GATE = 50.0     # divergence pings only while RSI is still on the reversal side
-RSI_FS_STALE_MARGIN = 10.0  # failure-swing break further than this past its trigger is stale
+RSI_DIV_RSI_GATE = 50.0  # divergence counts only while RSI is still on the reversal side
+WATCH_INTERVAL_SECONDS = 60  # min seconds between VIX/BB watcher runs
 
 # Bollinger band touch watcher — pings when a closed 1m/5m candle closes at
 # or beyond the upper/lower band. Fires once per touch (re-arms only after a

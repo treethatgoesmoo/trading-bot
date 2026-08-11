@@ -39,8 +39,7 @@ from config import (
     FORECAST_START_MINUTE,
     FORECAST_END_HOUR,
     FORECAST_END_MINUTE,
-    RSI_WATCH_ENABLED,
-    RSI_WATCH_INTERVAL_SECONDS,
+    WATCH_INTERVAL_SECONDS,
     VIX_WATCH_ENABLED,
     BB_WATCH_ENABLED,
     BB_TICKERS,
@@ -77,7 +76,6 @@ from zero_dte.tracker import (
     log_filters,
     evaluate_bias,
 )
-from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.bb_watcher import BBWatcher
 from zero_dte.embeds import (
     bb_alert_embed,
@@ -90,7 +88,6 @@ from zero_dte.embeds import (
     overextended_embed,
     premarket_embed,
     range_embed,
-    rsi_alert_embed,
     signal_embed,
     vix_alert_embed,
 )
@@ -110,8 +107,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self.active_tickers: list[str] = list(TICKERS)
         self.states: dict[str, StrategyState] = {t: StrategyState() for t in self.active_tickers}
         self._load_watchlist()
-        self.rsi_watchers: dict[str, RSIWatcher] = {t: RSIWatcher(t) for t in self.active_tickers}
-        self._rsi_last_run: datetime | None = None
+        self._watch_last_run: datetime | None = None
         self.vix_watcher = vix_mod.VixWatcher()
         self.bb_watchers: dict[str, BBWatcher] = {t: BBWatcher(t) for t in BB_TICKERS}
         self._menu_view_registered = False
@@ -162,43 +158,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         return upper if upper in self.states else None
 
     # ── Watchers ─────────────────────────────────────────────────────────
-
-    async def run_rsi_watch(self, channel) -> None:
-        """Poll every watched ticker's RSI on 5m+15m and post any reversal pings."""
-        if not RSI_WATCH_ENABLED:
-            return
-        for ticker in list(self.active_tickers):
-            watcher = self.rsi_watchers.get(ticker)
-            if watcher is None:
-                watcher = self.rsi_watchers[ticker] = RSIWatcher(ticker)
-            try:
-                alerts = await watcher.check(self.client)
-            except Exception as exc:
-                logger.warning("[%s] RSI watch error: %s", ticker, exc)
-                continue
-            embeds = []
-            confirmed_any = False
-            for alert in alerts:
-                logger.info("[%s] RSI alert: %s %s %s (%s) conf=%s | %s",
-                            ticker, alert.timeframe, alert.kind, alert.direction,
-                            alert.rsi, alert.confirmed, alert.message)
-                try:
-                    append_jsonl("rsi_alerts", datetime.now(ET).strftime("%Y-%m-%d"), {
-                        "ticker": ticker, "time": datetime.now(pytz.UTC).isoformat(),
-                        "timeframe": alert.timeframe, "kind": alert.kind,
-                        "direction": alert.direction, "stage": alert.stage,
-                        "tier": alert.tier, "rsi": alert.rsi, "confirmed": alert.confirmed,
-                    })
-                except Exception:
-                    pass
-                confirmed_any = confirmed_any or alert.confirmed
-                embeds.append(rsi_alert_embed(alert))
-            # One message per ticker per cycle — simultaneous 5m/15m signals
-            # used to arrive as 2-4 separate pings.
-            if channel and embeds:
-                content = "\U0001f514 **Confirmed RSI reversal**" if confirmed_any else None
-                for i in range(0, len(embeds), 10):
-                    await channel.send(content if i == 0 else None, embeds=embeds[i:i + 10])
 
     async def run_bb_watch(self, channel) -> None:
         """Poll Bollinger band touches on 1m+5m and post any pings."""
@@ -532,7 +491,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             return
         self.active_tickers.append(upper)
         self.states[upper] = StrategyState()
-        self.rsi_watchers[upper] = RSIWatcher(upper)
         today_str = datetime.now(ET).strftime("%Y-%m-%d")
         self.states[upper].trading_day = today_str
         self._save_watchlist()
@@ -550,7 +508,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             return
         self.active_tickers.remove(upper)
         del self.states[upper]
-        self.rsi_watchers.pop(upper, None)
         self._save_watchlist()
         await ctx.send(f"❌ Removed **{upper}** from watchlist. Now tracking: {', '.join(self.active_tickers)}")
 
@@ -558,44 +515,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
     async def cmd_watchlist(self, ctx):
         """Show current watchlist."""
         await ctx.send(f"**Watchlist:** {', '.join(self.active_tickers)}")
-
-    @commands.command(name="rsi")
-    async def cmd_rsi(self, ctx, ticker: str = None):
-        """Show current 5m/15m RSI and run the reversal watcher. Usage: !rsi [ticker]"""
-        resolved = self._resolve_ticker(ticker)
-        if resolved is None:
-            await ctx.send(f"Specify a ticker: `!rsi <{'|'.join(self.active_tickers)}>`")
-            return
-        from core.indicators import rsi_series
-
-        lines = []
-        watcher = self.rsi_watchers.get(resolved) or RSIWatcher(resolved)
-        posted = 0
-        for tf in TIMEFRAMES:
-            try:
-                df = await self.client.fetch_candles(resolved, interval=tf, count=120)
-                r = rsi_series(df["close"].astype(float), watcher.period)
-                val = r.iloc[-1]
-                zone = ("overbought" if val >= 70 else "oversold" if val <= 30 else "neutral")
-                lines.append(f"**{TF_LABEL[tf]}**: RSI {val:.1f} ({zone})")
-            except Exception as exc:
-                lines.append(f"**{TF_LABEL[tf]}**: error — {exc}")
-
-        embed = discord.Embed(title=f"📈 RSI — {resolved}", color=0x3498DB,
-                              description="\n".join(lines))
-        embed.set_footer(text="Live watcher pings on threshold/divergence/failure-swing reversals")
-        await ctx.send(embed=embed)
-
-        # Also surface any live signal right now.
-        try:
-            alerts = await watcher.check(self.client)
-            for alert in alerts:
-                await ctx.send(embed=rsi_alert_embed(alert))
-                posted += 1
-        except Exception:
-            pass
-        if not posted:
-            await ctx.send("No active RSI reversal signal at the moment.")
 
     @commands.command(name="vix")
     async def cmd_vix(self, ctx):
@@ -820,7 +739,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             logger.info("[%s] New trading day detected (%s) — resetting state for all tickers", time_str, today_str)
             for ticker in self.active_tickers:
                 self.states[ticker].reset(today_str)
-                self.rsi_watchers.setdefault(ticker, RSIWatcher(ticker)).reset()
             self.vix_watcher.reset()
             for watcher in self.bb_watchers.values():
                 watcher.reset()
@@ -986,10 +904,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
 
         # RSI + VIX watchers — run all session, throttled, ping on detection
         if (is_market_open() and
-                (self._rsi_last_run is None or (now - self._rsi_last_run).total_seconds() >= RSI_WATCH_INTERVAL_SECONDS)):
-            self._rsi_last_run = now
-            if RSI_WATCH_ENABLED:
-                await self.run_rsi_watch(channel)
+                (self._watch_last_run is None or (now - self._watch_last_run).total_seconds() >= WATCH_INTERVAL_SECONDS)):
+            self._watch_last_run = now
             await self.run_vix_watch(channel)
             await self.run_bb_watch(channel)
 

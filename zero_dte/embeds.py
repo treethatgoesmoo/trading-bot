@@ -21,7 +21,6 @@ from zero_dte.strategy import (
 )
 
 ET = pytz.timezone("US/Eastern")
-from zero_dte.rsi_watcher import RSIAlert, TF_LABEL
 
 
 def bias_embed(bias: DailyBias) -> discord.Embed:
@@ -330,32 +329,6 @@ def daily_summary_embed(today_str: str, active_tickers: list[str], states: dict)
 
     embed.set_footer(text=f"Morning bias (~9:35 ET) drove today's entries; 'Intraday now' is the latest "
                           f"{FORECAST_INTERVAL_MINUTES}-min forecast and can diverge as the tape changes")
-    return embed
-
-
-_RSI_KIND_LABEL = {
-    "THRESHOLD": "RSI Threshold",
-    "DIVERGENCE": "RSI Divergence",
-    "FAILURE_SWING": "RSI Failure Swing",
-}
-
-
-def rsi_alert_embed(alert: RSIAlert) -> discord.Embed:
-    """A reversal-watcher ping for a single RSI signal."""
-    if alert.direction == "BULLISH":
-        color, arrow = 0x00CC66, "⬆️"
-    else:
-        color, arrow = 0xFF4444, "⬇️"
-    tier = f" [{alert.tier.upper()}]" if alert.tier else ""
-    kind = _RSI_KIND_LABEL.get(alert.kind, alert.kind)
-    title = f"\U0001f514 {arrow} {kind}{tier} — {alert.ticker} ({TF_LABEL[alert.timeframe]})"
-    embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="Signal", value=alert.message, inline=False)
-    embed.add_field(name="RSI", value=f"{alert.rsi}", inline=True)
-    embed.add_field(name="Implied", value=f"{alert.direction} reversal ({alert.stage})", inline=True)
-    if alert.confirmed:
-        embed.add_field(name="Confirmation", value="✅ 5m + 15m agree", inline=True)
-    embed.set_footer(text="RSI reversal watcher — confirm with price action before acting")
     return embed
 
 

@@ -959,7 +959,7 @@ async def _build_signal_or_filtered(
 def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
                        lookback: int = RSI_DIV_LOOKBACK,
                        order: int = RSI_PIVOT_ORDER) -> str | None:
-    """Pivot-based RSI divergence (same detection as rsi_watcher).
+    """Pivot-based RSI divergence.
 
     Bearish: the last two price swing highs rise while RSI at those highs falls.
     Bullish: the last two price swing lows fall while RSI at those lows rises.
