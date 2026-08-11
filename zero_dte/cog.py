@@ -51,8 +51,6 @@ from config import (
     VIX_WATCH_ENABLED,
     BB_WATCH_ENABLED,
     BB_TICKERS,
-    OPTION_PROJECTION_ENABLED,
-    OPTION_PROJECTION_TICKERS,
 )
 from core import market_calendar
 from core import vix as vix_mod
@@ -80,10 +78,8 @@ from zero_dte.strategy import (
 )
 from zero_dte.tracker import (
     direction_record,
-    grade_option_projections,
     log_forecast,
     log_day_forecast,
-    log_option_projections,
     evaluate_forecasts,
     evaluate_votes,
     log_trade_outcome,
@@ -94,7 +90,6 @@ from zero_dte.tracker import (
 from zero_dte import spx_options
 from zero_dte.rsi_watcher import RSIWatcher, TIMEFRAMES, TF_LABEL
 from zero_dte.bb_watcher import BBWatcher
-from zero_dte.options0dte import build_projections
 from zero_dte.embeds import (
     bb_alert_embed,
     bias_embed,
@@ -103,7 +98,6 @@ from zero_dte.embeds import (
     filtered_embed,
     forecast_embed,
     forecast_results_embed,
-    option_projection_embed,
     outcome_embed,
     overextended_embed,
     premarket_embed,
@@ -349,25 +343,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         except Exception as exc:
             logger.warning("[%s] Day forecast recovery failed (attempt %d): %s",
                            ticker, st.day_forecast_attempts, exc)
-
-    async def _post_option_projection(self, channel, ticker: str, day_fc, now) -> None:
-        """Quote the ATM 0DTE call/put and post their projected price ranges
-        derived from the day forecast. Logs every projection for EOD grading.
-        Never raises — a chain failure must not break the bias step."""
-        if not OPTION_PROJECTION_ENABLED or ticker not in OPTION_PROJECTION_TICKERS:
-            return
-        try:
-            projections = await build_projections(
-                ticker, day_fc.open_price, day_fc.exp_high, day_fc.exp_low)
-            if not projections:
-                return
-            log_option_projections(projections, now)
-            await channel.send(embed=option_projection_embed(ticker, day_fc, projections))
-            logger.info("[%s] Option projection posted: %s", ticker,
-                        ", ".join(f"{p.kind} {p.strike:g} ~${p.premium:.2f} → [{p.proj_low:.2f}..{p.proj_high:.2f}]"
-                                  for p in projections))
-        except Exception as exc:
-            logger.warning("[%s] Option projection error: %s", ticker, exc)
 
     def build_status_embed(self) -> discord.Embed:
         now = datetime.now(ET)
@@ -944,13 +919,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     except Exception as exc:
                         logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
                     try:
-                        graded = await grade_option_projections(ticker, today_str)
-                        if graded:
-                            logger.info("[%s] [%s] Option projections graded: %d contract(s) → data/option_outcomes-%s.jsonl",
-                                        time_str, ticker, len(graded), today_str)
-                    except Exception as exc:
-                        logger.warning("[%s] [%s] Option projection grading error: %s", time_str, ticker, exc)
-                    try:
                         results = await evaluate_forecasts(self.client, ticker, today_str)
                         if results:
                             user_score = evaluate_votes(ticker, today_str, results)
@@ -1163,7 +1131,6 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     log_day_forecast(day_fc, now)
                                     if first_post:
                                         await channel.send(embed=day_forecast_embed(day_fc))
-                                        await self._post_option_projection(channel, ticker, day_fc, now)
                             except Exception as exc:
                                 logger.warning("[%s] [%s] Day forecast error: %s", time_str, ticker, exc)
                     else:

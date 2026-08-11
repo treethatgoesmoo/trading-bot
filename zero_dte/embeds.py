@@ -397,34 +397,6 @@ def bb_alert_embed(alert) -> discord.Embed:
     return embed
 
 
-def option_projection_embed(ticker: str, day_fc, projections: list) -> discord.Embed:
-    """The 0DTE ATM call/put quoted at capture, each with its projected price
-    range from the day forecast's projected high/low (BS reprice at capture
-    IV; theta not modeled — the intrinsic floor shows the value if the level
-    is only reached at the close)."""
-    embed = discord.Embed(
-        title=f"\U0001f4b0 0DTE Option Projection — {ticker}",
-        description=(f"Spot **${projections[0].spot}** · projected range "
-                     f"**${day_fc.exp_low} – ${day_fc.exp_high}** (day forecast: {day_fc.direction})"),
-        color=0x3498DB,
-    )
-    for p in projections:
-        stale = " (indicative — stale quote)" if p.quote_stale else ""
-        fav = p.exp_high if p.kind == "call" else p.exp_low
-        adv = p.exp_low if p.kind == "call" else p.exp_high
-        lines = [
-            f"**{p.contract_symbol}** · strike ${p.strike:g}",
-            f"Premium now ~**${p.premium:.2f}**{stale}",
-            f"If {ticker} hits ${fav:g}: ~**${p.proj_high:.2f}** (≥${p.proj_high_intrinsic:.2f} at close)",
-            f"If {ticker} hits ${adv:g}: ~**${p.proj_low:.2f}**",
-        ]
-        if p.implied_vol:
-            lines.append(f"IV {p.implied_vol * 100:.0f}% ({p.iv_source})")
-        embed.add_field(name=p.kind.upper(), value="\n".join(lines), inline=True)
-    embed.set_footer(text="BS reprice at capture IV — theta/IV drift not modeled; graded vs actual at EOD")
-    return embed
-
-
 def vix_alert_embed(alert) -> discord.Embed:
     """A VIX regime-cross or spike ping (risk-off / calming)."""
     if alert.direction == "BULLISH":

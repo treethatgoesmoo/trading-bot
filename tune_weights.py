@@ -1,17 +1,22 @@
-"""Retune the 30-min forecast indicator weights from graded live results.
+"""Retune the intraday forecast indicator weights from graded live results.
 
 Reads data/results-*.json (written nightly by forecast_tracker), measures each
-indicator's directional accuracy against the actual move, and maps accuracy to
+indicator's directional accuracy against the actual move — separately per
+forecast stream (15m vs the 5m companion), since the same indicator can be
+predictive on one horizon and a coin flip on the other — and maps accuracy to
 a weight:
 
-    weight = (accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
+    weight = (shrunk_accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
 
-so 55% -> 1.0, 60% -> 2.0, 65% -> 3.0. The floor keeps underperformers to a
-token vote instead of zero: a 0-weight dissenter disappears from the
-confidence denominator and the VOLATILE conflict guard, letting a shrunken
-ensemble print 100% confidence. Indicators with fewer than --min-samples
-graded bars keep their current default weight (not enough evidence to move
-them).
+where shrunk_accuracy pulls the measured rate toward 50% by
+TUNED_WEIGHT_SHRINKAGE coin-flip pseudo-samples (so 60% off 30 bars barely
+moves, 60% off 300 bars mostly counts), and the result may move at most
+TUNED_WEIGHT_MAX_STEP per retune from the previously written weight (see
+core/tuning.py). The floor keeps underperformers to a token vote instead of
+zero: a 0-weight dissenter disappears from the confidence denominator and the
+VOLATILE conflict guard, letting a shrunken ensemble print 100% confidence.
+Indicators with fewer than --min-samples graded bars keep their current
+default weight (not enough evidence to move them).
 
 Usage:
     python tune_weights.py               # report only
@@ -35,6 +40,7 @@ import pytz
 from config import TUNED_WEIGHT_FLOOR
 from core.paths import DATA_DIR
 from core.tracking import available_dates
+from core.tuning import accuracy_to_weight, load_previous_weights, shrunk_accuracy, step_limited
 from zero_dte.tracker import load_results
 from zero_dte.strategy import INDICATOR_WEIGHTS
 
@@ -43,27 +49,65 @@ DIRECTIONAL = ("BULLISH", "BEARISH")
 WEIGHTS_PATH = os.path.join(DATA_DIR, "indicator_weights.json")
 
 
-def indicator_stats(dates: list[str]) -> dict[str, dict]:
-    agg: dict[str, dict] = defaultdict(lambda: {"n": 0, "correct": 0})
-    for d in dates:
-        for r in load_results(d):
-            actual = r.get("actual")
-            if actual not in DIRECTIONAL:
-                continue
-            for name, signal in (r.get("signals") or {}).items():
-                if signal in DIRECTIONAL:
-                    agg[name]["n"] += 1
-                    agg[name]["correct"] += (signal == actual)
-    return dict(agg)
+def indicator_stats(rows: list[dict]) -> dict[str, dict[str, dict]]:
+    """Per-stream accuracy: {interval: {indicator: {n, correct}}}.
+
+    The 5m companion stream grades very differently from the main 15m stream
+    (most indicators are coin flips on 5m windows but not on 15m), so pooling
+    them lets the much larger 5m sample drag every weight to the floor.
+    Rows graded before 2026-07-27 carry no interval label — an inseparable
+    5m/15m mix — and are excluded rather than guessed at.
+    """
+    agg: dict[str, dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"n": 0, "correct": 0}))
+    for r in rows:
+        interval = r.get("interval")
+        if interval is None:
+            continue
+        actual = r.get("actual")
+        if actual not in DIRECTIONAL:
+            continue
+        for name, signal in (r.get("signals") or {}).items():
+            if signal in DIRECTIONAL:
+                s = agg[str(interval)][name]
+                s["n"] += 1
+                s["correct"] += (signal == actual)
+    return {iv: dict(names) for iv, names in agg.items()}
 
 
-def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float]:
+def _previous_weights() -> dict:
+    return load_previous_weights(WEIGHTS_PATH)
+
+
+def _prev_for_interval(prev_all: dict, interval: str) -> dict:
+    """Per-interval slice of the previous weights (flat legacy files apply
+    to every interval)."""
+    if prev_all and all(isinstance(v, dict) for v in prev_all.values()):
+        return prev_all.get(interval, {})
+    return prev_all
+
+
+def suggest_weights(stats: dict[str, dict], min_samples: int,
+                    prev: dict | None = None) -> dict[str, float]:
+    """Damped accuracy -> weight mapping: shrinkage toward 50% by sample
+    size, then step-limited against the previous weight (see core/tuning.py)."""
     weights = dict(INDICATOR_WEIGHTS)
+    prev = prev or {}
+    # Anchor to the last written weights: an indicator whose sample count
+    # drops below min_samples keeps its current tuned value instead of
+    # snapping back to the code default (which would bypass the step cap).
+    for name, val in prev.items():
+        if name in weights:
+            try:
+                weights[name] = float(val)
+            except (TypeError, ValueError):
+                pass
     for name, s in stats.items():
         if s["n"] < min_samples:
             continue
-        acc = s["correct"] / s["n"]
-        weights[name] = round(max((acc - 0.50) * 20, TUNED_WEIGHT_FLOOR), 1)
+        target = accuracy_to_weight(s["correct"], s["n"])
+        anchor = weights.get(name, TUNED_WEIGHT_FLOOR)
+        weights[name] = step_limited(target, anchor)
     return weights
 
 
@@ -78,16 +122,21 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         dates = dates[-days:]
     if not dates:
         return None
-    stats = indicator_stats(dates)
+    stats = indicator_stats([r for d in dates for r in load_results(d)])
     if not stats:
         return None
+    prev_all = _previous_weights()
     payload = {
         "generated": datetime.now(pytz.UTC).isoformat(),
         "days": len(dates),
         "date_range": [dates[0], dates[-1]],
         "min_samples": min_samples,
-        "samples": {k: v["n"] for k, v in stats.items()},
-        "weights": suggest_weights(stats, min_samples),
+        # Nested per-interval schema ({"15": {...}, "5": {...}}); the live
+        # loader (strategy._weight_overrides) detects it and picks the set
+        # matching the stream it's forecasting.
+        "samples": {iv: {k: v["n"] for k, v in s.items()} for iv, s in stats.items()},
+        "weights": {iv: suggest_weights(s, min_samples, _prev_for_interval(prev_all, iv))
+                    for iv, s in stats.items()},
     }
     if write:
         tmp = WEIGHTS_PATH + ".tmp"
@@ -114,22 +163,44 @@ def main() -> None:
         print("No results-*.json files found -- run the bot (or backfill.py) first.")
         return
 
-    stats = indicator_stats(dates)
+    all_rows = [r for d in dates for r in load_results(d)]
+    stats = indicator_stats(all_rows)
     if not stats:
-        print(f"No graded indicator signals in {len(dates)} result day(s).")
+        print(f"No graded indicator signals in {len(dates)} result day(s) "
+              "(interval-labeled rows only; pre-2026-07-27 grades are excluded).")
         return
 
-    suggested = suggest_weights(stats, args.min_samples)
+    prev_all = _previous_weights()
+    # Naive baselines: an indicator below these is worse than doing nothing.
+    from core.analytics import indicator_overlap, stream_baselines
+    baselines = {b["stream"]: b for b in stream_baselines(all_rows)}
+    flagged_overlap = [o for o in indicator_overlap(all_rows) if o["flagged"]]
 
-    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):\n")
-    print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'current':>8} {'suggested':>10}")
-    for name in sorted(stats, key=lambda k: -(stats[k]['correct'] / stats[k]['n'])):
-        s = stats[name]
-        acc = s["correct"] / s["n"]
-        cur = INDICATOR_WEIGHTS.get(name, 0.0)
-        new = suggested.get(name, cur)
-        note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
-        print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
+    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):")
+    for interval in sorted(stats, key=lambda k: -int(k)):
+        s_int = stats[interval]
+        prev = _prev_for_interval(prev_all, interval)
+        suggested = suggest_weights(s_int, args.min_samples, prev)
+        print(f"\n[{interval}-min stream]")
+        b = baselines.get(f"{interval}m")
+        if b:
+            print(f"baselines: always-BULLISH {b['always_bullish']:.1f}% (n={b['n']}) | "
+                  f"persistence {b['persistence']:.1f}% (n={b['persistence_n']})")
+        print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'shrunk':>8} {'prev':>6} {'suggested':>10}")
+        for name in sorted(s_int, key=lambda k: -(s_int[k]['correct'] / s_int[k]['n'])):
+            s = s_int[name]
+            acc = s["correct"] / s["n"]
+            shrunk = shrunk_accuracy(s["correct"], s["n"])
+            cur = float(prev.get(name, INDICATOR_WEIGHTS.get(name, 0.0)))
+            new = suggested.get(name, cur)
+            note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
+            print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {shrunk:>7.1%} {cur:>6.1f} {new:>10.1f}{note}")
+
+    if flagged_overlap:
+        print("\nNear-duplicate voters (>= 85% vote agreement — one signal counted twice;"
+              "\nconsider dropping/merging the weaker of each pair):")
+        for o in flagged_overlap:
+            print(f"  [{o['stream']}] {o['pair']}: {o['agreement']:.1f}% over {o['n']} windows")
 
     if args.write:
         retune(args.days, args.min_samples, write=True)

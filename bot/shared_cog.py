@@ -105,11 +105,16 @@ def stats_embed(report: dict) -> discord.Embed:
     if inds:
         best = inds[:3]
         worst = [r for r in reversed(inds) if r["accuracy"] < 50][:3]
-        best_str = "\n".join(f"\U0001f7e2 {r['indicator']}: {r['accuracy']:.0f}% (n={r['n']})" for r in best)
+        best_str = "\n".join(f"\U0001f7e2 {r['indicator']} [{r['stream']}]: {r['accuracy']:.0f}% (n={r['n']})" for r in best)
         embed.add_field(name="Best Indicators", value=best_str or "—", inline=False)
         if worst:
-            worst_str = "\n".join(f"\U0001f534 {r['indicator']}: {r['accuracy']:.0f}% (n={r['n']})" for r in worst)
+            worst_str = "\n".join(f"\U0001f534 {r['indicator']} [{r['stream']}]: {r['accuracy']:.0f}% (n={r['n']})" for r in worst)
             embed.add_field(name="Underperforming (<50%)", value=worst_str, inline=False)
+        baselines = [b for b in report.get("baselines", []) if b["stream"] != "mixed"]
+        if baselines:
+            base_str = " · ".join(f"{b['stream']}: always-bull {b['always_bullish']:.0f}% / "
+                                  f"persist {b['persistence']:.0f}%" for b in baselines)
+            embed.add_field(name="Naive Baselines (the bar to beat)", value=base_str, inline=False)
 
     flt = report["filters"]
     if flt["setups"]:
@@ -210,7 +215,9 @@ class SharedCog(commands.Cog, name="Shared"):
             return
         parts = []
         if fc_payload:
-            parts.append(f"forecast weights ({sum(fc_payload['samples'].values())} graded votes over {fc_payload['days']} day(s))")
+            # samples is nested per stream: {"15": {ind: n}, "5": {ind: n}}
+            n_votes = sum(sum(s.values()) for s in fc_payload["samples"].values())
+            parts.append(f"forecast weights ({n_votes} graded votes over {fc_payload['days']} day(s))")
         if swing_payload:
             parts.append(f"swing weights ({sum(swing_payload['samples'].values())} graded votes)")
         logger.info("Nightly retune: %s", " · ".join(parts) if parts else "no graded history yet")

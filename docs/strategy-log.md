@@ -10,7 +10,9 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
-| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ✅ adopted | 65% vs 50% for old first-candle-wins (60-day replay) |
+| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
+| Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
+| Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
 | LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
 | Dow Theory reversal rule as swing voter | ❌ rejected | 50.5–51.3% at +10 bars vs 55% Structure voter, 60% constant-BULLISH baseline |
 | VWAP as hard veto filter | ⚠️ demoted to advisory | Only filter that vetoed would-be winners; never correct as sole veto |
@@ -25,6 +27,48 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-11 — SPY option projection/grading removed (owner trades SPX only)
+
+**Status:** ❌ removed at owner's request
+
+- The 0DTE ATM option projection + EOD grading (added 2026-08-07, PR #27) quoted **SPY** contracts, but SPX is the traded instrument — the projections were decision noise, and the graded dataset would have tuned a model for options the owner doesn't trade. Removed: `zero_dte/options0dte.py`, `core/options_math.py` (BS pricing, no other consumer), the cog wiring/embed/tracker functions, and the `OPTION_PROJECTION_*` config. SPX options coverage continues via the `zero_dte/spx_options.py` range feed.
+- Only two days ever graded (2026-08-10, both flagged suspect from the capture-spot bug fixed the same day). Historical `option_projections-*`/`option_outcomes-*` files stay in `data/` untouched; the kind names are retired, not to be reused. If an option projection is ever wanted again, build it on SPX quotes — the removed code is in git history (`d20d240`..`090ae0e`).
+
+## 2026-08-11 — Full-repo review: option-projection grading fixes; tuner snap-back bug
+
+**Status:** ⚠️ bugs fixed (feature logic unchanged)
+
+- **Option projection captured "spot" as the 9:30 open**, not the price when the projection actually runs (~9:35+). A drifted spot picks the wrong ATM strike and poisons the IV calibration — a mid embedding real intrinsic solved against a spot with zero intrinsic inflates sigma, or falls outside the model's band and silently drops to stale chain IV. Now fetches the live 1m close at capture (open stays as fallback). **The 2026-08-10 `option_projections`/`option_outcomes` rows predate this fix (and were quoted off stale bid/ask at 9:35) — treat them as suspect when tuning.**
+- **Option grading ran at 16:00**, but SPY/QQQ options trade until 16:15 ET and the contract's Yahoo daily bar needs settling time — actuals were captured off an incomplete bar. Grading now waits until session close + 30 min on its own done-flag.
+- **The "retried by the next catch-up pass" for ungraded projections didn't exist** — `_grade_missed_days` never called option grading, and the fetch took Yahoo's latest bar (wrong day after downtime). Catch-up now retries past dates with ungraded contracts, and the fetch selects the bar dated to the contract's expiry.
+- **Tuner snap-back**: an indicator dipping below `min_samples` reverted to its *code default* instead of holding its last tuned value — a 0.3→1.0 jump that bypassed the brand-new step cap. Both tuners now anchor to the previously written file.
+
+## 2026-08-11 — Tuner made noise-resistant; naive baselines and overlap audit added
+
+**Status:** ✅ adopted (measurement changes; no vote logic touched)
+
+- **Shrinkage + step cap** (`core/tuning.py`, both tuners): measured accuracy is pulled toward 50% by `TUNED_WEIGHT_SHRINKAGE` (50) coin-flip pseudo-samples before the `(acc−0.50)×20` mapping, and a weight moves at most `TUNED_WEIGHT_MAX_STEP` (0.5) per retune. Rationale: at n=20 a coin-flip indicator routinely measures 65%, and the old mapping would hand it weight 3.0 overnight — the swing file had **Cross at weight 2.0 off 4 graded signals at 25% accuracy**. A real edge still reaches full weight in about a week of retunes; a noise spike doesn't.
+- **Naive baselines** (tuner report, `!stats`, dashboard): always-BULLISH and same-day persistence, per stream. First read: **always-BULLISH grades 55.4% on the 5m stream (n=491) — at or above every 5m indicator including RSI (55.7%)**, i.e. the 5m ensemble currently has no measurable edge over "just say bullish"; on 15m the bar is 53.8% and RSI (61.3%) / VWAP (58.9%) / MACD (57.6%) clear it. The 5m stream's directional value is now an open question (echoes the old 30m constant-BULLISH lesson from the Dow-rule test).
+- **Overlap audit** (`analytics.indicator_overlap`, dashboard card, tuner report, flagged ≥85%): pairwise directional-vote agreement per stream. First read: **EMA+RSI agree 100.0%** (15m, n=113) and 99.7% (5m); **RSI+VWAP 96.5–99.5%**; EMA+VWAP 86.5% (5m) — RSI, EMA, and VWAP are one trend signal voted three times, which inflates the weighted margin (and thus stated confidence and the VOLATILE guard's inputs). RSI is effectively "EMA, but only when stretched" — its abstention band is where its extra accuracy lives. Candidate action once samples grow: drop/merge the weaker of each flagged pair; **not** applied yet — dropping voters changes live behavior and should be backtested (`backtest_30m.py`) first.
+
+## 2026-08-11 — Weight tuning was pooling the 5m and 15m streams; split per-stream
+
+**Status:** ⚠️ measurement fixed — confidence calibration still open
+
+- Investigating "the weighted indicators are very misleading": the tuner (and `!stats`/dashboard indicator accuracy) pooled every graded window — 746 5m windows, 248 15m windows, and 416 pre-2026-07-27 rows with no interval label (an inseparable mix, since the 5m stream launched 2026-07-08 but grading only started recording `interval` on 2026-07-27). The much larger 5m sample dominated, and most indicators are coin flips on 5m windows — so the nightly retune floored nearly everything (all 0.3 except RSI 1.1) and applied that one flattened set to *both* streams.
+- Split per-stream, the 15m ensemble is real: **RSI 61.3% (n=75), VWAP 58.9% (n=158), MACD 57.6% (n=158), Momentum 56.3% (n=158)** — vs 55.7/52.3/50.5/50.3% on 5m. EMA, Divergence, and VIX are ≤51% on both streams (floored on evidence, fairly this time).
+- Fix: `tune_weights.py` now grades each stream separately (unlabeled legacy rows excluded) and writes a per-interval weights schema; `strategy._weight_overrides(interval)` loads the set matching the stream being forecast (flat legacy files still apply everywhere); `!stats` and the dashboard label indicator accuracy per stream (`RSI [15m]`) instead of pooling. Weights regenerated: the 15m stream recovered a genuine ensemble (RSI 2.3, VWAP 1.8, MACD 1.5, Momentum 1.3) while 5m stays floored.
+- **Still open — confidence is uncalibrated:** over 810 graded directional calls, stated confidence 70–80% hit 53.8%, 80–90% hit 53.1%, and 90–100% hit **53.4%**. The margin→confidence mapping (50 + 50×margin) has no empirical anchor, and `FORECAST_VOLATILE_CONFIDENCE=65` gates on these inflated numbers, so recalibrating the scale means retuning the gate with it — deferred as a deliberate decision rather than bundled here. Until then, read posted confidence as vote margin, not win probability (the dashboard's calibration card shows the honest mapping).
+
+## 2026-08-11 — Daily-bias replay harness had lookahead; 65% validation number invalidated
+
+**Status:** ⚠️ harness fixed, revalidation pending
+
+- Investigating "the daily forecast seems to be a coin flip": the live graded record is **18/32 = 56%** overall (June–July, under the old first-candle-wins rule: exactly 50%; bearish calls 5/13 = 38.5%), and only 6 graded days (5/6) exist under the 2-of-3 vote adopted 2026-08-06 — so most of what the channel shows *is* the old coin-flip rule.
+- Worse: the **65% vs 50%** replay that justified the 2-of-3 vote was contaminated. `backfill.py` truncated the daily frame with `date <= d`, so `get_daily_bias` read the replay day's **completed bar** as its latest row at 9:35 AM — the 50 SMA trend vote compared the day's own close against the SMA, and the RSI ≥70/≤30 contrarian override used end-of-day RSI, while grading is close-vs-open. The trend/RSI components were peeking at the answer.
+- Live had the mirror-image hazard: `get_daily_bias` used `iloc[-1]`/`iloc[-2]` raw, so its meaning depended on whether the provider includes today's in-progress daily bar (included → trend used the partial 9:35 close; omitted → gap and pivots were computed off the day-before-yesterday). `compute_day_forecast` already filtered to completed days; the bias didn't.
+- Fix: `get_daily_bias` now drops any bar dated today (ET) and reads all of trend/gap-base/pivots/RSI/multi-day from the last **completed** session; backfill truncates strictly (`date < d`). Live and replay now see identical information. The honest accuracy of the 2-of-3 vote is unknown until the 60-day replay is re-run (`python backfill.py 60 SPY` + `python analyze_days.py` — needs network access to yfinance). **Lesson: an as-of replay must slice with a strict inequality — `<=` on the decision day hands the harness the label it is predicting.**
 
 ## 2026-08-06 — Daily bias reworked to 2-of-3 vote; LONG side of break-and-retest flagged
 

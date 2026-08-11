@@ -56,13 +56,17 @@ INDICATOR_WEIGHTS = {
 _weights_cache: tuple[float, dict] | None = None
 
 
-def _weight_overrides() -> dict:
+def _weight_overrides(interval: int | None = None) -> dict:
     """Tuned per-indicator weights from data/indicator_weights.json, if present.
 
     Written by tune_weights.py --write; reloaded automatically on file change.
-    Clamped to TUNED_WEIGHT_FLOOR: a 0-weight indicator still votes but drops
-    out of the confidence denominator and the VOLATILE conflict guard, so a
-    shrunken ensemble could print 100% confidence over a zeroed dissenter.
+    The tuned file is per-stream ({"15": {...}, "5": {...}} — the 5m companion
+    grades very differently from the 15m stream, so they must not share one
+    weight set); pass the forecast's interval to get its stream's weights. A
+    legacy flat file applies to every stream. Clamped to TUNED_WEIGHT_FLOOR:
+    a 0-weight indicator still votes but drops out of the confidence
+    denominator and the VOLATILE conflict guard, so a shrunken ensemble could
+    print 100% confidence over a zeroed dissenter.
     """
     global _weights_cache
     try:
@@ -73,14 +77,15 @@ def _weight_overrides() -> dict:
         try:
             with open(_WEIGHTS_FILE) as f:
                 data = json.load(f)
-            overrides = {k: max(float(v), TUNED_WEIGHT_FLOOR)
-                         for k, v in data.get("weights", data).items()}
-            _weights_cache = (mtime, overrides)
-            logger.info("Loaded indicator weight overrides: %s", overrides)
+            _weights_cache = (mtime, data.get("weights", data))
+            logger.info("Loaded indicator weight overrides: %s", _weights_cache[1])
         except Exception as exc:
             logger.warning("Failed to load %s: %s", _WEIGHTS_FILE, exc)
             return {}
-    return _weights_cache[1]
+    weights = _weights_cache[1]
+    if weights and all(isinstance(v, dict) for v in weights.values()):
+        weights = weights.get(str(interval), {})   # per-interval schema
+    return {k: max(float(v), TUNED_WEIGHT_FLOOR) for k, v in weights.items()}
 
 
 @dataclass
@@ -328,22 +333,35 @@ async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: floa
     # same logic runs as-of a historical day; otherwise fetch the latest.
     if daily is None:
         daily = await client.fetch_candles(ticker, interval="D", count=SMA_PERIOD + 10)
-    if daily.empty or len(daily) < SMA_PERIOD:
+    if daily.empty:
+        return None
+
+    # Completed days only — during the session providers include today's
+    # in-progress daily bar, which would leak today's (partial) close into the
+    # trend/RSI/multi-day components; a provider that omits it would instead
+    # shift prev_* (gap base, pivots) onto the wrong day. The backfill replay
+    # must truncate its frame the same way (dates strictly before the replay
+    # day) so live and replayed bias see identical information.
+    timestamps = pd.to_datetime(daily["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    today = datetime.now(ET).date()
+    daily = daily[(timestamps.dt.tz_convert(ET).dt.date < today).values].copy()
+    if len(daily) < SMA_PERIOD:
         return None
 
     daily["SMA"] = daily["close"].rolling(window=SMA_PERIOD).mean()
-    latest = daily.iloc[-1]
+    latest = daily.iloc[-1]          # last completed session (yesterday)
     sma_val = float(latest["SMA"])
     close_val = float(latest["close"])
     distance_pct = ((close_val - sma_val) / sma_val) * 100
 
     trend = "BULLISH" if close_val > sma_val else "BEARISH"
 
-    prev = daily.iloc[-2] if len(daily) >= 2 else latest
-    prev_open = float(prev["open"])
-    prev_close = float(prev["close"])
-    prev_high = float(prev["high"])
-    prev_low = float(prev["low"])
+    prev_open = float(latest["open"])
+    prev_close = float(latest["close"])
+    prev_high = float(latest["high"])
+    prev_low = float(latest["low"])
 
     # Gap analysis: today's open vs yesterday's close
     if today_open is not None and prev_close > 0:
@@ -1048,8 +1066,8 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     current_price = round(float(closes.iloc[-1]), 2)
     now_str = ref_now.strftime("%I:%M %p ET")
 
-    # Defaults + live-tuned overrides (data/indicator_weights.json)
-    indicator_weights = {**INDICATOR_WEIGHTS, **_weight_overrides()}
+    # Defaults + live-tuned overrides for THIS stream (data/indicator_weights.json)
+    indicator_weights = {**INDICATOR_WEIGHTS, **_weight_overrides(interval)}
 
     signals = {}
     weights = {}

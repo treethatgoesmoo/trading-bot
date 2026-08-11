@@ -119,7 +119,10 @@ async def backfill_ticker(ticker: str, days: int,
 
         # ── Daily bias (graded vs the day's actual move) ─────────────────
         first = five[(five["date"] == d) & (five["timestamp"].dt.time == time(9, 30))]
-        daily_trunc = daily[daily["date"] <= d].copy()
+        # Strictly before the replay day: get_daily_bias reads its last row as
+        # "yesterday" — including day d would hand the morning bias today's
+        # close (lookahead in the trend/RSI/multi-day components).
+        daily_trunc = daily[daily["date"] < d].copy()
         day_row = daily[daily["date"] == d]
         if first.empty or day_row.empty or len(daily_trunc) < SMA_PERIOD:
             continue

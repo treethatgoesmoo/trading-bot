@@ -4,13 +4,16 @@ Reads data/swing_outcomes-*.jsonl (written by the pre-open grading pass),
 measures each indicator's directional accuracy against the actual move over
 the signal horizon, and maps accuracy to a weight:
 
-    weight = (accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
+    weight = (shrunk_accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
 
-so 55% -> 1.0, 60% -> 2.0, 65% -> 3.0. The floor keeps underperformers to a
-token vote instead of zero — a 0-weight dissenter disappears from the
-confidence denominator, inflating confidence. Indicators with fewer than
---min-samples graded signals keep their current default weight (not enough
-evidence to move them).
+where shrunk_accuracy pulls the measured rate toward 50% by
+TUNED_WEIGHT_SHRINKAGE coin-flip pseudo-samples and the result moves at most
+TUNED_WEIGHT_MAX_STEP per retune (see core/tuning.py) — swing samples are
+tiny, so raw rates off a handful of signals are mostly noise. The floor keeps
+underperformers to a token vote instead of zero — a 0-weight dissenter
+disappears from the confidence denominator, inflating confidence. Indicators
+with fewer than --min-samples graded signals keep their current default
+weight (not enough evidence to move them).
 
 Usage:
     python tune_swing_weights.py               # report only
@@ -34,6 +37,7 @@ import pytz
 from config import TUNED_WEIGHT_FLOOR
 from core.paths import SWING_WEIGHTS_FILE
 from core.tracking import available_dates, load_jsonl
+from core.tuning import accuracy_to_weight, load_previous_weights, shrunk_accuracy, step_limited
 from swing.strategy import SWING_INDICATOR_WEIGHTS
 
 ET = pytz.timezone("US/Eastern")
@@ -54,13 +58,33 @@ def indicator_stats(dates: list[str]) -> dict[str, dict]:
     return dict(agg)
 
 
-def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float]:
+def _previous_weights() -> dict:
+    return load_previous_weights(SWING_WEIGHTS_FILE)
+
+
+def suggest_weights(stats: dict[str, dict], min_samples: int,
+                    prev: dict | None = None) -> dict[str, float]:
+    """Damped accuracy -> weight mapping: shrinkage toward 50% by sample
+    size, then step-limited against the previous weight (see core/tuning.py).
+    Swing samples are tiny (a handful of graded signals per indicator), so
+    the shrinkage matters even more here than for the 0DTE streams."""
     weights = dict(SWING_INDICATOR_WEIGHTS)
+    prev = prev or {}
+    # Anchor to the last written weights: an indicator whose sample count
+    # drops below min_samples keeps its current tuned value instead of
+    # snapping back to the code default (which would bypass the step cap).
+    for name, val in prev.items():
+        if name in weights:
+            try:
+                weights[name] = float(val)
+            except (TypeError, ValueError):
+                pass
     for name, s in stats.items():
         if s["n"] < min_samples:
             continue
-        acc = s["correct"] / s["n"]
-        weights[name] = round(max((acc - 0.50) * 20, TUNED_WEIGHT_FLOOR), 1)
+        target = accuracy_to_weight(s["correct"], s["n"])
+        anchor = weights.get(name, TUNED_WEIGHT_FLOOR)
+        weights[name] = step_limited(target, anchor)
     return weights
 
 
@@ -83,7 +107,7 @@ def retune(days: int = 0, min_samples: int = 15, write: bool = False) -> dict | 
         "date_range": [dates[0], dates[-1]],
         "min_samples": min_samples,
         "samples": {k: v["n"] for k, v in stats.items()},
-        "weights": suggest_weights(stats, min_samples),
+        "weights": suggest_weights(stats, min_samples, _previous_weights()),
     }
     if write:
         tmp = SWING_WEIGHTS_FILE + ".tmp"
@@ -115,17 +139,19 @@ def main() -> None:
         print(f"No graded indicator signals in {len(dates)} outcome day(s).")
         return
 
-    suggested = suggest_weights(stats, args.min_samples)
+    prev = _previous_weights()
+    suggested = suggest_weights(stats, args.min_samples, prev)
 
     print(f"Swing indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):\n")
-    print(f"{'indicator':<14} {'graded':>6} {'accuracy':>9} {'current':>8} {'suggested':>10}")
+    print(f"{'indicator':<14} {'graded':>6} {'accuracy':>9} {'shrunk':>8} {'prev':>6} {'suggested':>10}")
     for name in sorted(stats, key=lambda k: -(stats[k]['correct'] / stats[k]['n'])):
         s = stats[name]
         acc = s["correct"] / s["n"]
-        cur = SWING_INDICATOR_WEIGHTS.get(name, 0.0)
+        shrunk = shrunk_accuracy(s["correct"], s["n"])
+        cur = float(prev.get(name, SWING_INDICATOR_WEIGHTS.get(name, 0.0)))
         new = suggested.get(name, cur)
         note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
-        print(f"{name:<14} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
+        print(f"{name:<14} {s['n']:>6} {acc:>8.1%} {shrunk:>7.1%} {cur:>6.1f} {new:>10.1f}{note}")
 
     if args.write:
         retune(args.days, args.min_samples, write=True)
