@@ -10,6 +10,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
+| Daily candlestick patterns → next-day direction | ❌ rejected | All directional 48.3% (n=1066) vs 54.3% drift over 10y SPY+QQQ; best pattern +6.8p at n=80 ≈ 1.2σ (noise); doji/inside-bar chop read 47-48% |
 | Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
 | Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
@@ -27,6 +28,16 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-11 — Daily candlestick patterns as a bias/forecast source: rejected
+
+**Status:** ❌ rejected (backtest evidence; nothing wired live)
+
+- Idea (owner, from multi-timeframe pattern-trading doctrine): read named candlestick patterns off SPY's completed daily candles each morning, use the pattern's direction as (or alongside) the day forecast, confirm on 1-4h, then refine intraday. Detectors + as-of replay built first per house rule (`core/indicators.py::detect_candlestick_patterns`, `backtest_patterns.py` — strict `< day` slicing, graded close-vs-open like `evaluate_bias`, baselined against each direction's unconditional drift, not 50%).
+- 10y SPY+QQQ (4,904 graded days, up-day drift 54.3%): **all directional patterns 48.3% (n=1066)** — at or below drift nearly everywhere. High-n patterns: Bullish Marubozu −0.9p (n=236), Bearish Engulfing −1.8p (n=182), Bearish Marubozu **−6.9p** (n=170), Bullish Engulfing −1.6p (n=150), Hammer −4.3p (n=98). Best result Shooting Star **+6.8p at n=80 ≈ 1.2σ** (noise needs ~±11p at that n to clear 95%) — and the same pattern "won" +16.1p on a pure random-walk synthetic run, best-of-8 selection doing the work. Trend-conditioned splits: no cell both significant and consistent across tickers' pooled run.
+- Indecision reads failed too: Doji 47.4% (n=498) / Inside Bar 48.1% (n=507) at predicting a below-median-range next day — no chop signal for the VOLATILE/deadband layer.
+- Bearish Marubozu's below-drift read (market tends to bounce after a full-body red day) is a mild mean-reversion echo, but inverting a fitted-to-history pattern is the exact overfit path the removed RSI-divergence inversion documented — declined.
+- Third independent no-signal result for daily candle shapes here (prev-day candle bias 48%; candle-direction voter 48.8%). Multi-timeframe confirmation layers (steps 2-3 of the idea) are moot without a step-1 signal to confirm. Detectors and the harness stay in the repo — reusable if a pattern idea returns at a different horizon or conditioning.
 
 ## 2026-08-11 — Review round 2: grading asymmetry, swing P&L pricing, restart recovery
 
