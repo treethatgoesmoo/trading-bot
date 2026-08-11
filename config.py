@@ -202,6 +202,13 @@ AUTO_TUNE_DAYS = int(os.getenv("AUTO_TUNE_DAYS", "30"))
 # vanishes from the confidence denominator and the VOLATILE conflict guard —
 # one zeroed dissenter let a 4-indicator forecast print 100% confidence.
 TUNED_WEIGHT_FLOOR = float(os.getenv("TUNED_WEIGHT_FLOOR", "0.3"))
+# Shrinkage prior for the accuracy -> weight mapping: measured accuracy is
+# pulled toward 50% as if this many coin-flip pseudo-samples were mixed in,
+# so a 60% read off 30 bars moves weight far less than 60% off 300 bars.
+TUNED_WEIGHT_SHRINKAGE = float(os.getenv("TUNED_WEIGHT_SHRINKAGE", "50"))
+# Max weight movement per retune (per indicator). The nightly loop re-runs
+# daily, so a real edge still gets there in a week — noise doesn't.
+TUNED_WEIGHT_MAX_STEP = float(os.getenv("TUNED_WEIGHT_MAX_STEP", "0.5"))
 
 # Auto-commit captured history (data/) to git after market close
 GIT_AUTOCOMMIT_ENABLED = _flag("GIT_AUTOCOMMIT_ENABLED")

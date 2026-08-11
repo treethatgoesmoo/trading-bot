@@ -6,14 +6,17 @@ forecast stream (15m vs the 5m companion), since the same indicator can be
 predictive on one horizon and a coin flip on the other — and maps accuracy to
 a weight:
 
-    weight = (accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
+    weight = (shrunk_accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
 
-so 55% -> 1.0, 60% -> 2.0, 65% -> 3.0. The floor keeps underperformers to a
-token vote instead of zero: a 0-weight dissenter disappears from the
-confidence denominator and the VOLATILE conflict guard, letting a shrunken
-ensemble print 100% confidence. Indicators with fewer than --min-samples
-graded bars keep their current default weight (not enough evidence to move
-them).
+where shrunk_accuracy pulls the measured rate toward 50% by
+TUNED_WEIGHT_SHRINKAGE coin-flip pseudo-samples (so 60% off 30 bars barely
+moves, 60% off 300 bars mostly counts), and the result may move at most
+TUNED_WEIGHT_MAX_STEP per retune from the previously written weight (see
+core/tuning.py). The floor keeps underperformers to a token vote instead of
+zero: a 0-weight dissenter disappears from the confidence denominator and the
+VOLATILE conflict guard, letting a shrunken ensemble print 100% confidence.
+Indicators with fewer than --min-samples graded bars keep their current
+default weight (not enough evidence to move them).
 
 Usage:
     python tune_weights.py               # report only
@@ -37,6 +40,7 @@ import pytz
 from config import TUNED_WEIGHT_FLOOR
 from core.paths import DATA_DIR
 from core.tracking import available_dates
+from core.tuning import accuracy_to_weight, shrunk_accuracy, step_limited
 from zero_dte.tracker import load_results
 from zero_dte.strategy import INDICATOR_WEIGHTS
 
@@ -72,13 +76,38 @@ def indicator_stats(dates: list[str]) -> dict[str, dict[str, dict]]:
     return {iv: dict(names) for iv, names in agg.items()}
 
 
-def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float]:
+def _previous_weights() -> dict:
+    """The weights file as last written ({} when absent/unreadable) — the
+    step cap limits each retune's movement relative to these."""
+    try:
+        with open(WEIGHTS_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    w = data.get("weights", data)
+    return w if isinstance(w, dict) else {}
+
+
+def _prev_for_interval(prev_all: dict, interval: str) -> dict:
+    """Per-interval slice of the previous weights (flat legacy files apply
+    to every interval)."""
+    if prev_all and all(isinstance(v, dict) for v in prev_all.values()):
+        return prev_all.get(interval, {})
+    return prev_all
+
+
+def suggest_weights(stats: dict[str, dict], min_samples: int,
+                    prev: dict | None = None) -> dict[str, float]:
+    """Damped accuracy -> weight mapping: shrinkage toward 50% by sample
+    size, then step-limited against the previous weight (see core/tuning.py)."""
     weights = dict(INDICATOR_WEIGHTS)
+    prev = prev or {}
     for name, s in stats.items():
         if s["n"] < min_samples:
             continue
-        acc = s["correct"] / s["n"]
-        weights[name] = round(max((acc - 0.50) * 20, TUNED_WEIGHT_FLOOR), 1)
+        target = accuracy_to_weight(s["correct"], s["n"])
+        anchor = float(prev.get(name, INDICATOR_WEIGHTS.get(name, TUNED_WEIGHT_FLOOR)))
+        weights[name] = step_limited(target, anchor)
     return weights
 
 
@@ -96,6 +125,7 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
     stats = indicator_stats(dates)
     if not stats:
         return None
+    prev_all = _previous_weights()
     payload = {
         "generated": datetime.now(pytz.UTC).isoformat(),
         "days": len(dates),
@@ -105,7 +135,8 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         # loader (strategy._weight_overrides) detects it and picks the set
         # matching the stream it's forecasting.
         "samples": {iv: {k: v["n"] for k, v in s.items()} for iv, s in stats.items()},
-        "weights": {iv: suggest_weights(s, min_samples) for iv, s in stats.items()},
+        "weights": {iv: suggest_weights(s, min_samples, _prev_for_interval(prev_all, iv))
+                    for iv, s in stats.items()},
     }
     if write:
         tmp = WEIGHTS_PATH + ".tmp"
@@ -138,19 +169,38 @@ def main() -> None:
               "(interval-labeled rows only; pre-2026-07-27 grades are excluded).")
         return
 
+    prev_all = _previous_weights()
+    # Naive baselines: an indicator below these is worse than doing nothing.
+    from core.analytics import indicator_overlap, stream_baselines
+    all_rows = [r for d in dates for r in load_results(d)]
+    baselines = {b["stream"]: b for b in stream_baselines(all_rows)}
+    flagged_overlap = [o for o in indicator_overlap(all_rows) if o["flagged"]]
+
     print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):")
     for interval in sorted(stats, key=lambda k: -int(k)):
         s_int = stats[interval]
-        suggested = suggest_weights(s_int, args.min_samples)
+        prev = _prev_for_interval(prev_all, interval)
+        suggested = suggest_weights(s_int, args.min_samples, prev)
         print(f"\n[{interval}-min stream]")
-        print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'current':>8} {'suggested':>10}")
+        b = baselines.get(f"{interval}m")
+        if b:
+            print(f"baselines: always-BULLISH {b['always_bullish']:.1f}% (n={b['n']}) | "
+                  f"persistence {b['persistence']:.1f}% (n={b['persistence_n']})")
+        print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'shrunk':>8} {'prev':>6} {'suggested':>10}")
         for name in sorted(s_int, key=lambda k: -(s_int[k]['correct'] / s_int[k]['n'])):
             s = s_int[name]
             acc = s["correct"] / s["n"]
-            cur = INDICATOR_WEIGHTS.get(name, 0.0)
+            shrunk = shrunk_accuracy(s["correct"], s["n"])
+            cur = float(prev.get(name, INDICATOR_WEIGHTS.get(name, 0.0)))
             new = suggested.get(name, cur)
             note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
-            print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
+            print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {shrunk:>7.1%} {cur:>6.1f} {new:>10.1f}{note}")
+
+    if flagged_overlap:
+        print("\nNear-duplicate voters (>= 85% vote agreement — one signal counted twice;"
+              "\nconsider dropping/merging the weaker of each pair):")
+        for o in flagged_overlap:
+            print(f"  [{o['stream']}] {o['pair']}: {o['agreement']:.1f}% over {o['n']} windows")
 
     if args.write:
         retune(args.days, args.min_samples, write=True)

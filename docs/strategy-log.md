@@ -12,6 +12,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 |---|---|---|
 | Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ⚠️ revalidation pending | 65% replay number invalidated 2026-08-11 (lookahead in replay harness); live 5/6 since adoption |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
+| Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
 | LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
 | Dow Theory reversal rule as swing voter | ❌ rejected | 50.5–51.3% at +10 bars vs 55% Structure voter, 60% constant-BULLISH baseline |
 | VWAP as hard veto filter | ⚠️ demoted to advisory | Only filter that vetoed would-be winners; never correct as sole veto |
@@ -26,6 +27,14 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-11 — Tuner made noise-resistant; naive baselines and overlap audit added
+
+**Status:** ✅ adopted (measurement changes; no vote logic touched)
+
+- **Shrinkage + step cap** (`core/tuning.py`, both tuners): measured accuracy is pulled toward 50% by `TUNED_WEIGHT_SHRINKAGE` (50) coin-flip pseudo-samples before the `(acc−0.50)×20` mapping, and a weight moves at most `TUNED_WEIGHT_MAX_STEP` (0.5) per retune. Rationale: at n=20 a coin-flip indicator routinely measures 65%, and the old mapping would hand it weight 3.0 overnight — the swing file had **Cross at weight 2.0 off 4 graded signals at 25% accuracy**. A real edge still reaches full weight in about a week of retunes; a noise spike doesn't.
+- **Naive baselines** (tuner report, `!stats`, dashboard): always-BULLISH and same-day persistence, per stream. First read: **always-BULLISH grades 55.4% on the 5m stream (n=491) — at or above every 5m indicator including RSI (55.7%)**, i.e. the 5m ensemble currently has no measurable edge over "just say bullish"; on 15m the bar is 53.8% and RSI (61.3%) / VWAP (58.9%) / MACD (57.6%) clear it. The 5m stream's directional value is now an open question (echoes the old 30m constant-BULLISH lesson from the Dow-rule test).
+- **Overlap audit** (`analytics.indicator_overlap`, dashboard card, tuner report, flagged ≥85%): pairwise directional-vote agreement per stream. First read: **EMA+RSI agree 100.0%** (15m, n=113) and 99.7% (5m); **RSI+VWAP 96.5–99.5%**; EMA+VWAP 86.5% (5m) — RSI, EMA, and VWAP are one trend signal voted three times, which inflates the weighted margin (and thus stated confidence and the VOLATILE guard's inputs). RSI is effectively "EMA, but only when stretched" — its abstention band is where its extra accuracy lives. Candidate action once samples grow: drop/merge the weaker of each flagged pair; **not** applied yet — dropping voters changes live behavior and should be backtested (`backtest_30m.py`) first.
 
 ## 2026-08-11 — Weight tuning was pooling the 5m and 15m streams; split per-stream
 

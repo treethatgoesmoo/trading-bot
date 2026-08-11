@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from itertools import combinations
 from statistics import median
 
 import pytz
@@ -129,6 +130,80 @@ def per_indicator_accuracy(results: list[dict]) -> list[dict]:
             "weight": weight_sets[interval].get(name),
         })
     rows.sort(key=lambda x: x["accuracy"], reverse=True)
+    return rows
+
+
+def stream_baselines(results: list[dict]) -> list[dict]:
+    """Naive baselines each indicator must beat, per forecast stream:
+
+    - always_bullish: grade of calling BULLISH on every window. In a drifting
+      tape this sits well above 50%, and an indicator below it is worse than
+      doing nothing (see the Dow-rule lesson in docs/strategy-log.md).
+    - persistence: grade of repeating the previous graded window's actual
+      direction (momentum-of-the-tape, no indicator required).
+    """
+    per_stream: dict = defaultdict(lambda: {
+        "n": 0, "bullish": 0, "persist_n": 0, "persist_correct": 0})
+    last_actual: dict = {}
+    for r in results:  # stored files are appended chronologically per date
+        actual = r.get("actual")
+        if actual not in DIRECTIONAL:
+            continue
+        interval = r.get("interval")
+        s = per_stream[interval]
+        s["n"] += 1
+        s["bullish"] += (actual == "BULLISH")
+        # Reset at the day boundary — overnight gaps aren't a continuation.
+        key = (r.get("ticker"), interval, (r.get("time") or "")[:10])
+        prev = last_actual.get(key)
+        if prev is not None:
+            s["persist_n"] += 1
+            s["persist_correct"] += (prev == actual)
+        last_actual[key] = actual
+    rows = []
+    for interval, s in per_stream.items():
+        rows.append({
+            "stream": f"{interval}m" if interval is not None else "mixed",
+            "n": s["n"],
+            "always_bullish": _pct(s["bullish"], s["n"]),
+            "persistence": _pct(s["persist_correct"], s["persist_n"]),
+            "persistence_n": s["persist_n"],
+        })
+    rows.sort(key=lambda x: x["stream"])
+    return rows
+
+
+def indicator_overlap(results: list[dict], min_pairs: int = 50) -> list[dict]:
+    """Pairwise agreement between indicators' directional votes, per stream.
+
+    The weighted vote treats every agreeing indicator as independent
+    confirmation — but two voters that agree ~always are one signal counted
+    twice, inflating the margin (and with it confidence and the VOLATILE
+    guard). Pairs at/above 85% agreement are flagged as candidates to merge
+    or drop (keep whichever grades better)."""
+    agg = defaultdict(lambda: {"n": 0, "agree": 0})
+    for r in results:
+        interval = r.get("interval")
+        if interval is None:
+            continue  # legacy rows can't be attributed to a stream
+        sigs = {k: v for k, v in (r.get("signals") or {}).items() if v in DIRECTIONAL}
+        for a, b in combinations(sorted(sigs), 2):
+            s = agg[(interval, a, b)]
+            s["n"] += 1
+            s["agree"] += (sigs[a] == sigs[b])
+    rows = []
+    for (interval, a, b), s in agg.items():
+        if s["n"] < min_pairs:
+            continue
+        pct = _pct(s["agree"], s["n"])
+        rows.append({
+            "stream": f"{interval}m",
+            "pair": f"{a} + {b}",
+            "n": s["n"],
+            "agreement": pct,
+            "flagged": pct >= 85.0,
+        })
+    rows.sort(key=lambda x: -x["agreement"])
     return rows
 
 
@@ -338,6 +413,8 @@ def build_report(days: int | None = None) -> dict:
         "date_range": (dates[0], dates[-1]) if dates else (None, None),
         "forecast": forecast_stats(results),
         "indicators": per_indicator_accuracy(results),
+        "baselines": stream_baselines(results),
+        "overlap": indicator_overlap(results),
         "calibration": calibration(results),
         "by_hour": accuracy_by_hour(results),
         "by_ticker": accuracy_by_ticker(results),

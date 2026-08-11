@@ -86,10 +86,33 @@ def render(report: dict) -> str:
             f'<tr><td>{_esc(r["indicator"])} <span class="muted">[{_esc(r["stream"])}]</span>{flag}</td><td class="num">{r["n"]}</td>'
             f'<td class="num">{w}</td><td class="barcell">{_bar(r["accuracy"])}</td></tr>'
         )
+    base_line = ""
+    baselines = [b for b in report.get("baselines", []) if b["stream"] != "mixed"]
+    if baselines:
+        base_line = ('<p class="muted" style="margin:6px 0 0">Naive baselines (the bar to beat) — '
+                     + " · ".join(f'{_esc(b["stream"])}: always-BULLISH {b["always_bullish"]:.0f}%, '
+                                  f'persistence {b["persistence"]:.0f}% (n={b["n"]})'
+                                  for b in baselines)
+                     + "</p>")
     indicators_html = (
         '<table><thead><tr><th>Indicator</th><th class="num">Signals</th>'
         '<th class="num">Weight</th><th>Accuracy</th></tr></thead><tbody>'
         + (rows or '<tr><td colspan="4" class="muted">No evaluated forecasts yet.</td></tr>')
+        + "</tbody></table>" + base_line
+    )
+
+    # ── Indicator overlap (double-counted voters) ────────────────────────
+    ov_rows = ""
+    for o in report.get("overlap", [])[:12]:
+        flag = " ⚠️" if o["flagged"] else ""
+        ov_rows += (
+            f'<tr><td>{_esc(o["pair"])} <span class="muted">[{_esc(o["stream"])}]</span>{flag}</td>'
+            f'<td class="num">{o["n"]}</td><td class="barcell">{_bar(o["agreement"])}</td></tr>'
+        )
+    overlap_html = (
+        '<table><thead><tr><th>Pair</th><th class="num">Windows</th>'
+        '<th>Agreement</th></tr></thead><tbody>'
+        + (ov_rows or '<tr><td colspan="3" class="muted">Not enough stream-labeled windows yet.</td></tr>')
         + "</tbody></table>"
     )
 
@@ -225,6 +248,10 @@ def render(report: dict) -> str:
 
   <div class="grid">
     {_card("Confidence calibration", calibration_html, "Predicted vs. realized hit-rate per confidence band. Red = miscalibrated.")}
+    {_card("Indicator overlap", overlap_html, "How often two indicators cast the same directional vote. ⚠️ ≥ 85% — near-duplicate voters double-count one signal in the weighted margin.")}
+  </div>
+
+  <div class="grid">
     {_card("Filter performance", filters_html, "Which filters block setups most often.")}
   </div>
 

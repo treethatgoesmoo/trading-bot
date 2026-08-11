@@ -110,6 +110,11 @@ def stats_embed(report: dict) -> discord.Embed:
         if worst:
             worst_str = "\n".join(f"\U0001f534 {r['indicator']} [{r['stream']}]: {r['accuracy']:.0f}% (n={r['n']})" for r in worst)
             embed.add_field(name="Underperforming (<50%)", value=worst_str, inline=False)
+        baselines = [b for b in report.get("baselines", []) if b["stream"] != "mixed"]
+        if baselines:
+            base_str = " · ".join(f"{b['stream']}: always-bull {b['always_bullish']:.0f}% / "
+                                  f"persist {b['persistence']:.0f}%" for b in baselines)
+            embed.add_field(name="Naive Baselines (the bar to beat)", value=base_str, inline=False)
 
     flt = report["filters"]
     if flt["setups"]:
