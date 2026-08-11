@@ -10,7 +10,7 @@ materially; the strategy log stays the append-only history.
 
 | Feature | Status | Notes |
 |---|---|---|
-| 0DTE first-candle bias + break-and-retest (zero_dte) | live | Bias is the 2-of-3 vote (first candle / gap / 50 SMA) adopted 2026-08-06; LONG entries carry a below-breakeven warning (3/34, −21.8R lifetime) |
+| 0DTE first-candle bias + break-and-retest (zero_dte) | live | Bias demoted to informational 2026-08-11 (graded 50.9% vs 52.6% always-BULLISH): entries fire either direction, NEUTRAL still stands down; LONG entries carry a below-breakeven warning (3/34, −21.8R lifetime) |
 | Morning day forecast (direction + ATR-projected high/low) | live | Direction = graded bias; range = 70/30 ATR split by bias side |
 | Intraday weighted-vote forecasts, 15m + 5m streams | live | Change-driven posting; VOLATILE class for conflicts; per-stream tuned weights as of today |
 | RSI / VIX / Bollinger-touch watchers | live | BB watcher added 2026-08-07 (1m+5m, yfinance-only) |
@@ -94,12 +94,11 @@ materially; the strategy log stays the append-only history.
 
 ## Open decisions / next steps
 
-1. **Decide the bias's live role** — revalidation ran 2026-08-11 and the
-   vote graded under the always-BULLISH bar (50.9% vs 52.6%). It still gates
-   break-and-retest direction and skews the day-forecast range; the honest
-   options are surfacing its track record on the embeds (the LONG-warning
-   precedent), reworking it (needs fresh out-of-sample validation), or
-   removing the directional gate. Owner decision pending.
+1. **Bias role decided 2026-08-11 (owner): direction gate removed.**
+   Break-and-retest fires either side; NEUTRAL mornings still stand down;
+   bias stays computed/logged/graded and still skews the day-forecast range.
+   Watch item: LONG setups are no longer suppressed on non-BULLISH days and
+   LONGs are 3/34 lifetime — the per-alert direction record is the guard.
 2. **Confidence calibration** — map vote margin to empirical hit rate and
    re-derive `FORECAST_VOLATILE_CONFIDENCE` on the calibrated scale. Deferred
    because the gate and the scale must move together.

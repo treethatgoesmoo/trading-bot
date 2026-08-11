@@ -49,7 +49,8 @@ def bias_embed(bias: DailyBias) -> discord.Embed:
     embed.add_field(name="50 SMA", value=f"{trend_emoji} {bias.trend} (${bias.current_price} vs ${bias.sma_value})", inline=True)
     rsi_str = f"{bias.rsi} ({bias.rsi_signal})" if bias.rsi is not None else "N/A"
     embed.add_field(name="Daily RSI", value=rsi_str, inline=True)
-    embed.set_footer(text="Bias: 2-of-3 vote (first candle + gap + 50 SMA trend), RSI contrarian override")
+    embed.set_footer(text="Informational only — entries fire either direction (graded 50.9% vs "
+                          "52.6% always-BULLISH over 60d; NEUTRAL still stands down)")
     return embed
 
 

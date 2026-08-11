@@ -898,7 +898,17 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
 
     box_high = state.first_candle.high
     box_low = state.first_candle.low
-    bias = state.daily_bias.direction
+
+    # The bias no longer gates entry DIRECTION (owner decision 2026-08-11,
+    # after the honest replay graded the 2-of-3 vote at 50.9% vs a 52.6%
+    # always-BULLISH bar — see docs/strategy-log.md): a break-and-retest may
+    # fire either side, the bias is informational on the embeds, and the
+    # per-direction track record + below-breakeven warning stay the honest
+    # signal at decision time. A NEUTRAL morning (full three-way conflict)
+    # still stands down entirely — that rule is about signal quality, not
+    # direction.
+    if state.daily_bias.direction == "NEUTRAL":
+        return None
 
     for i in range(len(candles)):
         row = candles.iloc[i]
@@ -920,7 +930,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
 
     now_str = datetime.now(ET).strftime("%I:%M %p ET")
 
-    if state.broke_below and bias == "BEARISH" and not state.signal_fired:
+    if state.broke_below and not state.signal_fired:
         if prev_high >= box_low * 0.999:
             if recent_close < recent_open and recent_close < box_low:
                 stop_loss = box_high
@@ -931,7 +941,7 @@ async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker
                         recent_close, stop_loss, risk, now_str, candles,
                     )
 
-    if state.broke_above and bias == "BULLISH" and not state.signal_fired:
+    if state.broke_above and not state.signal_fired:
         prev_low = float(prev["low"])
         if prev_low <= box_high * 1.001:
             if recent_close > recent_open and recent_close > box_high:
