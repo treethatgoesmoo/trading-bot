@@ -43,6 +43,8 @@ from config import (
     VIX_WATCH_ENABLED,
     BB_WATCH_ENABLED,
     BB_TICKERS,
+    CANDLE_WATCH_ENABLED,
+    CANDLE_WATCH_TICKERS,
 )
 from core import market_calendar
 from core import vix as vix_mod
@@ -77,8 +79,10 @@ from zero_dte.tracker import (
     evaluate_bias,
 )
 from zero_dte.bb_watcher import BBWatcher
+from zero_dte.candle_watcher import CandleWatcher
 from zero_dte.embeds import (
     bb_alert_embed,
+    candle_pattern_embed,
     bias_embed,
     daily_summary_embed,
     filtered_embed,
@@ -110,6 +114,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self._watch_last_run: datetime | None = None
         self.vix_watcher = vix_mod.VixWatcher()
         self.bb_watchers: dict[str, BBWatcher] = {t: BBWatcher(t) for t in BB_TICKERS}
+        self.candle_watchers: dict[str, CandleWatcher] = {t: CandleWatcher(t) for t in CANDLE_WATCH_TICKERS}
         self._menu_view_registered = False
         self._catchup_done = False
 
@@ -184,6 +189,38 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     pass
                 if channel:
                     await channel.send(embed=bb_alert_embed(alert))
+
+    async def run_candle_watch(self, channel) -> None:
+        """Log/ping candlestick patterns on completed 1h and 1D candles."""
+        if not CANDLE_WATCH_ENABLED:
+            return
+        today_str = datetime.now(ET).strftime("%Y-%m-%d")
+        for ticker, watcher in self.candle_watchers.items():
+            try:
+                if not watcher.seeded:
+                    # A restart mid-day must not re-post patterns already captured.
+                    watcher.seed(load_jsonl("candle_patterns", today_str))
+                alerts = await watcher.check()
+            except Exception as exc:
+                logger.warning("[%s] Candle pattern watch error: %s", ticker, exc)
+                continue
+            by_candle: dict[tuple, list] = {}
+            for alert in alerts:
+                logger.info("[%s] Candle pattern: %s %s (%s) close=%s",
+                            ticker, alert.timeframe, alert.name, alert.direction, alert.close)
+                try:
+                    append_jsonl("candle_patterns", today_str, {
+                        "ticker": ticker, "time": datetime.now(pytz.UTC).isoformat(),
+                        "timeframe": alert.timeframe, "name": alert.name,
+                        "direction": alert.direction, "candles": alert.candles,
+                        "close": alert.close, "candle_ts": alert.candle_ts,
+                    })
+                except Exception:
+                    pass
+                by_candle.setdefault((alert.timeframe, alert.candle_ts), []).append(alert)
+            if channel:
+                for (timeframe, _ts), group in by_candle.items():
+                    await channel.send(embed=candle_pattern_embed(ticker, timeframe, group))
 
     async def run_vix_watch(self, channel) -> None:
         """Poll VIX for regime crossings / spikes and post any risk pings."""
@@ -742,6 +779,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             self.vix_watcher.reset()
             for watcher in self.bb_watchers.values():
                 watcher.reset()
+            for watcher in self.candle_watchers.values():
+                watcher.reset()
             self._rehydrate_state(today_str)
 
             # Only send "Monitoring started" if we're within the monitoring window (market open to end)
@@ -908,6 +947,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             self._watch_last_run = now
             await self.run_vix_watch(channel)
             await self.run_bb_watch(channel)
+            await self.run_candle_watch(channel)
 
         if past_monitoring:
             return

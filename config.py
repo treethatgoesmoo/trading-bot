@@ -134,6 +134,16 @@ BB_PERIOD = int(os.getenv("BB_PERIOD", "20"))
 BB_STD = float(os.getenv("BB_STD", "2.0"))
 BB_ALERT_COOLDOWN_MINUTES = int(os.getenv("BB_ALERT_COOLDOWN_MINUTES", "15"))
 
+# Candlestick pattern watcher — logs when the last COMPLETED 1-hour or daily
+# candle forms a named pattern (core.indicators.detect_candlestick_patterns,
+# the same detectors backtest_patterns.py replays). Observational only: daily
+# and weekly patterns backtested to no standalone directional edge
+# (docs/strategy-log.md), so posts are context, not trade signals; the 1-hour
+# horizon has no backtest either way — captured history is what would feed one.
+# Fetches from yfinance directly — zero Twelve Data/Finnhub budget.
+CANDLE_WATCH_ENABLED = _flag("CANDLE_WATCH_ENABLED")
+CANDLE_WATCH_TICKERS = [t.strip().upper() for t in os.getenv("CANDLE_WATCH_TICKERS", "SPY").split(",") if t.strip()]
+
 # VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
 VIX_WATCH_ENABLED = _flag("VIX_WATCH_ENABLED")
 VIX_ELEVATED = 20.0   # regime thresholds
