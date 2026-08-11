@@ -352,6 +352,36 @@ def bb_alert_embed(alert) -> discord.Embed:
     return embed
 
 
+def candle_pattern_embed(ticker: str, timeframe: str, alerts: list) -> discord.Embed:
+    """Named candlestick pattern(s) on the last completed 1h/1D candle.
+
+    One embed per (ticker, timeframe, candle) — a candle matching several
+    patterns posts once, listing every match.
+    """
+    from zero_dte.candle_watcher import CANDLE_TF_LABEL
+    directions = {a.direction for a in alerts}
+    if directions == {"BULLISH"}:
+        color, arrow = 0x00CC66, "⬆️"
+    elif directions == {"BEARISH"}:
+        color, arrow = 0xFF4444, "⬇️"
+    else:
+        color, arrow = 0x999999, "➖"   # indecision or conflicting matches
+    tf = CANDLE_TF_LABEL[timeframe]
+    first = alerts[0]
+    embed = discord.Embed(
+        title=f"\U0001f56f️ {arrow} Candlestick pattern — {ticker} ({tf})",
+        color=color,
+    )
+    for a in alerts:
+        side = a.direction.title() if a.direction else "Indecision"
+        embed.add_field(name=f"{a.name} ({side})",
+                        value=f"{a.candles}-candle pattern, close ${a.close:.2f}",
+                        inline=False)
+    embed.set_footer(text=f"Candle {first.bar_time} — observational log; daily/weekly patterns "
+                          f"backtested to no directional edge (strategy log), 1h untested")
+    return embed
+
+
 def vix_alert_embed(alert) -> discord.Embed:
     """A VIX regime-cross or spike ping (risk-off / calming)."""
     if alert.direction == "BULLISH":
