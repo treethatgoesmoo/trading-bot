@@ -1,10 +1,17 @@
-"""Bollinger band touch watcher — 1-min and 5-min streams.
+"""Bollinger band touch watcher — 5-min stream.
 
 Pings when a closed candle's close touches or crosses the upper or lower
 Bollinger band (default 20-period, 2.0 std). Each band is *armed* while price
 is inside it and fires once on the touch; it re-arms only after a close back
 strictly inside the band, so a trend hugging the band posts one alert, not one
 per bar. A per-(timeframe, band) cooldown backstops choppy oscillation.
+
+The 1-min stream was dropped 2026-08-12: it produced ~15 ungraded pings/day —
+the loudest stream in the channel with no evidence attached. The 5m stream
+stays and is now graded nightly (tracker.evaluate_bb_alerts: did price revert
+to the middle band before extending another band-width?) so its record decides
+whether it keeps its slot. 1m bars are still fetched — the 5m candles are
+resampled from them.
 
 Data comes straight from yfinance (via asyncio.to_thread — it's synchronous):
 1-min bars are fetched once per minute-boundary and the 5-min stream is
@@ -29,8 +36,8 @@ from core.indicators import bollinger
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
 
-BB_TIMEFRAMES = ("1", "5")
-BB_TF_LABEL = {"1": "1m", "5": "5m"}
+BB_TIMEFRAMES = ("5",)              # 1m stream dropped 2026-08-12 (noise, ungraded)
+BB_TF_LABEL = {"1": "1m", "5": "5m"}  # "1" kept for rendering historical rows
 
 
 @dataclass

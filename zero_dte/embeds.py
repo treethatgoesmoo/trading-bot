@@ -382,6 +382,42 @@ def candle_pattern_embed(ticker: str, timeframe: str, alerts: list) -> discord.E
     return embed
 
 
+def pattern_read_embed(ticker: str, reads: dict) -> discord.Embed:
+    """!patterns — the current read off the last completed 1h and 1D candles.
+
+    `reads` is candle_watcher.current_read output: {tf: {hits, candle,
+    bar_time} | None}.
+    """
+    from zero_dte.candle_watcher import CANDLE_TF_LABEL
+    directions = {h["direction"] for r in reads.values() if r for h in r["hits"]
+                  if h["direction"]}
+    if directions == {"BULLISH"}:
+        color = 0x00CC66
+    elif directions == {"BEARISH"}:
+        color = 0xFF4444
+    else:
+        color = 0x999999   # mixed, indecision-only, or no pattern
+    embed = discord.Embed(title=f"\U0001f56f️ Candlestick read — {ticker}", color=color)
+    for tf in ("D", "60"):
+        r = reads.get(tf)
+        label = CANDLE_TF_LABEL[tf]
+        if r is None:
+            embed.add_field(name=f"{label} candle", value="no data", inline=False)
+            continue
+        c = r["candle"]
+        if r["hits"]:
+            txt = "\n".join(f"**{h['name']}** ({h['direction'].title() if h['direction'] else 'Indecision'}, "
+                            f"{h['candles']}-candle)" for h in r["hits"])
+        else:
+            txt = "no pattern"
+        txt += (f"\nO ${c['open']:.2f}  H ${c['high']:.2f}  L ${c['low']:.2f}  "
+                f"C ${c['close']:.2f}  ({r['bar_time']})")
+        embed.add_field(name=f"{label} candle", value=txt, inline=False)
+    embed.set_footer(text="Last completed candles only — observational; daily/weekly patterns "
+                          "backtested to no directional edge (strategy log), 1h untested")
+    return embed
+
+
 def vix_alert_embed(alert) -> discord.Embed:
     """A VIX regime-cross or spike ping (risk-off / calming)."""
     if alert.direction == "BULLISH":

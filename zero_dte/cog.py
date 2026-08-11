@@ -77,12 +77,16 @@ from zero_dte.tracker import (
     log_bias,
     log_filters,
     evaluate_bias,
+    evaluate_bb_alerts,
+    evaluate_vix_alerts,
+    evaluate_candle_patterns,
 )
 from zero_dte.bb_watcher import BBWatcher
-from zero_dte.candle_watcher import CandleWatcher
+from zero_dte.candle_watcher import CandleWatcher, current_read
 from zero_dte.embeds import (
     bb_alert_embed,
     candle_pattern_embed,
+    pattern_read_embed,
     bias_embed,
     daily_summary_embed,
     filtered_embed,
@@ -117,6 +121,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self.candle_watchers: dict[str, CandleWatcher] = {t: CandleWatcher(t) for t in CANDLE_WATCH_TICKERS}
         self._menu_view_registered = False
         self._catchup_done = False
+        self._aux_grade_day: str | None = None   # watcher-alert grading done-flag
 
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -191,19 +196,28 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     await channel.send(embed=bb_alert_embed(alert))
 
     async def run_candle_watch(self, channel) -> None:
-        """Log/ping candlestick patterns on completed 1h and 1D candles."""
+        """Log/ping candlestick patterns on completed 1h and 1D candles, and
+        archive every completed candle to the candles-*.jsonl capture."""
         if not CANDLE_WATCH_ENABLED:
             return
         today_str = datetime.now(ET).strftime("%Y-%m-%d")
         for ticker, watcher in self.candle_watchers.items():
             try:
                 if not watcher.seeded:
-                    # A restart mid-day must not re-post patterns already captured.
-                    watcher.seed(load_jsonl("candle_patterns", today_str))
-                alerts = await watcher.check()
+                    # A restart must not re-post patterns or re-append candles
+                    # already captured.
+                    archived = [e for d in available_dates("candles")[-3:]
+                                for e in load_jsonl("candles", d)]
+                    watcher.seed(load_jsonl("candle_patterns", today_str), archived)
+                alerts, candles = await watcher.check()
             except Exception as exc:
                 logger.warning("[%s] Candle pattern watch error: %s", ticker, exc)
                 continue
+            for c in candles:
+                try:
+                    append_jsonl("candles", c.pop("date"), c)
+                except Exception:
+                    pass
             by_candle: dict[tuple, list] = {}
             for alert in alerts:
                 logger.info("[%s] Candle pattern: %s %s (%s) close=%s",
@@ -213,6 +227,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         "ticker": ticker, "time": datetime.now(pytz.UTC).isoformat(),
                         "timeframe": alert.timeframe, "name": alert.name,
                         "direction": alert.direction, "candles": alert.candles,
+                        "open": alert.open, "high": alert.high, "low": alert.low,
                         "close": alert.close, "candle_ts": alert.candle_ts,
                     })
                 except Exception:
@@ -571,6 +586,18 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         embed.set_footer(text="VIX is inverse to SPY · feeds the 30-min forecast + spike alerts")
         await ctx.send(embed=embed)
 
+    @commands.command(name="patterns")
+    async def cmd_patterns(self, ctx, ticker: str = None):
+        """Current candlestick pattern read on the last completed 1h + 1D
+        candles. Usage: !patterns [ticker] (any yfinance symbol)."""
+        resolved = (ticker or CANDLE_WATCH_TICKERS[0]).upper()
+        async with ctx.typing():
+            reads = await current_read(resolved)
+        if not any(reads.values()):
+            await ctx.send(f"Could not fetch candles for `{resolved}` right now.")
+            return
+        await ctx.send(embed=pattern_read_embed(resolved, reads))
+
     @commands.command(name="test")
     async def cmd_test(self, ctx, ticker: str = None):
         """Simulate the full strategy flow for a ticker. Usage: !test [ticker]"""
@@ -631,6 +658,19 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         logger.info("Catch-up: graded %d forecast(s) for %s on %s", len(results), ticker, d)
                 except Exception as exc:
                     logger.warning("Catch-up grading failed for %s on %s: %s", ticker, d, exc)
+
+        # Watcher alerts from missed days grade too (idempotent — rows that
+        # already carry a `correct` key are skipped).
+        for kind, fn in (("bb_alerts", evaluate_bb_alerts), ("vix_alerts", evaluate_vix_alerts)):
+            for d in [d for d in available_dates(kind) if d < today_str][-3:]:
+                try:
+                    await fn(self.client, d)
+                except Exception as exc:
+                    logger.warning("Catch-up %s grading failed for %s: %s", kind, d, exc)
+        try:
+            evaluate_candle_patterns()
+        except Exception as exc:
+            logger.warning("Catch-up candle pattern grading failed: %s", exc)
 
     def _rehydrate_state(self, today_str: str) -> None:
         """After a mid-day restart, restore per-ticker flags from today's data
@@ -863,6 +903,29 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     except Exception as exc:
                         logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
 
+            # Watcher-alert grading — every ping stream must grade (house
+            # rule: an ungraded alert can never earn or lose its place).
+            if self._aux_grade_day != today_str:
+                self._aux_grade_day = today_str
+                try:
+                    n = await evaluate_bb_alerts(self.client, today_str)
+                    if n:
+                        logger.info("[%s] Graded %d BB touch alert(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] BB alert grading error: %s", time_str, exc)
+                try:
+                    n = await evaluate_vix_alerts(self.client, today_str)
+                    if n:
+                        logger.info("[%s] Graded %d VIX alert(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] VIX alert grading error: %s", time_str, exc)
+                try:
+                    n = evaluate_candle_patterns()
+                    if n:
+                        logger.info("[%s] Graded %d candlestick pattern(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] Candle pattern grading error: %s", time_str, exc)
+
             if past_monitoring:
                 return
 
@@ -932,12 +995,14 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     if fc5:
                         st.last_forecast_5m_time = now
                         self._track_session_range(st, fc5)
-                        entry = log_forecast(ticker, fc5, now)
+                        log_forecast(ticker, fc5, now)
                         logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                     time_str, ticker, FORECAST_5M_INTERVAL_MINUTES, fc5.direction, fc5.confidence,
                                     fc5.rsi_30m, fc5.ema_direction, fc5.macd_direction, fc5.divergence)
-                        if channel:
-                            await self._post_forecast(channel, ticker, st, fc5, now, entry)
+                        # Not posted (owner decision 2026-08-12): the 5m stream
+                        # graded 51.4% directional vs a 55.4% always-BULLISH
+                        # bar on 5m windows — computed and logged for grading
+                        # only, so its record can settle whether it returns.
                 except Exception as exc:
                     logger.exception("[%s] [%s] 5m forecast error: %s", time_str, ticker, exc)
 
