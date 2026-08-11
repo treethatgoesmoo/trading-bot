@@ -25,7 +25,10 @@ materially; the strategy log stays the append-only history.
   first-candle-wins rule (exactly 50%, bearish calls 38.5%). The 2-of-3 vote
   has only 6 graded days (5 correct). **Its 65% validation replay was
   invalidated today** (lookahead in the harness) — honest number pending a
-  re-run of `python backfill.py 60 SPY` + `python analyze_days.py`.
+  run of `python backfill.py 60 SPY --bias-report` (report-only mode added
+  2026-08-11; the old backfill+analyze_days recipe couldn't answer this —
+  analyze_days grades the prev-day-momentum yardstick, not the vote, and the
+  overwrite guard discarded most replayed bias days).
 - **15m forecast stream:** a real ensemble once measured per-stream — RSI
   61.3% (n=75), VWAP 58.9% (n=158), MACD 57.6% (n=158), Momentum 56.3%
   (n=158) against a 53.8% always-BULLISH baseline.
@@ -93,9 +96,9 @@ materially; the strategy log stays the append-only history.
 
 ## Open decisions / next steps
 
-1. **Re-validate the 2-of-3 bias vote** on the fixed harness (needs network:
-   run on the owner's machine). If it grades ~50%, the vote goes back on the
-   chopping block.
+1. **Re-validate the 2-of-3 bias vote**: `python backfill.py 60 SPY
+   --bias-report` on the owner's machine (needs yfinance). If it grades at or
+   under the always-BULLISH bar, the vote goes back on the chopping block.
 2. **Confidence calibration** — map vote margin to empirical hit rate and
    re-derive `FORECAST_VOLATILE_CONFIDENCE` on the calibrated scale. Deferred
    because the gate and the scale must move together.
