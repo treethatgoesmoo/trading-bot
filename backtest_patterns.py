@@ -3,6 +3,9 @@
     python backtest_patterns.py                          # SPY+QQQ, 10 years
     python backtest_patterns.py --tickers SPY --years 5
     python backtest_patterns.py --verbose                # print every hit
+    python backtest_patterns.py --weekly --years 25      # weekly candles ->
+                                  # next-WEEK direction (use a long lookback:
+                                  # 52 bars/yr, patterns are scarce)
 
 Bulk-downloads daily candles once per ticker via yfinance (no API budget) and
 replays core.indicators.detect_candlestick_patterns as-of each day: patterns
@@ -53,6 +56,25 @@ def load_daily(ticker: str, years: int) -> pd.DataFrame | None:
         "Date": "timestamp", "Open": "open", "High": "high",
         "Low": "low", "Close": "close", "Volume": "volume"})
     return df[["timestamp", "open", "high", "low", "close", "volume"]]
+
+
+def resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Daily -> completed weekly candles (Mon-Fri sessions, labeled by week end).
+
+    The final resampled week is always dropped: mid-week it is a partial bar,
+    and the detector's contract is completed candles only. Costs one week of
+    sample; guarantees the replay never reads a half-formed weekly candle.
+    """
+    w = (df.set_index(pd.to_datetime(df["timestamp"]))
+           .resample("W-FRI")
+           .agg({"open": "first", "high": "max", "low": "min",
+                 "close": "last", "volume": "sum"})
+           .dropna()
+           .reset_index()
+           .rename(columns={"index": "timestamp"}))
+    if "timestamp" not in w.columns:  # pandas names the index column after resample
+        w = w.rename(columns={w.columns[0]: "timestamp"})
+    return w.iloc[:-1]
 
 
 def replay(df: pd.DataFrame, verbose: bool = False,
@@ -177,30 +199,49 @@ def _dir_of(name: str) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Backtest daily candlestick patterns")
+    ap = argparse.ArgumentParser(description="Backtest daily/weekly candlestick patterns")
     ap.add_argument("--tickers", default="SPY,QQQ")
     ap.add_argument("--years", type=int, default=10)
+    ap.add_argument("--weekly", action="store_true",
+                    help="resample to weekly candles and grade next-WEEK direction")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    bar = "weekly" if args.weekly else "daily"
     total: dict[str, dict] = defaultdict(lambda: {
         "n": 0, "correct": 0, "moves": [],
         "with_trend": [0, 0], "counter_trend": [0, 0], "chop_correct": 0})
+    current: list[tuple[str, str, list[dict]]] = []
 
     for ticker in [t.strip().upper() for t in args.tickers.split(",") if t.strip()]:
         df = load_daily(ticker, args.years)
+        if df is not None and args.weekly:
+            df = resample_weekly(df)
         if df is None or len(df) < WARMUP + 10:
             print(f"[{ticker}] no/insufficient data — skipped")
             continue
-        print(f"[{ticker}] {len(df)} daily candles "
+        print(f"[{ticker}] {len(df)} {bar} candles "
               f"({pd.to_datetime(df['timestamp'].iloc[0]).date()} -> "
               f"{pd.to_datetime(df['timestamp'].iloc[-1]).date()})")
         merge(total, replay(df, verbose=args.verbose, ticker=ticker))
+        current.append((ticker, str(pd.to_datetime(df["timestamp"].iloc[-1]).date()),
+                        detect_candlestick_patterns(df.tail(DETECT_TAIL))))
 
     if not total:
         print("Nothing to report.")
         return
     report(total)
+
+    # The forward-looking read the replay is validating: patterns in the last
+    # COMPLETED candles right now. Only tradeworthy if the table above shows
+    # that pattern beating its drift bar at a real sample size.
+    print(f"\nCurrent {bar} read (last completed candle per ticker):")
+    for ticker, asof, hits in current:
+        if hits:
+            txt = "; ".join(f"{h['name']} -> {h['direction'] or 'no direction'}" for h in hits)
+        else:
+            txt = "no pattern"
+        print(f"  {ticker} (as of {asof}): {txt}")
 
 
 if __name__ == "__main__":
