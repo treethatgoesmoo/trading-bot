@@ -1,7 +1,9 @@
-"""Retune the 30-min forecast indicator weights from graded live results.
+"""Retune the intraday forecast indicator weights from graded live results.
 
 Reads data/results-*.json (written nightly by forecast_tracker), measures each
-indicator's directional accuracy against the actual move, and maps accuracy to
+indicator's directional accuracy against the actual move — separately per
+forecast stream (15m vs the 5m companion), since the same indicator can be
+predictive on one horizon and a coin flip on the other — and maps accuracy to
 a weight:
 
     weight = (accuracy - 0.50) * 20, floored at TUNED_WEIGHT_FLOOR
@@ -43,18 +45,31 @@ DIRECTIONAL = ("BULLISH", "BEARISH")
 WEIGHTS_PATH = os.path.join(DATA_DIR, "indicator_weights.json")
 
 
-def indicator_stats(dates: list[str]) -> dict[str, dict]:
-    agg: dict[str, dict] = defaultdict(lambda: {"n": 0, "correct": 0})
+def indicator_stats(dates: list[str]) -> dict[str, dict[str, dict]]:
+    """Per-stream accuracy: {interval: {indicator: {n, correct}}}.
+
+    The 5m companion stream grades very differently from the main 15m stream
+    (most indicators are coin flips on 5m windows but not on 15m), so pooling
+    them lets the much larger 5m sample drag every weight to the floor.
+    Rows graded before 2026-07-27 carry no interval label — an inseparable
+    5m/15m mix — and are excluded rather than guessed at.
+    """
+    agg: dict[str, dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"n": 0, "correct": 0}))
     for d in dates:
         for r in load_results(d):
+            interval = r.get("interval")
+            if interval is None:
+                continue
             actual = r.get("actual")
             if actual not in DIRECTIONAL:
                 continue
             for name, signal in (r.get("signals") or {}).items():
                 if signal in DIRECTIONAL:
-                    agg[name]["n"] += 1
-                    agg[name]["correct"] += (signal == actual)
-    return dict(agg)
+                    s = agg[str(interval)][name]
+                    s["n"] += 1
+                    s["correct"] += (signal == actual)
+    return {iv: dict(names) for iv, names in agg.items()}
 
 
 def suggest_weights(stats: dict[str, dict], min_samples: int) -> dict[str, float]:
@@ -86,8 +101,11 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         "days": len(dates),
         "date_range": [dates[0], dates[-1]],
         "min_samples": min_samples,
-        "samples": {k: v["n"] for k, v in stats.items()},
-        "weights": suggest_weights(stats, min_samples),
+        # Nested per-interval schema ({"15": {...}, "5": {...}}); the live
+        # loader (strategy._weight_overrides) detects it and picks the set
+        # matching the stream it's forecasting.
+        "samples": {iv: {k: v["n"] for k, v in s.items()} for iv, s in stats.items()},
+        "weights": {iv: suggest_weights(s, min_samples) for iv, s in stats.items()},
     }
     if write:
         tmp = WEIGHTS_PATH + ".tmp"
@@ -116,20 +134,23 @@ def main() -> None:
 
     stats = indicator_stats(dates)
     if not stats:
-        print(f"No graded indicator signals in {len(dates)} result day(s).")
+        print(f"No graded indicator signals in {len(dates)} result day(s) "
+              "(interval-labeled rows only; pre-2026-07-27 grades are excluded).")
         return
 
-    suggested = suggest_weights(stats, args.min_samples)
-
-    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):\n")
-    print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'current':>8} {'suggested':>10}")
-    for name in sorted(stats, key=lambda k: -(stats[k]['correct'] / stats[k]['n'])):
-        s = stats[name]
-        acc = s["correct"] / s["n"]
-        cur = INDICATOR_WEIGHTS.get(name, 0.0)
-        new = suggested.get(name, cur)
-        note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
-        print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
+    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):")
+    for interval in sorted(stats, key=lambda k: -int(k)):
+        s_int = stats[interval]
+        suggested = suggest_weights(s_int, args.min_samples)
+        print(f"\n[{interval}-min stream]")
+        print(f"{'indicator':<12} {'graded':>6} {'accuracy':>9} {'current':>8} {'suggested':>10}")
+        for name in sorted(s_int, key=lambda k: -(s_int[k]['correct'] / s_int[k]['n'])):
+            s = s_int[name]
+            acc = s["correct"] / s["n"]
+            cur = INDICATOR_WEIGHTS.get(name, 0.0)
+            new = suggested.get(name, cur)
+            note = "  (kept -- too few samples)" if s["n"] < args.min_samples else ""
+            print(f"{name:<12} {s['n']:>6} {acc:>8.1%} {cur:>8.1f} {new:>10.1f}{note}")
 
     if args.write:
         retune(args.days, args.min_samples, write=True)

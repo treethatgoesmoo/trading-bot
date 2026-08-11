@@ -83,7 +83,7 @@ def render(report: dict) -> str:
         w = f'{r["weight"]:.1f}' if r["weight"] is not None else "—"
         flag = " ⚠️" if r["accuracy"] < OKAY else ""
         rows += (
-            f'<tr><td>{_esc(r["indicator"])}{flag}</td><td class="num">{r["n"]}</td>'
+            f'<tr><td>{_esc(r["indicator"])} <span class="muted">[{_esc(r["stream"])}]</span>{flag}</td><td class="num">{r["n"]}</td>'
             f'<td class="num">{w}</td><td class="barcell">{_bar(r["accuracy"])}</td></tr>'
         )
     indicators_html = (

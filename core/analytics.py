@@ -34,13 +34,13 @@ def _ft():
     return _ft_mod
 
 
-def _effective_weights() -> dict:
-    """The weights strategy.compute_30m_forecast actually uses right now
-    (defaults + any live-tuned overrides from data/indicator_weights.json).
-    Shown alongside accuracy so an indicator that's heavily weighted but
-    inaccurate stands out as a tuning target."""
+def _effective_weights(interval: int | None = None) -> dict:
+    """The weights strategy.compute_30m_forecast actually uses right now for
+    the given stream (defaults + any live-tuned overrides from
+    data/indicator_weights.json). Shown alongside accuracy so an indicator
+    that's heavily weighted but inaccurate stands out as a tuning target."""
     from zero_dte.strategy import INDICATOR_WEIGHTS, _weight_overrides
-    return {**INDICATOR_WEIGHTS, **_weight_overrides()}
+    return {**INDICATOR_WEIGHTS, **_weight_overrides(interval)}
 
 
 def _pct(correct: int, total: int) -> float:
@@ -100,25 +100,33 @@ def forecast_stats(results: list[dict]) -> dict:
 
 
 def per_indicator_accuracy(results: list[dict]) -> list[dict]:
-    """For each indicator, how often its (non-neutral) signal matched the actual move."""
+    """For each (indicator, forecast stream), how often its (non-neutral)
+    signal matched the actual move. Split per stream: the 5m companion grades
+    very differently from the 15m stream, and pooling them buried that (e.g.
+    MACD 57.6% on 15m vs 50.5% on 5m as of 2026-08-11). Rows graded before
+    2026-07-27 have no interval label and report as the 'mixed' stream."""
     agg = defaultdict(lambda: {"n": 0, "correct": 0})
     for r in results:
         actual = r.get("actual")
         if actual not in DIRECTIONAL:
             continue
+        interval = r.get("interval")
         for name, signal in (r.get("signals") or {}).items():
             if signal in DIRECTIONAL:
-                agg[name]["n"] += 1
-                agg[name]["correct"] += (signal == actual)
-    weights = _effective_weights()
+                agg[(name, interval)]["n"] += 1
+                agg[(name, interval)]["correct"] += (signal == actual)
+    weight_sets: dict = {}
     rows = []
-    for name, a in agg.items():
+    for (name, interval), a in agg.items():
+        if interval not in weight_sets:
+            weight_sets[interval] = _effective_weights(interval)
         rows.append({
             "indicator": name,
+            "stream": f"{interval}m" if interval is not None else "mixed",
             "n": a["n"],
             "correct": a["correct"],
             "accuracy": _pct(a["correct"], a["n"]),
-            "weight": weights.get(name),
+            "weight": weight_sets[interval].get(name),
         })
     rows.sort(key=lambda x: x["accuracy"], reverse=True)
     return rows
