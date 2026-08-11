@@ -10,6 +10,8 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
+| 5m forecast stream as a posted alert | ⚠️ muted (still graded) | 51.4% directional (186/362) vs 55.4% always-BULLISH bar on 5m windows; posts removed 2026-08-12, stream keeps logging/grading |
+| BB touch watcher 1m stream | ❌ dropped | ~15 ungraded pings/day (loudest stream in the channel, no evidence attached); 5m stream stays and is now graded (revert-to-middle vs extend) |
 | Candlestick patterns → next-bar direction (daily AND weekly) | ❌ rejected both horizons | Daily: 48.3% (n=1066) vs 54.3% drift. Weekly, 25y × 4 ETFs: 52.4% (n=1283) vs 50.9% weighted bar; every "edge" flipped sign on out-of-sample DIA (Hammer +18.6p IWM / −11.2p DIA) |
 | Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ demoted to informational | 50.9% (29/57) vs 52.6% always-BULLISH; direction gate removed from break-and-retest 2026-08-11; NEUTRAL still stands down; still logged/graded |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
@@ -28,6 +30,20 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
+
+## 2026-08-12 — Alert diet + grade-everything pass
+
+**Status:** ⚠️ two streams demoted on evidence; every remaining ping stream now grades
+
+Audit of a typical day's channel volume (~25–30 posts) against the graded record, owner decisions:
+
+- **5m forecast stream muted** (posts removed, computing/logging/grading unchanged). Over all interval-labeled graded bars: **51.4% directional (186/362) vs the 55.4% always-BULLISH baseline** on 5m windows — every post was statistically a shrug. The 15m stream (60.7%, 74/122) keeps posting. The 5m stream's open question from the per-stream tuning entry stays open; its record keeps accumulating and can argue it back in.
+- **BB watcher 1m stream dropped.** ~15 pings/day average (19 max) — the loudest stream in the channel — with zero grading attached. The 5m stream stays, and BB touches are now **graded nightly** (`tracker.evaluate_bb_alerts`, in-place on `bb_alerts` rows): REVERTED (a later 5m close reaches the alert's middle band first), EXTENDED (a close a full band-width beyond the band first), DRIFT at session end graded by which side of the touch price it closed on — symmetric, no free passes.
+- **New house rule: every alert stream must grade.** An ungraded ping can never earn or lose its place. Added nightly graders (all idempotent, in-place, with startup catch-up):
+  - **VIX pings** (`evaluate_vix_alerts`): stored SPY-implied direction vs SPY's next 30 min, forecast-style ATR deadband (FLAT → recorded ungradeable, not a free win).
+  - **Candlestick patterns** (`evaluate_candle_patterns`): directional patterns vs the next archived candle's close-vs-open (the backtest_patterns rule); Doji/Inside Bar as chop calls vs the trailing-20 median |move| once the `candles` archive holds 10 priors. Daily patterns lag one grading day by construction (next candle archives the following morning).
+- **Kept as-is (owner):** candlestick pattern posts on both timeframes — the daily horizon is rejected as a signal but the posts are explicitly observational, and the 1h horizon now builds the graded record that will settle it.
+- Grading gap to watch: none of these graders backfill history beyond the yfinance intraday window (~60d for 5m bars), so old `bb_alerts`/`vix_alerts` rows past the window stay ungraded rather than being guessed at.
 
 ## 2026-08-12 — Declutter: day forecast + SPX range feed removed; actual session H/L on every alert
 

@@ -351,3 +351,185 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
         _write_atomic(out_path, json.dumps(existing, indent=2))
 
     return results
+
+
+# ── Watcher-alert grading (in-place row enrichment) ──────────────────────
+# bb_alerts / vix_alerts / candle_patterns rows are appended when a ping
+# fires and graded after the close by rewriting the day file with actual/
+# correct fields ADDED (never removed) — the same in-place precedent as
+# evaluate_bias. Idempotent: rows already carrying a "correct" key are left
+# untouched, so the nightly pass and the startup catch-up can both run
+# safely. Every alert stream must grade — an ungraded ping can never earn
+# or lose its place in the system (house rule, 2026-08-12).
+
+
+def _rewrite_jsonl(kind: str, date_str: str, rows: list[dict]) -> None:
+    path = os.path.join(DATA_DIR, f"{kind}-{date_str}.jsonl")
+    _write_atomic(path, "".join(json.dumps(r) + "\n" for r in rows))
+
+
+async def evaluate_bb_alerts(client, date_str: str) -> int:
+    """Grade the day's Bollinger touch pings as mean-reversion calls.
+
+    A touch means "stretched vs the mean", so: REVERTED (correct) when a
+    later 5m close gets back to the middle band shown on the alert before
+    extending a full band-width beyond the touched band; EXTENDED (wrong) on
+    the extension; DRIFT when the session ends with neither, graded by which
+    side of the touch price it closed on — symmetric, no free passes.
+    Historical 1m rows grade on the same 5m bars (the 1m stream was dropped
+    2026-08-12).
+    """
+    rows = load_jsonl("bb_alerts", date_str)
+    todo = [r for r in rows if "correct" not in r]
+    if not todo:
+        return 0
+    graded = 0
+    frames: dict[str, pd.DataFrame | None] = {}
+    for r in todo:
+        ticker = r.get("ticker")
+        if ticker not in frames:
+            try:
+                frames[ticker] = await client.fetch_candles(ticker, interval="5", count=400)
+            except Exception:
+                frames[ticker] = None
+        data = frames[ticker]
+        if data is None or data.empty:
+            continue
+        ts = pd.to_datetime(data["timestamp"])
+        if ts.dt.tz is None:
+            ts = ts.dt.tz_localize("UTC")
+        t0 = datetime.fromisoformat(r["time"])
+        day = t0.astimezone(ET).date()
+        after = ((ts > pd.Timestamp(t0)) & (ts.dt.tz_convert(ET).dt.date == day)).values
+        closes = data["close"].astype(float)[after]
+        if closes.empty:
+            continue  # bars beyond the provider window — stays ungraded
+        price, middle, band = float(r["price"]), float(r["middle"]), float(r["band_value"])
+        width = abs(band - middle) or 1e-9
+        upper = r.get("band") == "upper"
+        resolution = correct = None
+        deciding = float(closes.iloc[-1])
+        for c in closes:
+            c = float(c)
+            if (c <= middle) if upper else (c >= middle):
+                resolution, correct, deciding = "REVERTED", True, c
+                break
+            if (c >= band + width) if upper else (c <= band - width):
+                resolution, correct, deciding = "EXTENDED", False, c
+                break
+        if resolution is None:
+            resolution = "DRIFT"
+            correct = (deciding < price) if upper else (deciding > price)
+        r["resolution"] = resolution
+        r["graded_close"] = round(deciding, 2)
+        r["correct"] = correct
+        graded += 1
+    if graded:
+        _rewrite_jsonl("bb_alerts", date_str, rows)
+    return graded
+
+
+async def evaluate_vix_alerts(client, date_str: str) -> int:
+    """Grade VIX pings against SPY's next 30 minutes (rows store the
+    SPY-implied direction). Same volatility-deadband rule as forecast
+    grading: a real move grades right/wrong; a flat window marks the row
+    actual=FLAT with correct=null — recorded as ungradeable, not a free win.
+    """
+    rows = load_jsonl("vix_alerts", date_str)
+    todo = [r for r in rows if "correct" not in r]
+    if not todo:
+        return 0
+    try:
+        data = await client.fetch_candles("SPY", interval="5", count=400)
+    except Exception:
+        return 0
+    if data is None or data.empty:
+        return 0
+    ts = pd.to_datetime(data["timestamp"])
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize("UTC")
+    atr_vals = _atr_series(data, 14)
+    atr_fallback = float(atr_vals.dropna().mean()) if atr_vals.notna().any() else 0.0
+    closes = data["close"].astype(float)
+    graded = 0
+    for r in todo:
+        t0 = pd.Timestamp(datetime.fromisoformat(r["time"]))
+        day = t0.tz_convert(ET).date() if t0.tzinfo else None
+        base_mask = (ts <= t0).values
+        if not base_mask.any():
+            continue
+        base_close = float(closes[base_mask].iloc[-1])
+        day_after = ((ts > t0) & (ts.dt.tz_convert(ET).dt.date == day)).values
+        target_mask = (ts >= t0 + pd.Timedelta(minutes=30)).values & day_after
+        if target_mask.any():
+            pos = int(np.argmax(target_mask))
+        elif day_after.any():
+            pos = len(day_after) - 1 - int(np.argmax(day_after[::-1]))  # last bar of the day
+        else:
+            continue  # bars beyond the provider window — stays ungraded
+        move = float(closes.iloc[pos]) - base_close
+        band_atr = float(atr_vals.iloc[pos]) if not np.isnan(atr_vals.iloc[pos]) else atr_fallback
+        deadband = FORECAST_DEADBAND_ATR_MULT * band_atr
+        r["spy_move"] = round(move, 2)
+        if abs(move) < deadband:
+            r["actual"] = "FLAT"
+            r["correct"] = None
+        else:
+            actual = "BULLISH" if move > 0 else "BEARISH"
+            r["actual"] = actual
+            r["correct"] = r.get("direction") == actual
+        graded += 1
+    if graded:
+        _rewrite_jsonl("vix_alerts", date_str, rows)
+    return graded
+
+
+def evaluate_candle_patterns(lookback_days: int = 7) -> int:
+    """Grade candlestick pattern rows against the NEXT completed candle of
+    the same timeframe from the candles-*.jsonl archive.
+
+    Directional patterns grade on that candle's close vs open (the
+    backtest_patterns rule). Indecision patterns (Doji, Inside Bar) grade as
+    chop calls — |next move| below the median |move| of the prior 20 archived
+    candles — and stay ungraded until the archive holds 10 priors. Offline,
+    archive-only: a pattern whose next candle isn't archived yet (daily
+    patterns lag one day by construction; the last hourly pattern of a day
+    waits for the next morning's 9:30 bar) grades on a later pass.
+    """
+    arch: dict[tuple, list[dict]] = {}
+    for d in available_dates("candles")[-40:]:
+        for c in load_jsonl("candles", d):
+            arch.setdefault((c.get("ticker"), c.get("timeframe")), []).append(c)
+    for lst in arch.values():
+        lst.sort(key=lambda c: c.get("time") or "")
+    graded = 0
+    for d in available_dates("candle_patterns")[-lookback_days:]:
+        rows = load_jsonl("candle_patterns", d)
+        changed = False
+        for r in rows:
+            if "correct" in r:
+                continue
+            series = arch.get((r.get("ticker"), r.get("timeframe")), [])
+            nxt = next((c for c in series if c["time"] > r.get("candle_ts", "")), None)
+            if nxt is None or not nxt.get("open"):
+                continue
+            move_pct = (nxt["close"] / nxt["open"] - 1.0) * 100
+            r["next_time"] = nxt["time"]
+            r["move_pct"] = round(move_pct, 3)
+            if r.get("direction") in ("BULLISH", "BEARISH"):
+                actual = "BULLISH" if nxt["close"] > nxt["open"] else "BEARISH"
+                r["actual"] = actual
+                r["correct"] = r["direction"] == actual
+            else:
+                prior = [abs(c["close"] / c["open"] - 1.0) * 100
+                         for c in series if c["time"] <= r.get("candle_ts", "") and c.get("open")][-20:]
+                if len(prior) < 10:
+                    del r["next_time"], r["move_pct"]
+                    continue  # archive too young — grades once it matures
+                r["actual"] = "CHOP" if abs(move_pct) < float(np.median(prior)) else "MOVE"
+                r["correct"] = r["actual"] == "CHOP"
+            changed = True
+            graded += 1
+        if changed:
+            _rewrite_jsonl("candle_patterns", d, rows)
+    return graded

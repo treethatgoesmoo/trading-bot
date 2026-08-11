@@ -77,6 +77,9 @@ from zero_dte.tracker import (
     log_bias,
     log_filters,
     evaluate_bias,
+    evaluate_bb_alerts,
+    evaluate_vix_alerts,
+    evaluate_candle_patterns,
 )
 from zero_dte.bb_watcher import BBWatcher
 from zero_dte.candle_watcher import CandleWatcher, current_read
@@ -118,6 +121,7 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
         self.candle_watchers: dict[str, CandleWatcher] = {t: CandleWatcher(t) for t in CANDLE_WATCH_TICKERS}
         self._menu_view_registered = False
         self._catchup_done = False
+        self._aux_grade_day: str | None = None   # watcher-alert grading done-flag
 
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -655,6 +659,19 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 except Exception as exc:
                     logger.warning("Catch-up grading failed for %s on %s: %s", ticker, d, exc)
 
+        # Watcher alerts from missed days grade too (idempotent — rows that
+        # already carry a `correct` key are skipped).
+        for kind, fn in (("bb_alerts", evaluate_bb_alerts), ("vix_alerts", evaluate_vix_alerts)):
+            for d in [d for d in available_dates(kind) if d < today_str][-3:]:
+                try:
+                    await fn(self.client, d)
+                except Exception as exc:
+                    logger.warning("Catch-up %s grading failed for %s: %s", kind, d, exc)
+        try:
+            evaluate_candle_patterns()
+        except Exception as exc:
+            logger.warning("Catch-up candle pattern grading failed: %s", exc)
+
     def _rehydrate_state(self, today_str: str) -> None:
         """After a mid-day restart, restore per-ticker flags from today's data
         files so already-alerted signals/forecasts/bias don't fire again."""
@@ -886,6 +903,29 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     except Exception as exc:
                         logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
 
+            # Watcher-alert grading — every ping stream must grade (house
+            # rule: an ungraded alert can never earn or lose its place).
+            if self._aux_grade_day != today_str:
+                self._aux_grade_day = today_str
+                try:
+                    n = await evaluate_bb_alerts(self.client, today_str)
+                    if n:
+                        logger.info("[%s] Graded %d BB touch alert(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] BB alert grading error: %s", time_str, exc)
+                try:
+                    n = await evaluate_vix_alerts(self.client, today_str)
+                    if n:
+                        logger.info("[%s] Graded %d VIX alert(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] VIX alert grading error: %s", time_str, exc)
+                try:
+                    n = evaluate_candle_patterns()
+                    if n:
+                        logger.info("[%s] Graded %d candlestick pattern(s)", time_str, n)
+                except Exception as exc:
+                    logger.warning("[%s] Candle pattern grading error: %s", time_str, exc)
+
             if past_monitoring:
                 return
 
@@ -955,12 +995,14 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                     if fc5:
                         st.last_forecast_5m_time = now
                         self._track_session_range(st, fc5)
-                        entry = log_forecast(ticker, fc5, now)
+                        log_forecast(ticker, fc5, now)
                         logger.info("[%s] [%s] %dm Forecast: %s (%.1f%%) | RSI=%s EMA=%s MACD=%s Div=%s",
                                     time_str, ticker, FORECAST_5M_INTERVAL_MINUTES, fc5.direction, fc5.confidence,
                                     fc5.rsi_30m, fc5.ema_direction, fc5.macd_direction, fc5.divergence)
-                        if channel:
-                            await self._post_forecast(channel, ticker, st, fc5, now, entry)
+                        # Not posted (owner decision 2026-08-12): the 5m stream
+                        # graded 51.4% directional vs a 55.4% always-BULLISH
+                        # bar on 5m windows — computed and logged for grading
+                        # only, so its record can settle whether it returns.
                 except Exception as exc:
                     logger.exception("[%s] [%s] 5m forecast error: %s", time_str, ticker, exc)
 
