@@ -1,0 +1,4 @@
+{"ticker": "SPY", "time": "2026-08-12T13:30:42.783237+00:00", "timeframe": "D", "name": "Bearish Engulfing", "direction": "BEARISH", "candles": 2, "open": 774.53, "high": 774.61, "low": 769.2, "close": 770.56, "candle_ts": "2026-08-11T04:00:00+00:00"}
+{"ticker": "SPY", "time": "2026-08-12T13:30:42.783719+00:00", "timeframe": "D", "name": "Evening Star", "direction": "BEARISH", "candles": 3, "open": 774.53, "high": 774.61, "low": 769.2, "close": 770.56, "candle_ts": "2026-08-11T04:00:00+00:00"}
+{"ticker": "SPY", "time": "2026-08-12T16:30:44.708712+00:00", "timeframe": "60", "name": "Doji", "direction": null, "candles": 1, "open": 772.4, "high": 772.67, "low": 771.56, "close": 772.45, "candle_ts": "2026-08-12T15:30:00+00:00"}
+{"ticker": "SPY", "time": "2026-08-12T16:30:44.709096+00:00", "timeframe": "60", "name": "Inside Bar", "direction": null, "candles": 1, "open": 772.4, "high": 772.67, "low": 771.56, "close": 772.45, "candle_ts": "2026-08-12T15:30:00+00:00"}
