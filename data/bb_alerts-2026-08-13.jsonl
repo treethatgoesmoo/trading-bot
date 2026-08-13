@@ -1,0 +1,5 @@
+{"ticker": "SPY", "time": "2026-08-13T13:35:42.404062+00:00", "timeframe": "5", "band": "upper", "price": 775.38, "band_value": 774.37, "middle": 773.18, "resolution": "EXTENDED", "graded_close": 775.67, "correct": false}
+{"ticker": "SPY", "time": "2026-08-13T15:30:44.496520+00:00", "timeframe": "5", "band": "lower", "price": 776.17, "band_value": 776.26, "middle": 777.93, "resolution": "REVERTED", "graded_close": 778.34, "correct": true}
+{"ticker": "SPY", "time": "2026-08-13T17:06:42.488231+00:00", "timeframe": "5", "band": "upper", "price": 777.0, "band_value": 776.99, "middle": 776.16, "resolution": "EXTENDED", "graded_close": 777.87, "correct": false}
+{"ticker": "SPY", "time": "2026-08-13T18:45:44.553716+00:00", "timeframe": "5", "band": "upper", "price": 777.62, "band_value": 777.56, "middle": 777.03, "resolution": "EXTENDED", "graded_close": 778.34, "correct": false}
+{"ticker": "SPY", "time": "2026-08-13T19:11:42.370844+00:00", "timeframe": "5", "band": "upper", "price": 778.35, "band_value": 778.17, "middle": 777.2, "resolution": "DRIFT", "graded_close": 777.83, "correct": true}
