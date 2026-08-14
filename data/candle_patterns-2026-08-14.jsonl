@@ -1,0 +1,1 @@
+{"ticker": "SPY", "time": "2026-08-14T17:31:42.511351+00:00", "timeframe": "60", "name": "Bearish Marubozu", "direction": "BEARISH", "candles": 1, "open": 776.7, "high": 776.73, "low": 775.63, "close": 775.76, "candle_ts": "2026-08-14T16:30:00+00:00", "next_time": "2026-08-14T17:30:00+00:00", "move_pct": 0.019, "actual": "BULLISH", "correct": false}
