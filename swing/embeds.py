@@ -146,7 +146,7 @@ def swing_grade_embed(outcome: dict) -> discord.Embed:
     color = _GREEN if win else _RED
     icon = "✅" if win else "❌"
     embed = discord.Embed(
-        title=f"{icon} Swing graded: {outcome['ticker']} {outcome['direction']} — {outcome['resolution']}",
+        title=f"{icon} Swing thesis graded: {outcome['ticker']} {outcome['direction']} — {outcome['resolution']}",
         color=color,
     )
     embed.add_field(name="Signal", value=f"{outcome['signal_date']} @ ${outcome['entry_price']}", inline=True)
@@ -160,5 +160,5 @@ def swing_grade_embed(outcome: dict) -> discord.Embed:
             value=f"{opt['pnl_pct']:+.1f}% on ~${opt['entry_mid']:.2f} premium ({method})",
             inline=False,
         )
-    embed.set_footer(text="Feeds swing stats + weight tuning (tune_swing_weights.py)")
+    embed.set_footer(text="Underlying reference-close result; manual fills are not tracked")
     return embed

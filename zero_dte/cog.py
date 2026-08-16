@@ -884,10 +884,11 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
 
                 # Evaluate today's forecasts + bias against actual outcomes (once per day)
                 if not st.forecast_eval_done:
-                    st.forecast_eval_done = True
+                    evaluation_succeeded = True
                     try:
                         await evaluate_bias(self.client, ticker, today_str)
                     except Exception as exc:
+                        evaluation_succeeded = False
                         logger.warning("[%s] [%s] Bias evaluation error: %s", time_str, ticker, exc)
                     try:
                         results = await evaluate_forecasts(self.client, ticker, today_str)
@@ -901,30 +902,38 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                                     view=ReportDetailsView(ticker, today_str, results),
                                 )
                     except Exception as exc:
+                        evaluation_succeeded = False
                         logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)
+                    if evaluation_succeeded:
+                        st.forecast_eval_done = True
 
             # Watcher-alert grading — every ping stream must grade (house
             # rule: an ungraded alert can never earn or lose its place).
             if self._aux_grade_day != today_str:
-                self._aux_grade_day = today_str
+                aux_grading_succeeded = True
                 try:
                     n = await evaluate_bb_alerts(self.client, today_str)
                     if n:
                         logger.info("[%s] Graded %d BB touch alert(s)", time_str, n)
                 except Exception as exc:
+                    aux_grading_succeeded = False
                     logger.warning("[%s] BB alert grading error: %s", time_str, exc)
                 try:
                     n = await evaluate_vix_alerts(self.client, today_str)
                     if n:
                         logger.info("[%s] Graded %d VIX alert(s)", time_str, n)
                 except Exception as exc:
+                    aux_grading_succeeded = False
                     logger.warning("[%s] VIX alert grading error: %s", time_str, exc)
                 try:
                     n = evaluate_candle_patterns()
                     if n:
                         logger.info("[%s] Graded %d candlestick pattern(s)", time_str, n)
                 except Exception as exc:
+                    aux_grading_succeeded = False
                     logger.warning("[%s] Candle pattern grading error: %s", time_str, exc)
+                if aux_grading_succeeded:
+                    self._aux_grade_day = today_str
 
             if past_monitoring:
                 return

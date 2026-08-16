@@ -42,7 +42,10 @@ def signal_to_dict(sig: SwingSignal) -> dict:
         "signal_id": sig.signal_id,
         "ticker": sig.ticker,
         "direction": sig.direction,
+        # This is yesterday's close: a reference level for evaluating the
+        # underlying thesis, not a recorded fill for the owner's manual trade.
         "entry_price": sig.vote.close,
+        "performance_basis": "underlying_reference_close",
         "invalidation": sig.invalidation,
         "entry_zone_low": sig.entry_zone_low,
         "entry_zone_high": sig.entry_zone_high,
@@ -146,8 +149,11 @@ def _horizon_end(sig: dict) -> datetime.date:
 
 def _walk_forward(sig: dict, days: pd.DataFrame,
                   asof=None) -> tuple[str, str, float] | None:
-    """Replay daily candles from the signal date: did the underlying hit the
-    target or the invalidation first? Same-day both -> stop wins (conservative).
+    """Replay the underlying thesis from the signal date.
+
+    This deliberately evaluates price action from the reference close, not a
+    user's option fill. Same-day target/stop ties resolve to invalidation
+    conservatively; manual trade execution is not inferable from daily bars.
 
     `asof` (a date) lets the caller assert the horizon has already passed even
     when no candle dated past it exists — a horizon landing on a holiday or
@@ -312,6 +318,7 @@ async def grade_due_signals(client, now_et: datetime) -> list[dict]:
             "ticker": sig["ticker"],
             "direction": sig["direction"],
             "entry_price": sig["entry_price"],
+            "performance_basis": sig.get("performance_basis", "underlying_reference_close"),
             "invalidation": sig["invalidation"],
             "target_pct": sig["target_pct"],
             "signal_date": sig["signal_date"],

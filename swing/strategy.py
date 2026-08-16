@@ -314,20 +314,27 @@ def build_signal(ticker: str, vote: SwingVote, now_utc: datetime,
     )
 
 
-async def scan_ticker(client: MarketDataClient, ticker: str) -> SwingSignal | None:
-    """Fetch daily candles (1 API call) and evaluate. Returns a signal or None."""
-    df = await client.fetch_candles(ticker, interval="D", count=300)
+def completed_daily_candles(df: pd.DataFrame, asof: datetime | None = None) -> pd.DataFrame:
+    """Return daily candles completed before the ET date containing ``asof``.
+
+    yfinance and the paid providers include today's live daily bar. Keeping
+    this boundary in one helper prevents scheduled scans and on-demand
+    analysis from silently using different data.
+    """
     if df is None or df.empty:
-        return None
-    # evaluate_daily's contract is completed bars only. Normally we scan
-    # pre-open, but after a mid-session restart the frame ends with today's
-    # in-progress candle — drop it rather than sign an intraday print.
+        return df
     timestamps = pd.to_datetime(df["timestamp"])
     if timestamps.dt.tz is None:
         timestamps = timestamps.dt.tz_localize("UTC")
-    today = datetime.now(ET).date()
-    df = df[(timestamps.dt.tz_convert(ET).dt.date < today).values]
-    if df.empty:
+    asof = asof or datetime.now(ET)
+    return df[(timestamps.dt.tz_convert(ET).dt.date < asof.astimezone(ET).date()).values].copy()
+
+
+async def scan_ticker(client: MarketDataClient, ticker: str) -> SwingSignal | None:
+    """Fetch daily candles (1 API call) and evaluate. Returns a signal or None."""
+    df = await client.fetch_candles(ticker, interval="D", count=300)
+    df = completed_daily_candles(df)
+    if df is None or df.empty:
         return None
     vote = evaluate_daily(df)
     if vote is None:

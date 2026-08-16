@@ -6,8 +6,9 @@ Thanksgiving, Christmas. Date-fixed holidays falling on a Saturday are
 observed the Friday before (except New Year's, which NYSE does not move into
 the prior year) and on a Sunday the Monday after.
 
-Early closes (1:00 PM ET): July 3 when both July 3 and July 4 are weekdays,
-the day after Thanksgiving, and Christmas Eve when it is a trading day.
+Early closes (1:00 PM ET): the trading day before Independence Day's
+observed holiday, the day after Thanksgiving, and Christmas Eve when it is a
+trading day.
 """
 
 from __future__ import annotations
@@ -81,9 +82,15 @@ def is_trading_day(d: date) -> bool:
 
 def early_closes(year: int) -> set[date]:
     ec: set[date] = set()
-    july3 = date(year, 7, 3)
-    if is_trading_day(july3) and date(year, 7, 4).weekday() < 5:
-        ec.add(july3)
+    independence_observed = _observed(date(year, 7, 4))
+    if independence_observed:
+        # The session immediately preceding the observed Independence Day
+        # holiday closes early. This covers July 2 when July 4 is a Sunday
+        # (e.g. 2027), as well as the usual July 3 case.
+        july_early = independence_observed - timedelta(days=1)
+        while not is_trading_day(july_early):
+            july_early -= timedelta(days=1)
+        ec.add(july_early)
     ec.add(_nth_weekday(year, 11, 3, 4) + timedelta(days=1))  # day after Thanksgiving
     dec24 = date(year, 12, 24)
     if is_trading_day(dec24):

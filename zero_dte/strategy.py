@@ -1000,10 +1000,25 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         interval = FORECAST_INTERVAL_MINUTES
     if data is None:
         data = await client.fetch_candles(ticker, interval=str(interval), count=50)
-    if data.empty or len(data) < 15:
+    if data is None or data.empty:
         return None
 
     ref_now = asof or datetime.now(ET)
+    # Providers include the bar currently being formed. A forecast at 10:01
+    # must not use the eventual 10:00-10:15 close as an input and then be
+    # graded on that same close. Retain only bars whose full interval ended
+    # by the forecast time. This also makes historical replay obey the exact
+    # same information boundary as the live bot.
+    timestamps = pd.to_datetime(data["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    ref_ts = pd.Timestamp(ref_now)
+    if ref_ts.tzinfo is None:
+        ref_ts = ref_ts.tz_localize(ET)
+    ref_ts = ref_ts.tz_convert("UTC")
+    data = data[(timestamps + pd.Timedelta(minutes=interval) <= ref_ts).values].copy()
+    if len(data) < 15:
+        return None
 
     closes = data["close"].astype(float)
     highs = data["high"].astype(float)

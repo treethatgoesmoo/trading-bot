@@ -43,7 +43,7 @@ from swing.embeds import (
     swing_signal_embed,
 )
 from swing.options import pick_contract
-from swing.strategy import check_price_vs_signal, evaluate_daily, scan_ticker
+from swing.strategy import completed_daily_candles, check_price_vs_signal, evaluate_daily, scan_ticker
 from swing.tracker import (
     grade_due_signals,
     last_signal_dates,
@@ -133,14 +133,14 @@ class SwingCog(commands.Cog, name="Swing"):
                                second=0, microsecond=0)
 
         if now >= preopen_t and self._preopen_done_date != today:
-            self._preopen_done_date = today  # set first — a crash must not retry every minute
-            self._save_daily_state()
-            await self._preopen_pass(now)
+            if await self._preopen_pass(now):
+                self._preopen_done_date = today
+                self._save_daily_state()
 
         if now >= midday_t and self._midday_done_date != today:
-            self._midday_done_date = today
-            self._save_daily_state()
-            await self._midday_pass(now)
+            if await self._midday_pass(now):
+                self._midday_done_date = today
+                self._save_daily_state()
 
     @swing_monitor.before_loop
     async def before_swing_monitor(self):
@@ -156,8 +156,14 @@ class SwingCog(commands.Cog, name="Swing"):
     def _channel(self):
         return self.bot.get_channel(SWING_ALERT_CHANNEL_ID)
 
-    async def _preopen_pass(self, now: datetime) -> None:
-        """Grade matured signals, then scan the watchlist for new ones."""
+    async def _preopen_pass(self, now: datetime) -> bool:
+        """Grade matured signals, then scan the watchlist for new ones.
+
+        A failed provider call leaves the pass pending so the next poll can
+        retry it; successfully logged signals are protected from duplicates by
+        the open-signal registry.
+        """
+        succeeded = True
         channel = self._channel()
         logger.info("Swing pre-open pass (%s)", now.strftime("%Y-%m-%d %I:%M %p ET"))
 
@@ -168,6 +174,7 @@ class SwingCog(commands.Cog, name="Swing"):
                 if channel:
                     await channel.send(embed=swing_grade_embed(outcome))
         except Exception as exc:
+            succeeded = False
             logger.exception("Swing grading error: %s", exc)
 
         # 2. Scan for new signals — only while the morning context holds. After
@@ -180,7 +187,7 @@ class SwingCog(commands.Cog, name="Swing"):
         if now >= midday_t:
             logger.info("Swing scan skipped — pre-open pass first ran at %s (past midday)",
                         now.strftime("%I:%M %p ET"))
-            return
+            return succeeded
 
         open_tickers = {s["ticker"] for s in load_open_signals()}
         recent = last_signal_dates(SWING_COOLDOWN_DAYS + 30)
@@ -213,14 +220,17 @@ class SwingCog(commands.Cog, name="Swing"):
                 if channel:
                     await channel.send("@everyone", embed=swing_signal_embed(sig))
             except Exception as exc:
+                succeeded = False
                 logger.exception("[%s] Swing scan error: %s", ticker, exc)
+        return succeeded
 
-    async def _midday_pass(self, now: datetime) -> None:
+    async def _midday_pass(self, now: datetime) -> bool:
         """Check open signals for intraday target/invalidation."""
+        succeeded = True
         channel = self._channel()
         open_sigs = load_open_signals()
         if not open_sigs:
-            return
+            return succeeded
         logger.info("Swing midday pass — %d open signal(s)", len(open_sigs))
         for sig in open_sigs:
             if sig.get("status") in ("TARGET", "INVALIDATED"):
@@ -228,6 +238,7 @@ class SwingCog(commands.Cog, name="Swing"):
             try:
                 df = await self.client.fetch_candles(sig["ticker"], interval="5", count=5)
                 if df is None or df.empty:
+                    succeeded = False
                     continue
                 last_price = round(float(df["close"].astype(float).iloc[-1]), 2)
                 status = check_price_vs_signal(sig, last_price)
@@ -242,7 +253,9 @@ class SwingCog(commands.Cog, name="Swing"):
                     if channel:
                         await channel.send(embed=swing_check_embed(sig, last_price, status))
             except Exception as exc:
+                succeeded = False
                 logger.exception("[%s] Swing midday check error: %s", sig["ticker"], exc)
+        return succeeded
 
     # ── Commands ─────────────────────────────────────────────────────────
 
@@ -259,7 +272,7 @@ class SwingCog(commands.Cog, name="Swing"):
         except Exception as exc:
             await ctx.send(f"Error fetching daily data: {exc}")
             return
-        vote = evaluate_daily(df)
+        vote = evaluate_daily(completed_daily_candles(df))
         if vote is None:
             await ctx.send(f"Not enough daily history for {upper} (need ~210 bars).")
             return
