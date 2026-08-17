@@ -4,3 +4,4 @@
 {"ticker": "SPY", "timeframe": "60", "time": "2026-08-14T16:30:00+00:00", "open": 776.7, "high": 776.735, "low": 775.63, "close": 775.755, "volume": 2274836.0}
 {"ticker": "SPY", "timeframe": "60", "time": "2026-08-14T17:30:00+00:00", "open": 775.78, "high": 776.33, "low": 775.4301, "close": 775.925, "volume": 2614985.0}
 {"ticker": "SPY", "timeframe": "60", "time": "2026-08-14T18:30:00+00:00", "open": 775.93, "high": 776.4919, "low": 775.82, "close": 776.155, "volume": 3049532.0}
+{"ticker": "SPY", "timeframe": "D", "time": "2026-08-14T04:00:00+00:00", "open": 778.54, "high": 778.8, "low": 775.43, "close": 776.34, "volume": 31332500.0}
