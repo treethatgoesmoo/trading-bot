@@ -1,38 +1,38 @@
 {
-  "generated": "2026-08-18T20:10:42.057706+00:00",
+  "generated": "2026-08-19T20:10:42.064900+00:00",
   "days": 30,
   "date_range": [
-    "2026-07-08",
-    "2026-08-18"
+    "2026-07-09",
+    "2026-08-19"
   ],
   "min_samples": 20,
   "samples": {
     "5": {
-      "EMA": 773,
-      "VWAP": 773,
-      "MACD": 773,
-      "MACD_Mom": 773,
-      "Momentum": 773,
-      "VIX": 277,
-      "Volume": 164,
-      "RSI": 382,
-      "Divergence": 200
+      "EMA": 823,
+      "VWAP": 823,
+      "MACD": 823,
+      "MACD_Mom": 823,
+      "Momentum": 823,
+      "VIX": 286,
+      "Volume": 176,
+      "RSI": 398,
+      "Divergence": 205
     },
     "15": {
-      "EMA": 250,
-      "VWAP": 250,
-      "MACD": 250,
-      "MACD_Mom": 250,
-      "Volume": 47,
-      "Momentum": 250,
-      "VIX": 98,
-      "RSI": 129,
-      "Divergence": 94
+      "EMA": 265,
+      "VWAP": 265,
+      "MACD": 265,
+      "MACD_Mom": 265,
+      "Volume": 48,
+      "Momentum": 265,
+      "VIX": 102,
+      "RSI": 132,
+      "Divergence": 98
     }
   },
   "weights": {
     "5": {
-      "RSI": 0.4,
+      "RSI": 0.3,
       "EMA": 0.3,
       "VWAP": 0.3,
       "MACD": 0.3,
@@ -43,14 +43,14 @@
       "VIX": 0.3
     },
     "15": {
-      "RSI": 1.1,
+      "RSI": 1.0,
       "EMA": 0.3,
       "VWAP": 0.7,
-      "MACD": 1.0,
+      "MACD": 0.9,
       "MACD_Mom": 0.3,
       "Divergence": 0.3,
-      "Volume": 0.5,
-      "Momentum": 0.7,
+      "Volume": 0.6,
+      "Momentum": 0.5,
       "VIX": 0.3
     }
   }
