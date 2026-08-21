@@ -1,1 +1,1 @@
-{"ticker": "SPY", "time": "2026-08-20T19:30:44.376327+00:00", "timeframe": "60", "name": "Inside Bar", "direction": null, "candles": 1, "open": 763.57, "high": 763.85, "low": 763.17, "close": 763.49, "candle_ts": "2026-08-20T18:30:00+00:00"}
+{"ticker": "SPY", "time": "2026-08-20T19:30:44.376327+00:00", "timeframe": "60", "name": "Inside Bar", "direction": null, "candles": 1, "open": 763.57, "high": 763.85, "low": 763.17, "close": 763.49, "candle_ts": "2026-08-20T18:30:00+00:00", "next_time": "2026-08-21T13:30:00+00:00", "move_pct": -0.184, "actual": "MOVE", "correct": false}
