@@ -1,0 +1,1 @@
+{"ticker": "SPY", "time": "2026-08-24T13:35:41.942873+00:00", "direction": "BEARISH", "trend": "BULLISH", "gap_direction": "GAP_DOWN", "gap_pct": -0.13, "multi_day": "BEARISH", "current_price": 765.72, "sma_value": 751.75, "rsi": 54.0, "actual_direction": "BEARISH", "correct": true}
