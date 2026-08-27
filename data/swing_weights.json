@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-26T20:10:42.075389+00:00",
+  "generated": "2026-08-27T20:10:42.072329+00:00",
   "days": 21,
   "date_range": [
     "2026-07-10",
@@ -17,7 +17,7 @@
   },
   "weights": {
     "Trend": 0.3,
-    "RSI_Pullback": 0.5,
+    "RSI_Pullback": 0.3,
     "Cross": 2.0,
     "MACD": 0.8,
     "Structure": 1.5,
