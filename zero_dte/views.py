@@ -2,6 +2,10 @@
 
 Views take what they need via constructor args (states dict, cog reference)
 instead of module globals so they work inside the cog-based bot.
+
+(TradeSignalView/ModifyTradeModal — Take/Skip/Modify buttons on
+break-and-retest trade alerts — were removed along with that feature. The
+MenuView's Bias/Range/Test buttons were removed for the same reason.)
 """
 
 from datetime import datetime
@@ -11,8 +15,8 @@ import pytz
 
 ET = pytz.timezone("US/Eastern")
 
-from zero_dte.strategy import DirectionForecast, TradeSignal
-from zero_dte.tracker import log_trade_decision, log_user_vote
+from zero_dte.strategy import DirectionForecast
+from zero_dte.tracker import log_user_vote
 
 
 class ForecastView(discord.ui.View):
@@ -52,75 +56,6 @@ class ForecastView(discord.ui.View):
         else:
             msg = f"Logged your disagree on a {self.forecast.direction} forecast (not scored)."
         await interaction.response.send_message(msg, ephemeral=True)
-
-
-class ModifyTradeModal(discord.ui.Modal):
-    """Edit entry/stop/target on the active trade."""
-
-    def __init__(self, ticker: str, states: dict):
-        super().__init__(title=f"Modify {ticker} Trade")
-        self.ticker = ticker
-        self.states = states
-        st = states.get(ticker)
-        trade = st.active_trade if st else None
-        self.entry = discord.ui.TextInput(label="Entry", default=str(trade.entry_price) if trade else "")
-        self.stop = discord.ui.TextInput(label="Stop Loss", default=str(trade.stop_loss) if trade else "")
-        self.target = discord.ui.TextInput(label="Target", default=str(trade.target) if trade else "")
-        self.add_item(self.entry)
-        self.add_item(self.stop)
-        self.add_item(self.target)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        st = self.states.get(self.ticker)
-        if not st or not st.active_trade:
-            await interaction.response.send_message("No active trade to modify.", ephemeral=True)
-            return
-        try:
-            st.active_trade.entry_price = round(float(self.entry.value), 2)
-            st.active_trade.stop_loss = round(float(self.stop.value), 2)
-            st.active_trade.target = round(float(self.target.value), 2)
-        except ValueError:
-            await interaction.response.send_message("Invalid number — trade unchanged.", ephemeral=True)
-            return
-        log_trade_decision(self.ticker, {
-            "entry": st.active_trade.entry_price,
-            "stop": st.active_trade.stop_loss,
-            "target": st.active_trade.target,
-        }, "MODIFIED", interaction.user.name)
-        await interaction.response.send_message(
-            f"**{self.ticker}** trade updated: entry ${st.active_trade.entry_price}, "
-            f"stop ${st.active_trade.stop_loss}, target ${st.active_trade.target}. "
-            f"Outcome tracking will use the new levels.")
-
-
-class TradeSignalView(discord.ui.View):
-    """Take/Skip/Modify buttons on a trade alert."""
-
-    def __init__(self, signal: TradeSignal, states: dict):
-        super().__init__(timeout=4 * 3600)
-        self.signal = signal
-        self.states = states
-
-    def _info(self) -> dict:
-        return {"direction": self.signal.direction, "entry": self.signal.entry_price,
-                "stop": self.signal.stop_loss, "target": self.signal.target}
-
-    @discord.ui.button(label="✅ Take Trade", style=discord.ButtonStyle.success)
-    async def take(self, interaction: discord.Interaction, button: discord.ui.Button):
-        log_trade_decision(self.signal.ticker, self._info(), "TAKEN", interaction.user.name)
-        await interaction.response.send_message(
-            f"Logged: trade TAKEN — {self.signal.ticker} {self.signal.direction} @ ${self.signal.entry_price}.",
-            ephemeral=True)
-
-    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        log_trade_decision(self.signal.ticker, self._info(), "SKIPPED", interaction.user.name)
-        await interaction.response.send_message(
-            f"Logged: signal SKIPPED on {self.signal.ticker}.", ephemeral=True)
-
-    @discord.ui.button(label="✏️ Modify", style=discord.ButtonStyle.primary)
-    async def modify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModifyTradeModal(self.signal.ticker, self.states))
 
 
 class ReportDetailsView(discord.ui.View):
@@ -194,45 +129,16 @@ class MenuView(discord.ui.View):
         await interaction.response.defer()
         await self.cog.send_forecast(interaction.channel, self._ticker_for(interaction))
 
-    @discord.ui.button(label="🧪 Test", style=discord.ButtonStyle.primary, custom_id="menu:test", row=1)
-    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await self.cog.run_test(interaction.channel, self._ticker_for(interaction))
-
     @discord.ui.button(label="📊 Status", style=discord.ButtonStyle.secondary, custom_id="menu:status", row=1)
     async def btn_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=self.cog.build_status_embed())
 
-    @discord.ui.button(label="🧭 Bias", style=discord.ButtonStyle.secondary, custom_id="menu:bias", row=2)
-    async def btn_bias(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from zero_dte.embeds import bias_embed
-        ticker = self._ticker_for(interaction)
-        st = self.cog.states.get(ticker)
-        if st and st.daily_bias:
-            await interaction.response.send_message(embed=bias_embed(st.daily_bias))
-        else:
-            await interaction.response.send_message(
-                f"No bias set for {ticker} yet — it's computed after the first "
-                f"5-min candle (9:35 AM ET). Use 🧪 Test for a dry run.", ephemeral=True)
-
-    @discord.ui.button(label="📦 Range", style=discord.ButtonStyle.secondary, custom_id="menu:range", row=2)
-    async def btn_range(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from zero_dte.embeds import range_embed
-        ticker = self._ticker_for(interaction)
-        st = self.cog.states.get(ticker)
-        if st and st.first_candle:
-            await interaction.response.send_message(embed=range_embed(st.first_candle))
-        else:
-            await interaction.response.send_message(
-                f"No first candle set for {ticker} yet (available after 9:35 AM ET).",
-                ephemeral=True)
-
-    @discord.ui.button(label="📋 Watchlist", style=discord.ButtonStyle.secondary, custom_id="menu:watchlist", row=2)
+    @discord.ui.button(label="📋 Watchlist", style=discord.ButtonStyle.secondary, custom_id="menu:watchlist", row=1)
     async def btn_watchlist(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             f"**Watchlist:** {', '.join(self.cog.active_tickers)}", ephemeral=True)
 
-    @discord.ui.button(label="📈 Swing", style=discord.ButtonStyle.primary, custom_id="menu:swing", row=3)
+    @discord.ui.button(label="📈 Swing", style=discord.ButtonStyle.primary, custom_id="menu:swing", row=2)
     async def btn_swing(self, interaction: discord.Interaction, button: discord.ui.Button):
         swing_cog = self.cog.bot.get_cog("Swing")
         if swing_cog is None:

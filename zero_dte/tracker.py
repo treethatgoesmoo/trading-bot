@@ -7,6 +7,15 @@ to data/results-YYYY-MM-DD.json for future analysis.
 
 Stored timestamps are UTC ISO (project convention); the file date in each
 filename is the ET trading day. Consumers convert to ET for display.
+
+(Morning-bias/break-and-retest/VIX-watcher/candlestick-watcher persistence
+and grading functions — log_bias, evaluate_bias, log_filters,
+log_trade_outcome, direction_record, log_trade_decision, evaluate_vix_alerts,
+evaluate_candle_patterns — were removed along with those live features. Their
+historical data/{bias,filters,outcomes,vix_alerts,candle_patterns,candles}-*
+files remain on disk for backtest_filters.py / core.analytics.py / manual
+review; nothing writes new rows to them going forward. See
+docs/state-of-the-code.md.)
 """
 
 import json
@@ -71,129 +80,6 @@ def load_results(date_str: str) -> list[dict]:
         return []
 
 
-# ── Outcome / bias / filter persistence ──────────────────────────────────
-
-def log_trade_outcome(outcome, now: datetime) -> None:
-    """Persist a resolved trade (target hit / stopped / expired) for win-rate history."""
-    risk = abs(outcome.entry_price - outcome.stop_loss)
-    r_multiple = round(outcome.pnl / risk, 2) if risk else 0.0
-    _append_jsonl("outcomes", now.astimezone(ET).strftime("%Y-%m-%d"), {
-        "ticker": outcome.ticker,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        "direction": outcome.direction,
-        "result": outcome.result,            # TARGET_HIT | STOPPED_OUT | EXPIRED
-        "entry_price": outcome.entry_price,
-        "exit_price": outcome.exit_price,
-        "stop_loss": outcome.stop_loss,
-        "target": outcome.target,
-        "pnl": outcome.pnl,
-        "r_multiple": r_multiple,
-    })
-
-
-def direction_record(direction: str) -> tuple[int, int, float]:
-    """Lifetime (wins, total, total_r) of resolved trades in one direction.
-
-    Reads every outcomes-*.jsonl; used to show the live track record on new
-    signal alerts so a weak side (e.g. LONG) is visible at decision time.
-    """
-    wins = total = 0
-    total_r = 0.0
-    for date_str in available_dates("outcomes"):
-        for e in load_jsonl("outcomes", date_str):
-            if e.get("direction") != direction:
-                continue
-            # An EXPIRED trade (no target or stop by close) is unresolved,
-            # not a loss — counting it in the denominator would drag the
-            # track record (and its breakeven warning) on a side that never
-            # actually lost.
-            if e.get("result") == "EXPIRED":
-                continue
-            total += 1
-            r = e.get("r_multiple") or 0.0
-            total_r += r
-            if r > 0:
-                wins += 1
-    return wins, total, round(total_r, 1)
-
-
-def log_bias(bias, now: datetime) -> None:
-    """Persist the morning daily-bias call so its accuracy can be tracked over time."""
-    _append_jsonl("bias", now.astimezone(ET).strftime("%Y-%m-%d"), {
-        "ticker": bias.ticker,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        "direction": bias.direction,
-        "trend": bias.trend,
-        "gap_direction": bias.gap_direction,
-        "gap_pct": bias.gap_pct,
-        "multi_day": bias.multi_day,
-        "current_price": bias.current_price,
-        "sma_value": bias.sma_value,
-        "rsi": bias.rsi,
-    })
-
-
-def log_filters(ticker: str, direction: str, filters: list, fired: bool, now: datetime,
-                signal: dict | None = None) -> None:
-    """Persist the filter pass/fail breakdown for a setup (fired or filtered).
-
-    For fired setups `signal` carries the trade levels (entry/stop/target/...)
-    so a mid-day restart can rebuild the open trade and keep tracking it to an
-    outcome — without this the trade silently vanished from the record.
-    (Additive key on the existing `filters` kind; older rows simply lack it.)
-    """
-    entry = {
-        "ticker": ticker,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        "direction": direction,
-        "fired": fired,
-        "filters": [{"name": f.name, "passed": f.passed, "reason": f.reason,
-                     "advisory": f.advisory} for f in filters],
-    }
-    if signal is not None:
-        entry["signal"] = signal
-    _append_jsonl("filters", now.astimezone(ET).strftime("%Y-%m-%d"), entry)
-
-
-async def evaluate_bias(client, ticker: str, date_str: str) -> None:
-    """Mark each of the day's bias records correct/incorrect vs the actual daily move.
-
-    Actual day direction = daily candle close vs open. Rewrites bias-DATE.jsonl
-    with `actual_direction` and `correct` added to this ticker's entries.
-    """
-    entries = load_jsonl("bias", date_str)
-    # Idempotence keys on actual_direction, not correct — NEUTRAL days write
-    # correct=None permanently, which made a correct-based guard re-fetch and
-    # rewrite the file on every pass for the rest of history.
-    if not entries or all(e.get("actual_direction") is not None for e in entries if e["ticker"] == ticker):
-        return
-
-    data = await client.fetch_candles(ticker, interval="D", count=10)
-    if data.empty:
-        return
-    timestamps = pd.to_datetime(data["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC")
-    day = timestamps.dt.tz_convert(ET).dt.strftime("%Y-%m-%d")
-    rows = data[(day == date_str).values]
-    if rows.empty:
-        return
-    o, c = float(rows.iloc[-1]["open"]), float(rows.iloc[-1]["close"])
-    actual = "BULLISH" if c > o else "BEARISH"
-
-    changed = False
-    for e in entries:
-        if e["ticker"] == ticker and e.get("actual_direction") is None:
-            e["actual_direction"] = actual
-            # NEUTRAL days made no directional call — record the actual but
-            # leave them ungraded (analytics filters correct=None).
-            e["correct"] = None if e["direction"] == "NEUTRAL" else (e["direction"] == actual)
-            changed = True
-    if changed:
-        path = os.path.join(DATA_DIR, f"bias-{date_str}.jsonl")
-        _write_atomic(path, "".join(json.dumps(e) + "\n" for e in entries))
-
-
 def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
                   user_direction: str | None, user: str) -> None:
     """Record a user's agree/disagree vote on a forecast."""
@@ -207,22 +93,6 @@ def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
         "user_direction": user_direction,
         "user": user,
         "voted_at": datetime.now(pytz.UTC).isoformat(),
-    }
-    with open(path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
-def log_trade_decision(ticker: str, signal_info: dict, decision: str, user: str) -> None:
-    """Record a user's Take/Skip/Modify decision on a trade signal."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    now = datetime.now(ET)
-    path = os.path.join(DATA_DIR, f"trade_decisions-{now.strftime('%Y-%m-%d')}.jsonl")
-    entry = {
-        "ticker": ticker,
-        "decision": decision,
-        "user": user,
-        "time": now.astimezone(pytz.UTC).isoformat(),
-        **signal_info,
     }
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -354,13 +224,13 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
 
 
 # ── Watcher-alert grading (in-place row enrichment) ──────────────────────
-# bb_alerts / vix_alerts / candle_patterns rows are appended when a ping
-# fires and graded after the close by rewriting the day file with actual/
-# correct fields ADDED (never removed) — the same in-place precedent as
-# evaluate_bias. Idempotent: rows already carrying a "correct" key are left
-# untouched, so the nightly pass and the startup catch-up can both run
-# safely. Every alert stream must grade — an ungraded ping can never earn
-# or lose its place in the system (house rule, 2026-08-12).
+# bb_alerts / volume_alerts rows are appended when a ping fires and graded
+# after the close by rewriting the day file with actual/correct fields ADDED
+# (never removed) — the same in-place precedent as the old bias grading.
+# Idempotent: rows already carrying a "correct" key are left untouched, so
+# the nightly pass and the startup catch-up can both run safely. Every alert
+# stream must grade — an ungraded ping can never earn or lose its place in
+# the system (house rule, 2026-08-12).
 
 
 def _rewrite_jsonl(kind: str, date_str: str, rows: list[dict]) -> None:
@@ -429,30 +299,39 @@ async def evaluate_bb_alerts(client, date_str: str) -> int:
     return graded
 
 
-async def evaluate_vix_alerts(client, date_str: str) -> int:
-    """Grade VIX pings against SPY's next 30 minutes (rows store the
-    SPY-implied direction). Same volatility-deadband rule as forecast
-    grading: a real move grades right/wrong; a flat window marks the row
-    actual=FLAT with correct=null — recorded as ungradeable, not a free win.
+async def evaluate_volume_alerts(client, date_str: str) -> int:
+    """Grade the day's volume-spike pings as continuation calls.
+
+    Each alert stores the triggering bar's implied direction (up close =
+    BULLISH, down close = BEARISH). Graded against SPY-style next-30-min
+    price action on the alert's own ticker, same volatility-deadband rule as
+    forecast/BB grading: a real move grades CONTINUED (correct, price kept
+    moving the triggering direction) or REVERSED (wrong); a flat window
+    grades actual=FLAT with correct=null (ungradeable, not a free win).
     """
-    rows = load_jsonl("vix_alerts", date_str)
+    rows = load_jsonl("volume_alerts", date_str)
     todo = [r for r in rows if "correct" not in r]
     if not todo:
         return 0
-    try:
-        data = await client.fetch_candles("SPY", interval="5", count=400)
-    except Exception:
-        return 0
-    if data is None or data.empty:
-        return 0
-    ts = pd.to_datetime(data["timestamp"])
-    if ts.dt.tz is None:
-        ts = ts.dt.tz_localize("UTC")
-    atr_vals = _atr_series(data, 14)
-    atr_fallback = float(atr_vals.dropna().mean()) if atr_vals.notna().any() else 0.0
-    closes = data["close"].astype(float)
     graded = 0
+    frames: dict[str, pd.DataFrame | None] = {}
     for r in todo:
+        ticker = r.get("ticker")
+        if ticker not in frames:
+            try:
+                frames[ticker] = await client.fetch_candles(ticker, interval="5", count=400)
+            except Exception:
+                frames[ticker] = None
+        data = frames[ticker]
+        if data is None or data.empty:
+            continue
+        ts = pd.to_datetime(data["timestamp"])
+        if ts.dt.tz is None:
+            ts = ts.dt.tz_localize("UTC")
+        atr_vals = _atr_series(data, 14)
+        atr_fallback = float(atr_vals.dropna().mean()) if atr_vals.notna().any() else 0.0
+        closes = data["close"].astype(float)
+
         t0 = pd.Timestamp(datetime.fromisoformat(r["time"]))
         day = t0.tz_convert(ET).date() if t0.tzinfo else None
         base_mask = (ts <= t0).values
@@ -470,7 +349,7 @@ async def evaluate_vix_alerts(client, date_str: str) -> int:
         move = float(closes.iloc[pos]) - base_close
         band_atr = float(atr_vals.iloc[pos]) if not np.isnan(atr_vals.iloc[pos]) else atr_fallback
         deadband = FORECAST_DEADBAND_ATR_MULT * band_atr
-        r["spy_move"] = round(move, 2)
+        r["move"] = round(move, 2)
         if abs(move) < deadband:
             r["actual"] = "FLAT"
             r["correct"] = None
@@ -480,56 +359,5 @@ async def evaluate_vix_alerts(client, date_str: str) -> int:
             r["correct"] = r.get("direction") == actual
         graded += 1
     if graded:
-        _rewrite_jsonl("vix_alerts", date_str, rows)
-    return graded
-
-
-def evaluate_candle_patterns(lookback_days: int = 7) -> int:
-    """Grade candlestick pattern rows against the NEXT completed candle of
-    the same timeframe from the candles-*.jsonl archive.
-
-    Directional patterns grade on that candle's close vs open (the
-    backtest_patterns rule). Indecision patterns (Doji, Inside Bar) grade as
-    chop calls — |next move| below the median |move| of the prior 20 archived
-    candles — and stay ungraded until the archive holds 10 priors. Offline,
-    archive-only: a pattern whose next candle isn't archived yet (daily
-    patterns lag one day by construction; the last hourly pattern of a day
-    waits for the next morning's 9:30 bar) grades on a later pass.
-    """
-    arch: dict[tuple, list[dict]] = {}
-    for d in available_dates("candles")[-40:]:
-        for c in load_jsonl("candles", d):
-            arch.setdefault((c.get("ticker"), c.get("timeframe")), []).append(c)
-    for lst in arch.values():
-        lst.sort(key=lambda c: c.get("time") or "")
-    graded = 0
-    for d in available_dates("candle_patterns")[-lookback_days:]:
-        rows = load_jsonl("candle_patterns", d)
-        changed = False
-        for r in rows:
-            if "correct" in r:
-                continue
-            series = arch.get((r.get("ticker"), r.get("timeframe")), [])
-            nxt = next((c for c in series if c["time"] > r.get("candle_ts", "")), None)
-            if nxt is None or not nxt.get("open"):
-                continue
-            move_pct = (nxt["close"] / nxt["open"] - 1.0) * 100
-            r["next_time"] = nxt["time"]
-            r["move_pct"] = round(move_pct, 3)
-            if r.get("direction") in ("BULLISH", "BEARISH"):
-                actual = "BULLISH" if nxt["close"] > nxt["open"] else "BEARISH"
-                r["actual"] = actual
-                r["correct"] = r["direction"] == actual
-            else:
-                prior = [abs(c["close"] / c["open"] - 1.0) * 100
-                         for c in series if c["time"] <= r.get("candle_ts", "") and c.get("open")][-20:]
-                if len(prior) < 10:
-                    del r["next_time"], r["move_pct"]
-                    continue  # archive too young — grades once it matures
-                r["actual"] = "CHOP" if abs(move_pct) < float(np.median(prior)) else "MOVE"
-                r["correct"] = r["actual"] == "CHOP"
-            changed = True
-            graded += 1
-        if changed:
-            _rewrite_jsonl("candle_patterns", d, rows)
+        _rewrite_jsonl("volume_alerts", date_str, rows)
     return graded

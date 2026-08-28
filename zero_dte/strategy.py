@@ -1,24 +1,18 @@
-import asyncio
 import json
 import logging
 import os
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
-import yfinance as yf
 
 from core.market_data import MarketDataClient
-from core.indicators import rsi_series, pivots as _pivots, atr as _atr_series
+from core.indicators import rsi_series, pivots as _pivots
 from core.paths import INDICATOR_WEIGHTS_FILE as _WEIGHTS_FILE
 from config import (
-    SMA_PERIOD, RISK_REWARD_RATIO,
+    SMA_PERIOD,
     RVOL_THRESHOLD, RVOL_LOOKBACK,
-    ATR_PERIOD, ATR_OVEREXTENDED_MULT,
-    EMA_FAST, EMA_SLOW,
-    FILTER_COOLDOWN_MINUTES,
-    VWAP_FILTER_ENABLED,
     FORECAST_CONFLICT_RATIO,
     FORECAST_HEARTBEAT_MINUTES,
     FORECAST_INTERVAL_MINUTES,
@@ -60,13 +54,13 @@ def _weight_overrides(interval: int | None = None) -> dict:
     """Tuned per-indicator weights from data/indicator_weights.json, if present.
 
     Written by tune_weights.py --write; reloaded automatically on file change.
-    The tuned file is per-stream ({"15": {...}, "5": {...}} — the 5m companion
-    grades very differently from the 15m stream, so they must not share one
-    weight set); pass the forecast's interval to get its stream's weights. A
-    legacy flat file applies to every stream. Clamped to TUNED_WEIGHT_FLOOR:
-    a 0-weight indicator still votes but drops out of the confidence
-    denominator and the VOLATILE conflict guard, so a shrunken ensemble could
-    print 100% confidence over a zeroed dissenter.
+    The tuned file is per-stream ({"15": {...}, "5": {...}} — a historical 5m
+    companion stream once graded very differently from the 15m stream, so
+    they must not share one weight set); pass the forecast's interval to get
+    its stream's weights. A legacy flat file applies to every stream.
+    Clamped to TUNED_WEIGHT_FLOOR: a 0-weight indicator still votes but drops
+    out of the confidence denominator and the VOLATILE conflict guard, so a
+    shrunken ensemble could print 100% confidence over a zeroed dissenter.
     """
     global _weights_cache
     try:
@@ -90,6 +84,15 @@ def _weight_overrides(interval: int | None = None) -> dict:
 
 @dataclass
 class DailyBias:
+    """Morning bias call (50 SMA trend + opening gap + first candle vote).
+
+    No longer computed or posted by the live bot (demoted, then removed
+    entirely — see docs/state-of-the-code.md: the 2-of-3 vote graded 50.9%
+    directional vs a 52.6% always-BULLISH baseline over 60 days, no
+    measurable edge). Kept here only because backfill.py's `--bias-report`
+    replay still measures the rule against history on demand; nothing in the
+    live bot computes or reads a DailyBias anymore.
+    """
     ticker: str
     direction: str  # trading bias: 2-of-3 vote (first candle/gap/trend), or NEUTRAL
     trend: str  # long-term 50 SMA
@@ -129,15 +132,14 @@ class DailyBias:
 
 
 @dataclass
-class PremarketLevels:
-    ticker: str
-    high: float
-    low: float
-    volume: float
-
-
-@dataclass
 class FirstCandleRange:
+    """The 9:30-9:35 opening 5-min candle box.
+
+    No longer computed by the live bot (it only ever fed the morning bias
+    vote and the break-and-retest entry system, both removed). Kept only
+    because backfill.py's bias replay still needs it to reconstruct
+    set_bias_from_first_candle's 2-of-3 vote historically.
+    """
     ticker: str
     high: float
     low: float
@@ -151,65 +153,6 @@ class FirstCandleRange:
     @property
     def candle_type(self) -> str:
         return "Bullish" if self.close_price > self.open_price else "Bearish"
-
-
-@dataclass
-class FilterStatus:
-    name: str
-    passed: bool
-    reason: str
-    # Advisory filters are computed, displayed and logged exactly like the rest
-    # but never block a setup — so a filter can keep being audited by
-    # backtest_filters.py after the evidence says it should stop vetoing.
-    advisory: bool = False
-
-
-@dataclass
-class TradeSignal:
-    ticker: str
-    direction: str
-    entry_price: float
-    stop_loss: float
-    target: float
-    risk: float
-    reward: float
-    timestamp: str  # ET display string
-    created_at: str = ""  # UTC ISO — machine-comparable entry time
-    filters: list[FilterStatus] = field(default_factory=list)
-    # Entry-timing guidance: the broken box edge. Pullbacks from the signal
-    # close back toward this level are routine after a break-and-retest and
-    # don't touch the thesis (only the stop does) — often the better fill.
-    retest_level: float = 0.0
-
-
-@dataclass
-class FilteredSignal:
-    ticker: str
-    direction: str
-    entry_price: float
-    timestamp: str
-    filters: list[FilterStatus] = field(default_factory=list)
-
-    @property
-    def failed_filters(self) -> list[FilterStatus]:
-        return [f for f in self.filters if not f.passed]
-
-    @property
-    def passed_filters(self) -> list[FilterStatus]:
-        return [f for f in self.filters if f.passed]
-
-
-@dataclass
-class TradeOutcome:
-    ticker: str
-    direction: str
-    entry_price: float
-    exit_price: float
-    stop_loss: float
-    target: float
-    result: str  # "TARGET_HIT", "STOPPED_OUT", "EXPIRED"
-    pnl: float
-    timestamp: str
 
 
 @dataclass
@@ -255,36 +198,22 @@ def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
 
 
 class StrategyState:
-    """Tracks the live state of the first-candle strategy throughout the session."""
+    """Tracks the live state of the intraday forecast stream throughout the
+    session. (Morning bias, first-candle range, and break-and-retest entry
+    tracking were removed — see docs/state-of-the-code.md — so this only
+    carries forecast + session-range state now.)
+    """
 
     def __init__(self):
         self.trading_day: str | None = None
-        self.daily_bias: DailyBias | None = None
-        self.first_candle: FirstCandleRange | None = None
-        self.premarket: PremarketLevels | None = None
-        self.broke_above: bool = False
-        self.broke_below: bool = False
-        self.signal_fired: bool = False
-        self.monitoring_started_posted: bool = False
-        self.monitoring_ended: bool = False
-        self.atr_value: float | None = None
-        self.first_candle_overextended: bool = False
-        self.active_trade: TradeSignal | None = None
-        self.trade_outcome: TradeOutcome | None = None
-        self.filter_cooldown_until: datetime | None = None
-        self.filtered_signals: list[FilteredSignal] = []
         self.last_forecast_time: datetime | None = None
         self.last_forecast: DirectionForecast | None = None
-        self.last_forecast_5m_time: datetime | None = None
         self.session_high: float | None = None  # actual session extremes so far,
-        self.session_low: float | None = None   # updated by forecasts + setup scans
-        # Change-driven posting: the last forecast actually POSTED to Discord
-        # (shared across the 15m/5m streams — a change is a change regardless
-        # of which stream noticed it first).
+        self.session_low: float | None = None   # updated by every forecast computation
+        # Change-driven posting: the last forecast actually POSTED to Discord.
         self.last_posted_forecast: DirectionForecast | None = None
         self.last_posted_time: datetime | None = None
         self.forecast_eval_done: bool = False
-        self.bias_logged: bool = False  # bias persisted/posted (survives via rehydration)
 
     def reset(self, today: str | None = None):
         self.__init__()
@@ -321,7 +250,8 @@ def forecast_post_reason(fc: DirectionForecast,
     return None
 
 
-# ── Core strategy functions ─────────────────────────────────
+# ── Daily bias (backfill.py replay only — see DailyBias/FirstCandleRange
+# docstrings; nothing in the live bot calls these anymore) ─────────────────
 
 async def get_daily_bias(client: MarketDataClient, ticker: str, today_open: float | None = None,
                          daily: pd.DataFrame | None = None) -> DailyBias | None:
@@ -419,7 +349,7 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
     The old rule let the first candle win unconditionally, which graded a coin
     flip (50% over 60 days; bearish calls 43%). Requiring agreement from at
     least one of gap/trend fixed bearish precision; when all three conflict the
-    day is NEUTRAL and break-and-retest fires no entries.
+    day is NEUTRAL.
     """
     # RSI contrarian: overbought flips bias bearish, oversold flips bullish
     if bias.rsi is not None and bias.rsi >= 70:
@@ -441,11 +371,6 @@ def set_bias_from_first_candle(bias: DailyBias, first_candle: FirstCandleRange) 
         bias.direction = "NEUTRAL"
 
 
-# (The ATR-projected DayForecast was removed 2026-08-12 at the owner's
-# request — replaced by the ACTUAL session high/low tracked on every alert.
-# The removed code is in git history if a projected range is ever wanted.)
-
-
 def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
@@ -453,102 +378,7 @@ def _compute_rsi(closes: pd.Series, period: int = 14) -> float | None:
     return val if not np.isnan(val) else None
 
 
-async def get_first_candle_range(client: MarketDataClient, ticker: str) -> FirstCandleRange | None:
-    data = await client.fetch_candles(ticker, interval="5", count=100)
-    if data.empty:
-        return None
-
-    today = datetime.now(ET).date()
-    for _, row in data.iterrows():
-        ts = pd.to_datetime(row["timestamp"])
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC").astimezone(ET)
-        else:
-            ts = ts.astimezone(ET)
-        if ts.date() == today and ts.hour == 9 and ts.minute == 30:
-            return FirstCandleRange(
-                ticker=ticker,
-                high=round(float(row["high"]), 2),
-                low=round(float(row["low"]), 2),
-                open_price=round(float(row["open"]), 2),
-                close_price=round(float(row["close"]), 2),
-            )
-    return None
-
-
-async def get_premarket_levels(ticker: str) -> PremarketLevels | None:
-    """Fetch pre-market high/low using yfinance extended hours data."""
-    def _fetch():
-        t = yf.Ticker(ticker)
-        df = t.history(period="1d", interval="1m", prepost=True)
-        if df is None or df.empty:
-            return None
-        return df
-
-    try:
-        df = await asyncio.to_thread(_fetch)
-    except Exception:
-        return None
-
-    if df is None or df.empty:
-        return None
-
-    today = datetime.now(ET).date()
-    pre_data = []
-    for idx in df.index:
-        ts = idx.tz_convert(ET) if idx.tzinfo else idx.tz_localize(ET)
-        if ts.date() == today and ts.hour < 9:
-            pre_data.append(df.loc[idx])
-        elif ts.date() == today and ts.hour == 9 and ts.minute < 30:
-            pre_data.append(df.loc[idx])
-
-    if not pre_data:
-        return None
-
-    pre_df = pd.DataFrame(pre_data)
-    return PremarketLevels(
-        ticker=ticker,
-        high=round(float(pre_df["High"].max()), 2),
-        low=round(float(pre_df["Low"].min()), 2),
-        volume=round(float(pre_df["Volume"].sum()), 0),
-    )
-
-
 # ── Indicator functions ─────────────────────────────────────
-
-async def compute_atr(client: MarketDataClient, ticker: str, period: int = ATR_PERIOD) -> float | None:
-    """Compute ATR from regular-session 5-min candles only."""
-    data = await client.fetch_candles(ticker, interval="5", count=200)
-    if data.empty:
-        return None
-
-    # Filter to regular trading hours (9:30-16:00 ET) to avoid after-hours/pre-market noise
-    timestamps = pd.to_datetime(data["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
-    else:
-        timestamps = timestamps.dt.tz_convert(ET)
-    mask = (timestamps.dt.hour >= 9) & (timestamps.dt.hour < 16)
-    mask = mask | ((timestamps.dt.hour == 9) & (timestamps.dt.minute >= 30))
-    mask = mask & ~((timestamps.dt.hour == 9) & (timestamps.dt.minute < 30))
-    data = data[mask.values].reset_index(drop=True)
-
-    if len(data) < period + 1:
-        return None
-
-    highs = data["high"].astype(float)
-    lows = data["low"].astype(float)
-    closes = data["close"].astype(float)
-
-    tr = pd.concat([
-        highs - lows,
-        (highs - closes.shift(1)).abs(),
-        (lows - closes.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-
-    atr = tr.rolling(window=period).mean().iloc[-1]
-    return round(float(atr), 4) if not np.isnan(atr) else None
-
 
 def compute_vwap(candles: pd.DataFrame) -> float | None:
     if candles.empty:
@@ -568,6 +398,9 @@ def compute_vwap(candles: pd.DataFrame) -> float | None:
 
 
 def check_relative_volume(candles: pd.DataFrame, lookback: int = RVOL_LOOKBACK) -> tuple[bool, float]:
+    """(above_threshold, ratio) of the latest bar's volume vs its trailing
+    average. Used by the volume-spike watcher (zero_dte/volume_watcher.py);
+    previously also fed the break-and-retest RVOL entry filter (removed)."""
     if len(candles) < lookback + 1:
         return True, 0.0
 
@@ -579,379 +412,6 @@ def check_relative_volume(candles: pd.DataFrame, lookback: int = RVOL_LOOKBACK) 
     latest_vol = volumes.iloc[-1]
     ratio = round(float(latest_vol / avg_vol), 2)
     return ratio >= RVOL_THRESHOLD, ratio
-
-
-def check_ema_crossover(candles_5m: pd.DataFrame) -> tuple[str, float, float]:
-    closes = candles_5m["close"].astype(float)
-    ema_fast = closes.ewm(span=EMA_FAST, adjust=False).mean()
-    ema_slow = closes.ewm(span=EMA_SLOW, adjust=False).mean()
-
-    fast_val = round(float(ema_fast.iloc[-1]), 2)
-    slow_val = round(float(ema_slow.iloc[-1]), 2)
-    direction = "BULLISH" if fast_val > slow_val else "BEARISH"
-    return direction, fast_val, slow_val
-
-
-def check_15m_trend(candles_15m: pd.DataFrame) -> tuple[str, float, float] | None:
-    """Check trend on 15-min timeframe using 9/21 EMA."""
-    if candles_15m.empty or len(candles_15m) < EMA_SLOW:
-        return None
-    closes = candles_15m["close"].astype(float)
-    ema_fast = closes.ewm(span=EMA_FAST, adjust=False).mean()
-    ema_slow = closes.ewm(span=EMA_SLOW, adjust=False).mean()
-
-    fast_val = round(float(ema_fast.iloc[-1]), 2)
-    slow_val = round(float(ema_slow.iloc[-1]), 2)
-    direction = "BULLISH" if fast_val > slow_val else "BEARISH"
-    return direction, fast_val, slow_val
-
-
-def _apply_filters(
-    state: StrategyState,
-    direction: str,
-    entry_price: float,
-    candles_1m: pd.DataFrame,
-    candles_5m: pd.DataFrame | None,
-    candles_15m: pd.DataFrame | None = None,
-) -> list[FilterStatus]:
-    filters = []
-
-    # ATR filter
-    if state.atr_value is not None and state.first_candle is not None:
-        overextended = state.first_candle_overextended
-        filters.append(FilterStatus(
-            name="ATR",
-            passed=not overextended,
-            reason=f"Range ${state.first_candle.range_size:.2f} {'>' if overextended else '<='} {ATR_OVEREXTENDED_MULT}x ATR ${state.atr_value:.2f}"
-        ))
-
-    # VWAP filter
-    today = datetime.now(ET).date()
-    today_candles = candles_1m.copy()
-    timestamps = pd.to_datetime(today_candles["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
-    else:
-        timestamps = timestamps.dt.tz_convert(ET)
-    today_candles = today_candles[timestamps.dt.date == today]
-
-    vwap = compute_vwap(today_candles)
-    if vwap is not None:
-        advisory = not VWAP_FILTER_ENABLED
-        note = " — advisory, not blocking" if advisory else ""
-        if direction == "LONG":
-            passed = entry_price > vwap
-            filters.append(FilterStatus(name="VWAP", passed=passed, advisory=advisory,
-                reason=f"Entry ${entry_price} {'>' if passed else '<='} VWAP ${vwap}{note}"))
-        else:
-            passed = entry_price < vwap
-            filters.append(FilterStatus(name="VWAP", passed=passed, advisory=advisory,
-                reason=f"Entry ${entry_price} {'<' if passed else '>='} VWAP ${vwap}{note}"))
-
-    # Relative Volume filter
-    rvol_passed, rvol_ratio = check_relative_volume(candles_1m)
-    filters.append(FilterStatus(name="RVOL", passed=rvol_passed,
-        reason=f"{rvol_ratio}x avg volume ({'>' if rvol_passed else '<'} {RVOL_THRESHOLD}x threshold)"))
-
-    # EMA crossover filter (5-min)
-    if candles_5m is not None and len(candles_5m) >= EMA_SLOW:
-        ema_dir, ema_fast, ema_slow = check_ema_crossover(candles_5m)
-        if direction == "LONG":
-            passed = ema_dir == "BULLISH"
-        else:
-            passed = ema_dir == "BEARISH"
-        filters.append(FilterStatus(name="EMA 5m", passed=passed,
-            reason=f"9 EMA ${ema_fast} {'>' if ema_dir == 'BULLISH' else '<'} 21 EMA ${ema_slow} ({ema_dir})"))
-
-    # 15-min trend confirmation
-    if candles_15m is not None and len(candles_15m) >= EMA_SLOW:
-        result_15m = check_15m_trend(candles_15m)
-        if result_15m is not None:
-            trend_dir, f15, s15 = result_15m
-            if direction == "LONG":
-                passed = trend_dir == "BULLISH"
-            else:
-                passed = trend_dir == "BEARISH"
-            filters.append(FilterStatus(name="EMA 15m", passed=passed,
-                reason=f"9 EMA ${f15} {'>' if trend_dir == 'BULLISH' else '<'} 21 EMA ${s15} ({trend_dir})"))
-
-    # Previous day high/low as S/R
-    if state.daily_bias is not None:
-        bias = state.daily_bias
-        if direction == "LONG" and entry_price > bias.prev_high:
-            filters.append(FilterStatus(name="Prev Day", passed=True,
-                reason=f"Entry ${entry_price} > Prev High ${bias.prev_high} (breakout)"))
-        elif direction == "SHORT" and entry_price < bias.prev_low:
-            filters.append(FilterStatus(name="Prev Day", passed=True,
-                reason=f"Entry ${entry_price} < Prev Low ${bias.prev_low} (breakdown)"))
-        else:
-            filters.append(FilterStatus(name="Prev Day", passed=True,
-                reason=f"Inside prev range ${bias.prev_low}-${bias.prev_high} (neutral)"))
-
-    # Daily RSI — warn but don't block: passed stays True so an extreme daily
-    # RSI can't veto the signal; the reason text carries the caution.
-    if state.daily_bias is not None and state.daily_bias.rsi is not None:
-        rsi = state.daily_bias.rsi
-        if direction == "LONG" and rsi >= 70:
-            filters.append(FilterStatus(name="RSI", passed=True,
-                reason=f"RSI {rsi} >= 70 (overbought — caution on longs)"))
-        elif direction == "SHORT" and rsi <= 30:
-            filters.append(FilterStatus(name="RSI", passed=True,
-                reason=f"RSI {rsi} <= 30 (oversold — caution on shorts)"))
-        else:
-            filters.append(FilterStatus(name="RSI", passed=True,
-                reason=f"RSI {rsi} ({state.daily_bias.rsi_signal})"))
-
-    # Multi-day trend confluence
-    if state.daily_bias is not None:
-        md = state.daily_bias
-        if direction == "LONG":
-            passed = md.multi_day != "BEARISH"
-        else:
-            passed = md.multi_day != "BULLISH"
-        filters.append(FilterStatus(name="5-Day", passed=passed,
-            reason=f"{md.green_days} green / {md.red_days} red ({md.multi_day})"))
-
-    # Pre-market level confluence
-    if state.premarket is not None:
-        pm = state.premarket
-        if direction == "LONG" and entry_price > pm.high:
-            filters.append(FilterStatus(name="PM Level", passed=True,
-                reason=f"Entry ${entry_price} > PM High ${pm.high} (breakout confluence)"))
-        elif direction == "SHORT" and entry_price < pm.low:
-            filters.append(FilterStatus(name="PM Level", passed=True,
-                reason=f"Entry ${entry_price} < PM Low ${pm.low} (breakdown confluence)"))
-        else:
-            filters.append(FilterStatus(name="PM Level", passed=True,
-                reason=f"PM Range ${pm.low}-${pm.high} (no confluence, neutral)"))
-
-    return filters
-
-
-# ── Trade outcome tracking ──────────────────────────────────
-
-async def check_trade_outcome(state: StrategyState, client: MarketDataClient, ticker: str) -> TradeOutcome | None:
-    """Check if an active trade has hit its target or stop."""
-    if state.active_trade is None:
-        return None
-
-    trade = state.active_trade
-    data = await client.fetch_candles(ticker, interval="1", count=10)
-    if data.empty:
-        return None
-
-    # Only bars that started at/after entry count: on the first check most of
-    # the window predates the trade, and a pre-entry wick through the stop
-    # must not close it.
-    if trade.created_at:
-        entry_ts = pd.Timestamp(trade.created_at)
-        timestamps = pd.to_datetime(data["timestamp"])
-        if timestamps.dt.tz is None:
-            timestamps = timestamps.dt.tz_localize("UTC")
-        data = data[(timestamps >= entry_ts).values]
-        if data.empty:
-            return None
-
-    for _, row in data.iterrows():
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
-
-        if trade.direction == "LONG":
-            if low <= trade.stop_loss:
-                return TradeOutcome(
-                    ticker=ticker, direction="LONG",
-                    entry_price=trade.entry_price, exit_price=trade.stop_loss,
-                    stop_loss=trade.stop_loss, target=trade.target,
-                    result="STOPPED_OUT", pnl=round(trade.stop_loss - trade.entry_price, 2),
-                    timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
-                )
-            if high >= trade.target:
-                return TradeOutcome(
-                    ticker=ticker, direction="LONG",
-                    entry_price=trade.entry_price, exit_price=trade.target,
-                    stop_loss=trade.stop_loss, target=trade.target,
-                    result="TARGET_HIT", pnl=round(trade.target - trade.entry_price, 2),
-                    timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
-                )
-        else:
-            if high >= trade.stop_loss:
-                return TradeOutcome(
-                    ticker=ticker, direction="SHORT",
-                    entry_price=trade.entry_price, exit_price=trade.stop_loss,
-                    stop_loss=trade.stop_loss, target=trade.target,
-                    result="STOPPED_OUT", pnl=round(trade.entry_price - trade.stop_loss, 2),
-                    timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
-                )
-            if low <= trade.target:
-                return TradeOutcome(
-                    ticker=ticker, direction="SHORT",
-                    entry_price=trade.entry_price, exit_price=trade.target,
-                    stop_loss=trade.stop_loss, target=trade.target,
-                    result="TARGET_HIT", pnl=round(trade.entry_price - trade.target, 2),
-                    timestamp=datetime.now(ET).strftime("%I:%M %p ET"),
-                )
-
-    return None
-
-
-# ── Setup detection ─────────────────────────────────────────
-
-async def check_for_setup(state: StrategyState, client: MarketDataClient, ticker: str) -> TradeSignal | FilteredSignal | None:
-    if state.daily_bias is None or state.first_candle is None:
-        return None
-    if state.signal_fired:
-        return None
-    if state.first_candle_overextended:
-        return None
-
-    # Check cooldown from previous filtered signal
-    if state.filter_cooldown_until is not None:
-        if datetime.now(ET) < state.filter_cooldown_until:
-            return None
-        state.filter_cooldown_until = None
-
-    data = await client.fetch_candles(ticker, interval="1", count=200)
-    if data.empty:
-        return None
-
-    # Only today's regular session counts: a 200-bar window reaches into the
-    # prior session, and after a gap yesterday's closes sit outside today's
-    # box — scanning them would spuriously arm broke_above/broke_below.
-    timestamps = pd.to_datetime(data["timestamp"])
-    if timestamps.dt.tz is None:
-        timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
-    else:
-        timestamps = timestamps.dt.tz_convert(ET)
-    session_open = datetime.now(ET).replace(hour=9, minute=30, second=0, microsecond=0)
-    candles = data[(timestamps >= session_open).values]
-    if len(candles) < 3:
-        return None
-
-    # Keep the tracked session extremes fresh from the 1m data we already have.
-    hi = float(candles["high"].astype(float).max())
-    lo = float(candles["low"].astype(float).min())
-    state.session_high = round(max(state.session_high or hi, hi), 2)
-    state.session_low = round(min(state.session_low or lo, lo), 2)
-
-    box_high = state.first_candle.high
-    box_low = state.first_candle.low
-
-    # The bias no longer gates entry DIRECTION (owner decision 2026-08-11,
-    # after the honest replay graded the 2-of-3 vote at 50.9% vs a 52.6%
-    # always-BULLISH bar — see docs/strategy-log.md): a break-and-retest may
-    # fire either side, the bias is informational on the embeds, and the
-    # per-direction track record + below-breakeven warning stay the honest
-    # signal at decision time. A NEUTRAL morning (full three-way conflict)
-    # still stands down entirely — that rule is about signal quality, not
-    # direction.
-    if state.daily_bias.direction == "NEUTRAL":
-        return None
-
-    for i in range(len(candles)):
-        row = candles.iloc[i]
-        close = float(row["close"])
-
-        if close > box_high and not state.broke_above:
-            state.broke_above = True
-        if close < box_low and not state.broke_below:
-            state.broke_below = True
-
-    if len(candles) < 3:
-        return None
-
-    recent = candles.iloc[-1]
-    prev = candles.iloc[-2]
-    recent_close = float(recent["close"])
-    recent_open = float(recent["open"])
-    prev_high = float(prev["high"])
-
-    now_str = datetime.now(ET).strftime("%I:%M %p ET")
-
-    if state.broke_below and not state.signal_fired:
-        if prev_high >= box_low * 0.999:
-            if recent_close < recent_open and recent_close < box_low:
-                stop_loss = box_high
-                risk = stop_loss - recent_close
-                if risk > 0:
-                    return await _build_signal_or_filtered(
-                        state, client, ticker, "SHORT",
-                        recent_close, stop_loss, risk, now_str, candles,
-                    )
-
-    if state.broke_above and not state.signal_fired:
-        prev_low = float(prev["low"])
-        if prev_low <= box_high * 1.001:
-            if recent_close > recent_open and recent_close > box_high:
-                stop_loss = box_low
-                risk = recent_close - stop_loss
-                if risk > 0:
-                    return await _build_signal_or_filtered(
-                        state, client, ticker, "LONG",
-                        recent_close, stop_loss, risk, now_str, candles,
-                    )
-
-    return None
-
-
-async def _build_signal_or_filtered(
-    state: StrategyState,
-    client: MarketDataClient,
-    ticker: str,
-    direction: str,
-    entry_price: float,
-    stop_loss: float,
-    risk: float,
-    timestamp: str,
-    candles_1m: pd.DataFrame,
-) -> TradeSignal | FilteredSignal:
-    # If a timeframe fetch fails its filter is skipped, not failed — but record
-    # the skip so the filter log shows what was actually checked.
-    candles_5m = None
-    candles_15m = None
-    skipped: list[FilterStatus] = []
-    try:
-        candles_5m = await client.fetch_candles(ticker, interval="5", count=100)
-    except Exception as exc:
-        logger.warning("[%s] 5m candle fetch failed — EMA 5m filter skipped: %s", ticker, exc)
-        skipped.append(FilterStatus(name="EMA 5m", passed=True, reason="data unavailable — filter skipped"))
-    try:
-        candles_15m = await client.fetch_candles(ticker, interval="15", count=100)
-    except Exception as exc:
-        logger.warning("[%s] 15m candle fetch failed — EMA 15m filter skipped: %s", ticker, exc)
-        skipped.append(FilterStatus(name="EMA 15m", passed=True, reason="data unavailable — filter skipped"))
-
-    filters = _apply_filters(state, direction, entry_price, candles_1m, candles_5m, candles_15m)
-    filters.extend(skipped)
-    all_passed = all(f.passed for f in filters if not f.advisory)
-
-    if all_passed:
-        target = entry_price - (risk * RISK_REWARD_RATIO) if direction == "SHORT" else entry_price + (risk * RISK_REWARD_RATIO)
-        state.signal_fired = True
-        retest_level = 0.0
-        if state.first_candle is not None:
-            retest_level = state.first_candle.high if direction == "LONG" else state.first_candle.low
-        signal = TradeSignal(
-            ticker=ticker, direction=direction,
-            entry_price=round(entry_price, 2), stop_loss=round(stop_loss, 2),
-            target=round(target, 2), risk=round(risk, 2),
-            reward=round(risk * RISK_REWARD_RATIO, 2),
-            timestamp=timestamp,
-            created_at=datetime.now(pytz.UTC).isoformat(),
-            filters=filters,
-            retest_level=round(retest_level, 2),
-        )
-        state.active_trade = signal
-        return signal
-    else:
-        fs = FilteredSignal(
-            ticker=ticker, direction=direction,
-            entry_price=round(entry_price, 2),
-            timestamp=timestamp, filters=filters,
-        )
-        state.filtered_signals.append(fs)
-        state.filter_cooldown_until = datetime.now(ET) + timedelta(minutes=FILTER_COOLDOWN_MINUTES)
-        return fs
 
 
 # ── 30-min forecast ─────────────────────────────────────────
@@ -992,9 +452,9 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
 
     `interval` is the candle interval and forecast window in minutes,
     defaulting to FORECAST_INTERVAL_MINUTES (default 15m; the function keeps
-    its historical "30m" name). Pass interval=5 for the fast companion
-    forecast. `data`/`asof` may be supplied by the backfill replay so the
-    identical computation runs on a historical window as-of a past timestamp.
+    its historical "30m" name). `data`/`asof` may be supplied by the backfill
+    replay so the identical computation runs on a historical window as-of a
+    past timestamp.
     """
     if interval is None:
         interval = FORECAST_INTERVAL_MINUTES
@@ -1106,11 +566,9 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     # Divergence — pivot-based reversal signal, voted at face value.
     # (The old endpoint-compare detector was inverted per its backtest; that
     # inversion doesn't carry over to the pivot detector.)
-    # The RSI watcher no longer pings divergence standalone (it contradicted
-    # forecasts posted moments earlier) — instead the forecast checks its own
-    # frame first, then falls back to 5m so the faster frame's divergence
-    # still enters the weighted vote. Live only: the backfill replay can't
-    # align a second timeframe.
+    # The forecast checks its own frame first, then falls back to 5m so the
+    # faster frame's divergence still enters the weighted vote. Live only:
+    # the backfill replay can't align a second timeframe.
     divergence = _detect_divergence(closes, rsi_vals) if rsi_val is not None else None
     divergence_tf = f"{interval}m" if divergence else None
     if divergence is None and asof is None and client is not None and interval != 5:

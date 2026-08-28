@@ -28,33 +28,18 @@ FINNHUB_CALLS_PER_MIN = 55
 
 # Trading
 TICKERS = [t.strip().upper() for t in os.getenv("TICKERS", "SPY").split(",") if t.strip()]
+# SMA_PERIOD/RISK_REWARD_RATIO are no longer read by the live bot (morning
+# bias + break-and-retest entries were removed) but stay live for
+# backfill.py's historical bias replay and backtest_filters.py's audit of
+# recorded break-and-retest history — see docs/state-of-the-code.md.
 SMA_PERIOD = 50
 RISK_REWARD_RATIO = 2.0
 
-# Indicator filter settings
+# Indicator filter settings (RVOL is reused by the volume-spike watcher below;
+# EMA/ATR-overextension/VWAP-filter settings tied to the removed
+# break-and-retest entry filters are gone — see docs/state-of-the-code.md)
 RVOL_THRESHOLD = 1.2
 RVOL_LOOKBACK = 10
-ATR_PERIOD = 14
-ATR_OVEREXTENDED_MULT = 3.0
-EMA_FAST = 9
-EMA_SLOW = 21
-
-# Filter cooldown
-FILTER_COOLDOWN_MINUTES = 5
-
-# VWAP entry filter (long must enter above VWAP, short below). Off by default:
-# it is the one filter in the stack whose vetoes were profitable. Over the
-# logged setups every VWAP veto would have won — 7/10, avg +0.63R, +6.3R total
-# blocked — while it was never the sole reason for a veto, so switching it off
-# costs no extra risk. Every other filter's vetoes lost money (RVOL sole vetoes
-# 0/9, -0.94R). See `python backtest_filters.py`. Kept as an advisory read
-# rather than deleted: it is still computed, still shown, still logged, so the
-# audit keeps scoring it on n>10 and this can be flipped back on the evidence.
-VWAP_FILTER_ENABLED = _flag("VWAP_FILTER_ENABLED", "0")
-
-# Trade tracking
-TRADE_TRACKING_END_HOUR = 16
-TRADE_TRACKING_END_MINUTE = 0
 
 # Intraday directional forecast cadence (minutes). Also the candle interval
 # the forecast is computed on and graded against.
@@ -72,17 +57,13 @@ FORECAST_CONFLICT_RATIO = float(os.getenv("FORECAST_CONFLICT_RATIO", "0.75"))
 # default 65 this subsumes the conflict-ratio guard (ratio >= 0.75 caps
 # confidence at ~57%), which stays as a backstop if this gate is lowered.
 FORECAST_VOLATILE_CONFIDENCE = float(os.getenv("FORECAST_VOLATILE_CONFIDENCE", "65"))
-# Faster companion forecast on 5-min candles, posted every 5 minutes over the
-# same window as the main forecast (graded against the next 5-min candle).
-FORECAST_5M_ENABLED = _flag("FORECAST_5M_ENABLED")
-FORECAST_5M_INTERVAL_MINUTES = 5
 # Volatility-scaled grading deadband (triple-barrier-style flat class): a
 # window whose |move| is under this fraction of the interval ATR(14) grades
 # as FLAT — directional calls on it go ungraded (noise, not a miss) and
 # NEUTRAL/VOLATILE calls on it grade correct. Median 15m SPY window moved
 # ~$0.47 while graded accuracy sat at coin-flip; forcing those tiny moves
 # into BULLISH/BEARISH labels fed the tuner noise (see arXiv 2303.04581 on
-# fixed-threshold labeling).
+# fixed-threshold labeling). Also reused by the volume-spike watcher's grading.
 FORECAST_DEADBAND_ATR_MULT = float(os.getenv("FORECAST_DEADBAND_ATR_MULT", "0.25"))
 # Posting mode: "change" posts a forecast only when the read changed —
 # direction flip, confidence jump, projected-range breach, or heartbeat —
@@ -96,18 +77,21 @@ FORECAST_START_MINUTE = 0
 FORECAST_END_HOUR = 16
 FORECAST_END_MINUTE = 0
 
-# (DAY_FORECAST_* and SPX_OPTIONS_* knobs removed 2026-08-12 with their
-# features — the actual tracked session high/low replaced both.)
+# (DAY_FORECAST_*, SPX_OPTIONS_* knobs removed 2026-08-12 with their
+# features — the actual tracked session high/low replaced both. Morning
+# bias, break-and-retest entries, the 5m companion forecast stream, the
+# standalone VIX spike/regime watcher, and the standalone candlestick
+# pattern watcher were removed in a later pass — see
+# docs/state-of-the-code.md for the full list and rationale.)
 
 # Post the latest git change to the alert channel when the bot (re)starts.
 STARTUP_CHANGELOG_ENABLED = _flag("STARTUP_CHANGELOG_ENABLED")
 
-# Market hours (Eastern Time)
+# Market hours (Eastern Time) — still read by bot/shared_cog.py and
+# swing/cog.py even though zero_dte's own premarket/first-candle logic
+# (which used to read this too) was removed.
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
-FIRST_CANDLE_READY_MINUTE = 35  # 9:35 AM ET — first 5-min candle is complete
-MONITORING_END_HOUR = 11        # Stop monitoring at 11:00 AM ET
-MONITORING_END_MINUTE = 0
 
 # Economic events (Kalshi public market-data API — no key required)
 KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
@@ -115,14 +99,13 @@ ECON_EVENTS_ENABLED = _flag("ECON_EVENTS_ENABLED")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
 # RSI thresholds used by the intraday forecast (rsi_caution line + the
-# pivot-based divergence voter). The standalone RSI watcher was removed
-# 2026-08-12 — its reversal state had already been folded into the forecast.
+# pivot-based divergence voter).
 RSI_OB_WARN = 70.0     # overbought warning
 RSI_OS_WARN = 30.0     # oversold warning
 RSI_DIV_LOOKBACK = 40  # bars to scan for divergence pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
 RSI_DIV_RSI_GATE = 50.0  # divergence counts only while RSI is still on the reversal side
-WATCH_INTERVAL_SECONDS = 60  # min seconds between VIX/BB watcher runs
+WATCH_INTERVAL_SECONDS = 60  # min seconds between BB/volume watcher runs
 
 # Bollinger band touch watcher — pings when a closed 1m/5m candle closes at
 # or beyond the upper/lower band. Fires once per touch (re-arms only after a
@@ -134,25 +117,21 @@ BB_PERIOD = int(os.getenv("BB_PERIOD", "20"))
 BB_STD = float(os.getenv("BB_STD", "2.0"))
 BB_ALERT_COOLDOWN_MINUTES = int(os.getenv("BB_ALERT_COOLDOWN_MINUTES", "15"))
 
-# Candlestick pattern watcher — logs when the last COMPLETED 1-hour or daily
-# candle forms a named pattern (core.indicators.detect_candlestick_patterns,
-# the same detectors backtest_patterns.py replays). Observational only: daily
-# and weekly patterns backtested to no standalone directional edge
-# (docs/strategy-log.md), so posts are context, not trade signals; the 1-hour
-# horizon has no backtest either way — captured history is what would feed one.
-# Fetches from yfinance directly — zero Twelve Data/Finnhub budget.
-CANDLE_WATCH_ENABLED = _flag("CANDLE_WATCH_ENABLED")
-CANDLE_WATCH_TICKERS = [t.strip().upper() for t in os.getenv("CANDLE_WATCH_TICKERS", "SPY").split(",") if t.strip()]
+# Volume-spike watcher — pings when a completed 5m candle's volume clears
+# VOLUME_SPIKE_MULT x its trailing VOLUME_SPIKE_LOOKBACK-bar average. Fires
+# once per spike (re-arms once volume drops back under the threshold), with
+# a per-ticker cooldown as a backstop — mirrors the BB watcher's shape.
+# Fetches 1m bars from yfinance directly (resampled to 5m) — zero Twelve
+# Data/Finnhub budget.
+VOLUME_WATCH_ENABLED = _flag("VOLUME_WATCH_ENABLED")
+VOLUME_WATCH_TICKERS = [t.strip().upper() for t in os.getenv("VOLUME_WATCH_TICKERS", "SPY").split(",") if t.strip()]
+VOLUME_SPIKE_LOOKBACK = int(os.getenv("VOLUME_SPIKE_LOOKBACK", "20"))
+VOLUME_SPIKE_MULT = float(os.getenv("VOLUME_SPIKE_MULT", "2.0"))
+VOLUME_ALERT_COOLDOWN_MINUTES = int(os.getenv("VOLUME_ALERT_COOLDOWN_MINUTES", "15"))
 
-# VIX ("fear gauge", inverse to SPY) — confirming signal + spike alerts
-VIX_WATCH_ENABLED = _flag("VIX_WATCH_ENABLED")
-VIX_ELEVATED = 20.0   # regime thresholds
-VIX_HIGH = 25.0
-VIX_FEAR = 30.0
-VIX_LEVEL_HYSTERESIS = 0.3    # regime cross-back must clear the level by this (no 19.9↔20.2 ping-pong)
-VIX_SPIKE_PCT = 5.0           # intraday % surge that triggers a spike alert
-VIX_SPIKE_WINDOW_BARS = 3     # over this many 5-min bars (~15 min)
-VIX_SPIKE_COOLDOWN_SEC = 900  # min seconds between spike alerts
+# VIX ("fear gauge", inverse to SPY) — still folded into the 15m/5m forecast
+# ensemble as a weighted vote (core/vix.py::forecast_signal). The standalone
+# VIX spike/regime watcher and its !vix command were removed.
 VIX_SIGNAL_DEADBAND_PCT = 0.3  # early-day fallback: VIX 30-min move below this % is neutral
 VIX_SIGNAL_MIN_Z = float(os.getenv("VIX_SIGNAL_MIN_Z", "1.0"))  # 30-min move must clear this many std devs of today's moves to vote
 VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
