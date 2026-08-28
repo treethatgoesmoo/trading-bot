@@ -1,4 +1,63 @@
-# State of the Code — as of 2026-08-11
+# State of the Code — as of 2026-08-15 (see "Feature-removal pass" section below for the latest)
+
+## Feature-removal pass — 2026-08-15
+
+Owner request: the live channel had too many disconnected alert streams and
+it was distracting. Kept the 15m forecast ensemble (the one stream with
+measured per-indicator edge) and the Bollinger band watcher; removed
+everything else that wasn't earning its slot on the graded evidence below,
+and added a volume-spike watcher as a replacement low-cost stream.
+
+**Removed (code deleted or disconnected from the live bot; historical
+`data/` files untouched):**
+
+- **Morning bias** (50 SMA + gap + first-candle 2-of-3 vote) — already
+  demoted to informational-only 2026-08-11 after grading 50.9% directional
+  vs a 52.6% always-BULLISH baseline (no measurable edge, see below). Now
+  removed from the live bot entirely: no more computation, posting, `!bias`
+  command, or nightly grading. `zero_dte/strategy.py::get_daily_bias` /
+  `DailyBias` / `FirstCandleRange` / `set_bias_from_first_candle` are kept
+  **only** because `backfill.py --bias-report` still replays the rule against
+  history on demand — nothing in the live bot calls them anymore.
+- **Break-and-retest entries + trade tracking** — removed along with the
+  bias it depended on (`check_for_setup`, `TradeSignal`/`FilteredSignal`
+  dataclasses, the entry filter stack, Take/Skip/Modify buttons, `!range`
+  `!test` commands, the Daily Summary / Monitoring-started-ended messages).
+  No honest replay of this system currently exists (see the backfill.py note
+  under Commands) — `backtest_filters.py` still audits the historical
+  `data/filters-*.jsonl` record left behind by the live years it ran.
+- **5-minute companion forecast stream** (`FORECAST_5M_ENABLED`) — never beat
+  its own always-BULLISH baseline (51.4% vs 55.4%, see below) and was
+  already not posted; now the computation/logging is gone too.
+- **Standalone VIX spike/regime watcher + `!vix` command** — the VIX vote
+  *inside* the 15m/5m forecast ensemble (`core/vix.py::forecast_signal`) is
+  unaffected and still live; only the separate alert stream (regime-cross
+  and spike pings, `VixWatcher`) and its nightly grading were removed.
+- **Standalone candlestick pattern watcher + `!patterns` command** — daily
+  and weekly patterns had already backtested to no directional edge
+  (docs/strategy-log.md); the 1h horizon was still unbacktested when this
+  was cut. `core.indicators.detect_candlestick_patterns` stays —
+  `backtest_patterns.py` still uses it for offline research.
+
+**Added:**
+
+- **Volume-spike watcher** (`zero_dte/volume_watcher.py`, `VOLUME_WATCH_*`
+  config) — mirrors the BB watcher's shape: pings once when a closed 5m
+  bar's volume clears `VOLUME_SPIKE_MULT` (default 2.0x) times its trailing
+  `VOLUME_SPIKE_LOOKBACK`-bar average, re-arms after a bar back under the
+  threshold, cooldown-gated, graded nightly (`evaluate_volume_alerts`) the
+  same continuation-vs-reversal way the old VIX-ping grading worked. It has
+  **no track record yet** — same "prove it or lose the slot" bar as every
+  other stream here; watch `data/volume_alerts-*.jsonl` and the nightly
+  grading before trusting it.
+
+See `CLAUDE.md`'s `zero_dte/` description and the Commands table for the
+current (post-removal) command list and config knobs.
+
+---
+
+# State of the Code — as of 2026-08-11 (superseded by the pass above for
+what's live; the graded numbers below are what justified each removal)
 
 A point-in-time snapshot of what's live, what the graded data says, what was
 just fixed, and what's deliberately still open. Companion to
