@@ -1,0 +1,2 @@
+{"ticker": "SPY", "time": "2026-08-31T18:35:16.609519+00:00", "timeframe": "5", "direction": "BEARISH", "price": 766.03, "ratio": 3.93, "volume": 648554.0, "move": 0.72, "actual": "BULLISH", "correct": false}
+{"ticker": "SPY", "time": "2026-08-31T19:50:16.835647+00:00", "timeframe": "5", "direction": "BEARISH", "price": 766.84, "ratio": 3.71, "volume": 1090617.0, "move": -0.11, "actual": "BEARISH", "correct": true}
