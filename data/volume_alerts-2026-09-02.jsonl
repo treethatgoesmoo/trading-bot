@@ -1,0 +1,5 @@
+{"ticker": "SPY", "time": "2026-09-02T18:05:16.589875+00:00", "timeframe": "5", "direction": "BULLISH", "price": 765.3, "ratio": 3.39, "volume": 460628.0, "move": -0.4, "actual": "BEARISH", "correct": false}
+{"ticker": "SPY", "time": "2026-09-02T18:21:16.928851+00:00", "timeframe": "5", "direction": "BULLISH", "price": 765.6, "ratio": 3.23, "volume": 498118.0, "move": -0.69, "actual": "BEARISH", "correct": false}
+{"ticker": "SPY", "time": "2026-09-02T19:00:20.873096+00:00", "timeframe": "5", "direction": "BULLISH", "price": 764.81, "ratio": 3.48, "volume": 733951.0, "move": 0.18, "actual": "BULLISH", "correct": true}
+{"ticker": "SPY", "time": "2026-09-02T19:31:16.693323+00:00", "timeframe": "5", "direction": "BULLISH", "price": 765.48, "ratio": 2.08, "volume": 558514.0, "move": -0.17, "actual": "BEARISH", "correct": false}
+{"ticker": "SPY", "time": "2026-09-02T19:55:16.623972+00:00", "timeframe": "5", "direction": "BEARISH", "price": 765.22, "ratio": 2.47, "volume": 774464.0}

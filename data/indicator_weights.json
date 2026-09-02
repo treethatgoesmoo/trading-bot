@@ -1,9 +1,9 @@
 {
-  "generated": "2026-09-01T20:10:16.197626+00:00",
+  "generated": "2026-09-02T20:10:16.190093+00:00",
   "days": 30,
   "date_range": [
-    "2026-07-22",
-    "2026-09-01"
+    "2026-07-23",
+    "2026-09-02"
   ],
   "min_samples": 20,
   "samples": {
@@ -19,14 +19,14 @@
       "Divergence": 259
     },
     "15": {
-      "EMA": 407,
-      "VWAP": 406,
-      "MACD": 407,
-      "MACD_Mom": 407,
-      "Volume": 71,
-      "Momentum": 407,
-      "VIX": 157,
-      "RSI": 198,
+      "EMA": 420,
+      "VWAP": 419,
+      "MACD": 420,
+      "MACD_Mom": 420,
+      "Volume": 73,
+      "Momentum": 420,
+      "VIX": 161,
+      "RSI": 204,
       "Divergence": 151
     }
   },
@@ -43,14 +43,14 @@
       "VIX": 0.3
     },
     "15": {
-      "RSI": 0.7,
+      "RSI": 0.6,
       "EMA": 0.3,
-      "VWAP": 0.4,
-      "MACD": 0.4,
+      "VWAP": 0.3,
+      "MACD": 0.3,
       "MACD_Mom": 0.3,
       "Divergence": 0.3,
-      "Volume": 0.4,
-      "Momentum": 0.4,
+      "Volume": 0.6,
+      "Momentum": 0.3,
       "VIX": 0.3
     }
   }
