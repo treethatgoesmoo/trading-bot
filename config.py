@@ -16,6 +16,9 @@ ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 # Feature toggles
 ZERO_DTE_ENABLED = _flag("ZERO_DTE_ENABLED")
 SWING_ENABLED = _flag("SWING_ENABLED")
+# Isolated, paper-only SPXW turning-point shadow watch. Disabled by default
+# because its provisional rules have not established predictive edge.
+SPX_FLOW_ENABLED = _flag("SPX_FLOW_ENABLED", "0")
 
 # API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
@@ -109,6 +112,16 @@ RSI_DIV_LOOKBACK = 40  # bars to scan for divergence pivots
 RSI_PIVOT_ORDER = 2    # swing strength (bars on each side of a pivot)
 RSI_DIV_RSI_GATE = 50.0  # divergence counts only while RSI is still on the reversal side
 WATCH_INTERVAL_SECONDS = 60  # min seconds between BB/volume watcher runs
+
+# Experimental SPX/SPXW flow watch. Raw OPRA records stay in memory; compact
+# shadow observations are written only under ignored .thetadata-data/.
+SPX_FLOW_ALERT_CHANNEL_ID = int(os.getenv("SPX_FLOW_ALERT_CHANNEL_ID", "0")) or ALERT_CHANNEL_ID
+SPX_FLOW_POLL_SECONDS = max(30, int(os.getenv("SPX_FLOW_POLL_SECONDS", "60")))
+SPX_FLOW_LOOKBACK_MINUTES = max(1, int(os.getenv("SPX_FLOW_LOOKBACK_MINUTES", "5")))
+SPX_FLOW_STRIKE_RANGE = max(0, int(os.getenv("SPX_FLOW_STRIKE_RANGE", "2")))
+SPX_FLOW_ALERT_COOLDOWN_MINUTES = max(
+    0, int(os.getenv("SPX_FLOW_ALERT_COOLDOWN_MINUTES", "10"))
+)
 
 # Bollinger band touch watcher — pings when a closed 1m/5m candle closes at
 # or beyond the upper/lower band. Fires once per touch (re-arms only after a

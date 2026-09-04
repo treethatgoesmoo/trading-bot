@@ -42,6 +42,49 @@ class IndexSnapshot:
 
 
 @dataclass(frozen=True)
+class IndexBar:
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+@dataclass(frozen=True)
+class OptionQuote:
+    symbol: str
+    expiration: date
+    strike: float
+    right: str
+    timestamp: datetime
+    bid_size: int
+    bid: float
+    ask_size: int
+    ask: float
+
+
+@dataclass(frozen=True)
+class OptionTradeQuote:
+    """An OPRA trade paired by ThetaData with the latest preceding NBBO."""
+
+    symbol: str
+    expiration: date
+    strike: float
+    right: str
+    trade_timestamp: datetime
+    quote_timestamp: datetime | None
+    sequence: int
+    condition: int | None
+    size: int
+    exchange: int | None
+    price: float
+    bid_size: int
+    bid: float
+    ask_size: int
+    ask: float
+
+
+@dataclass(frozen=True)
 class OptionSnapshot:
     """One SPX/SPXW contract snapshot based on the executable NBBO."""
 
@@ -61,6 +104,7 @@ class OptionSnapshot:
     vega: float | None = None
     rho: float | None = None
     implied_vol: float | None = None
+    greeks_timestamp: datetime | None = None
     underlying_timestamp: datetime | None = None
     underlying_price: float | None = None
     open_interest: int | None = None
@@ -72,9 +116,10 @@ class OptionSnapshot:
             return None
         now = now or datetime.now(timezone.utc)
         stamp = self.quote_timestamp
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        return max(0.0, (now.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+        if stamp.tzinfo is None or now.tzinfo is None:
+            return None
+        age = (now.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds()
+        return age if age >= 0 else None
 
 
 class ThetaDataClient:
@@ -118,12 +163,12 @@ class ThetaDataClient:
         """Return the entitlements reported by the authenticated client."""
         client = self._get_client()
         return {
-            "options": _text_or_none(getattr(client, "options_subscription", None)),
-            "index": _text_or_none(getattr(client, "index_subscription", None)),
-            "stock": _text_or_none(getattr(client, "stock_subscription", None)),
+            "options": _subscription_name(getattr(client, "options_subscription", None)),
+            "index": _subscription_name(getattr(client, "index_subscription", None)),
+            "stock": _subscription_name(getattr(client, "stock_subscription", None)),
         }
 
-    def list_expirations(self, symbol: str = "SPX") -> list[date]:
+    def list_expirations(self, symbol: str = "SPXW") -> list[date]:
         """List available option expiration dates for an underlying."""
         try:
             frame = _pandas(self._get_client().option_list_expirations(symbol=symbol.upper()))
@@ -153,11 +198,169 @@ class ThetaDataClient:
             ))
         return snapshots
 
+    def index_history_ohlc(
+        self,
+        session_date: date,
+        *,
+        symbol: str = "SPX",
+        interval: str = "1m",
+        start_time: str = "09:30:00",
+        end_time: str = "16:00:00",
+    ) -> list[IndexBar]:
+        """Fetch one regular-session index OHLC series for research."""
+        try:
+            frame = _pandas(self._get_client().index_history_ohlc(
+                symbol=symbol.upper(),
+                start_date=session_date,
+                end_date=session_date,
+                interval=interval,
+                start_time=start_time,
+                end_time=end_time,
+            ))
+        except Exception as exc:
+            raise ThetaDataError(f"ThetaData index history failed for {symbol}: {exc}") from exc
+        bars: list[IndexBar] = []
+        for _, row in frame.iterrows():
+            stamp = _optional_datetime(row.get("timestamp"))
+            values = [_optional_float(row.get(name)) for name in ("open", "high", "low", "close")]
+            if stamp is None or any(value is None for value in values):
+                continue
+            bars.append(IndexBar(stamp, values[0], values[1], values[2], values[3]))
+        return sorted(bars, key=lambda bar: bar.timestamp)
+
+    def option_trade_quotes(
+        self,
+        session_date: date,
+        *,
+        expiration: date | None = None,
+        symbol: str = "SPXW",
+        strike_range: int = 20,
+        start_time: str = "09:30:00",
+        end_time: str = "16:00:00",
+    ) -> list[OptionTradeQuote]:
+        """Fetch OPRA trades with their preceding NBBO for one session.
+
+        The returned records support aggressor inference, not knowledge of
+        opening/closing intent, multi-leg intent, or the full resting book.
+        """
+        expiration = expiration or session_date
+        if strike_range < 0:
+            raise ValueError("strike_range must be non-negative")
+        try:
+            frame = _pandas(self._get_client().option_history_trade_quote(
+                symbol=symbol.upper(),
+                expiration=expiration,
+                date=session_date,
+                strike="*",
+                right="both",
+                strike_range=strike_range,
+                start_time=start_time,
+                end_time=end_time,
+                exclusive=True,
+            ))
+        except Exception as exc:
+            raise ThetaDataError(f"ThetaData option trade/quote history failed: {exc}") from exc
+
+        if frame.empty:
+            return []
+        # A full OPRA window can contain hundreds of thousands of rows. Parse
+        # columns once, then use itertuples; per-row iterrows/pd.to_datetime was
+        # prohibitively slow on the deployment Pi.
+        required = {
+            "symbol", "expiration", "strike", "right", "trade_timestamp",
+            "quote_timestamp", "size", "price", "bid", "ask",
+        }
+        if missing := required.difference(frame.columns):
+            raise ThetaDataError(f"ThetaData trade/quote response missing columns: {sorted(missing)}")
+        frame["expiration"] = pd.to_datetime(frame["expiration"], errors="coerce").dt.date
+        frame["trade_timestamp"] = _utc_timestamp_column(frame["trade_timestamp"])
+        frame["quote_timestamp"] = _utc_timestamp_column(frame["quote_timestamp"])
+        frame["symbol"] = frame["symbol"].astype(str).str.upper()
+        frame["right"] = frame["right"].astype(str).str.lower()
+        for column in ("strike", "size", "price", "bid_size", "bid", "ask_size", "ask",
+                       "sequence", "condition", "exchange"):
+            if column not in frame:
+                frame[column] = 0 if column in {"bid_size", "ask_size", "sequence"} else float("nan")
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        valid = (
+            frame["expiration"].notna()
+            & frame["trade_timestamp"].notna()
+            & frame["strike"].notna()
+            & frame["price"].notna()
+            & frame["size"].gt(0)
+            & frame["right"].isin(("call", "put"))
+            & frame["symbol"].ne("")
+        )
+        frame = frame.loc[valid].copy()
+        frame["sequence"] = frame["sequence"].fillna(0).astype("int64")
+        frame = frame.drop_duplicates(
+            subset=["symbol", "expiration", "strike", "right", "trade_timestamp", "sequence", "exchange"]
+        ).sort_values(["trade_timestamp", "sequence", "exchange"], na_position="first")
+
+        records: list[OptionTradeQuote] = []
+        for row in frame.itertuples(index=False):
+            records.append(OptionTradeQuote(
+                symbol=row.symbol,
+                expiration=row.expiration,
+                strike=float(row.strike),
+                right=row.right,
+                trade_timestamp=row.trade_timestamp.to_pydatetime(),
+                quote_timestamp=(row.quote_timestamp.to_pydatetime()
+                                 if pd.notna(row.quote_timestamp) else None),
+                sequence=int(row.sequence),
+                condition=_optional_int(row.condition),
+                size=int(row.size),
+                exchange=_optional_int(row.exchange),
+                price=float(row.price),
+                bid_size=_optional_int(row.bid_size) or 0,
+                bid=_float_or_zero(row.bid),
+                ask_size=_optional_int(row.ask_size) or 0,
+                ask=_float_or_zero(row.ask),
+            ))
+        return records
+
+    def option_quote_history(
+        self,
+        session_date: date,
+        *,
+        expiration: date,
+        strike: float,
+        right: str,
+        symbol: str = "SPXW",
+        interval: str = "1s",
+        start_time: str = "09:30:00",
+        end_time: str = "16:00:00",
+    ) -> list[OptionQuote]:
+        """Fetch quote-time records for exact executable outcome grading."""
+        if right not in {"call", "put"}:
+            raise ValueError("right must be 'call' or 'put'")
+        try:
+            frame = _pandas(self._get_client().option_history_quote(
+                symbol=symbol.upper(), expiration=expiration, interval=interval,
+                date=session_date, strike=str(strike), right=right,
+                start_time=start_time, end_time=end_time,
+            ))
+        except Exception as exc:
+            raise ThetaDataError(f"ThetaData option quote history failed: {exc}") from exc
+        quotes: list[OptionQuote] = []
+        for _, row in frame.iterrows():
+            key = _contract_key(row)
+            stamp = _optional_datetime(row.get("timestamp"))
+            if key is None or stamp is None:
+                continue
+            contract_symbol, expiry, contract_strike, contract_right = key
+            quotes.append(OptionQuote(
+                contract_symbol, expiry, contract_strike, contract_right, stamp,
+                _optional_int(row.get("bid_size")) or 0, _float_or_zero(row.get("bid")),
+                _optional_int(row.get("ask_size")) or 0, _float_or_zero(row.get("ask")),
+            ))
+        return sorted(quotes, key=lambda item: item.timestamp)
+
     def option_chain_snapshot(
         self,
         expiration: date,
         *,
-        symbol: str = "SPX",
+        symbol: str = "SPXW",
         right: str = "both",
         strike_range: int = 5,
         include_details: bool = True,
@@ -235,6 +438,7 @@ class ThetaDataClient:
                 vega=_optional_float(greek.get("vega")),
                 rho=_optional_float(greek.get("rho")),
                 implied_vol=_optional_float(greek.get("implied_vol")),
+                greeks_timestamp=_optional_datetime(greek.get("timestamp")),
                 underlying_timestamp=_optional_datetime(greek.get("underlying_timestamp")),
                 underlying_price=_optional_float(greek.get("underlying_price")),
                 open_interest=_optional_int(oi.get("open_interest")),
@@ -296,19 +500,31 @@ def _optional_int(value: Any) -> int | None:
     return int(parsed) if parsed is not None else None
 
 
+def _utc_timestamp_column(values: pd.Series) -> pd.Series:
+    """Vectorized aware-to-UTC conversion; ambiguous naïve values become NaT."""
+    parsed = pd.to_datetime(values, errors="coerce")
+    if not isinstance(parsed.dtype, pd.DatetimeTZDtype):
+        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns, UTC]")
+    return parsed.dt.tz_convert("UTC")
+
+
 def _optional_datetime(value: Any) -> datetime | None:
+    """Normalize provider timestamps to aware UTC; reject ambiguous naïve time."""
     if value is None or pd.isna(value):
         return None
     try:
         parsed = pd.Timestamp(value)
     except (TypeError, ValueError):
         return None
-    return parsed.to_pydatetime()
+    if parsed.tzinfo is None:
+        return None
+    return parsed.tz_convert("UTC").to_pydatetime()
 
 
-def _text_or_none(value: Any) -> str | None:
+def _subscription_name(value: Any) -> str | None:
+    """Translate ThetaData's numeric entitlement codes for diagnostics."""
     text = str(value).strip() if value is not None else ""
-    return text or None
+    return {"0": "FREE", "1": "VALUE", "2": "STANDARD", "3": "PRO"}.get(text, text or None)
 
 
 def _diagnose(symbol: str) -> int:
@@ -342,7 +558,7 @@ def _diagnose(symbol: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify ThetaData v3 options and index access")
-    parser.add_argument("--symbol", default="SPX", help="option root to inspect (default: SPX)")
+    parser.add_argument("--symbol", default="SPXW", help="option root to inspect (default: SPXW)")
     args = parser.parse_args()
     return _diagnose(args.symbol.upper())
 
