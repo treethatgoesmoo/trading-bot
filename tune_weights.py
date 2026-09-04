@@ -48,6 +48,7 @@ from zero_dte.strategy import INDICATOR_WEIGHTS
 ET = pytz.timezone("US/Eastern")
 DIRECTIONAL = ("BULLISH", "BEARISH")
 WEIGHTS_PATH = os.path.join(DATA_DIR, "indicator_weights.json")
+RETIRED_INDICATORS = {"Divergence"}
 
 
 def indicator_stats(rows: list[dict]) -> dict[str, dict[str, dict]]:
@@ -69,6 +70,8 @@ def indicator_stats(rows: list[dict]) -> dict[str, dict[str, dict]]:
         if actual not in DIRECTIONAL:
             continue
         for name, signal in (r.get("signals") or {}).items():
+            if name in RETIRED_INDICATORS:
+                continue
             if signal in DIRECTIONAL:
                 s = agg[str(interval)][name]
                 s["n"] += 1

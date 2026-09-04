@@ -17,7 +17,8 @@ from core.analytics import latest_grading_rows
 from core.market_calendar import EARLY_CLOSE, close_time
 from swing.strategy import completed_daily_candles
 from zero_dte import tracker as zero_tracker
-from zero_dte.strategy import compute_30m_forecast
+from zero_dte.embeds import extension_label, momentum_label
+from zero_dte.strategy import _completed_timeframe_direction, compute_30m_forecast
 
 ET = pytz.timezone("US/Eastern")
 
@@ -76,6 +77,29 @@ class CompletedBarRegressionTests(unittest.TestCase):
         self.assertIsNotNone(forecast)
         self.assertEqual(forecast.current_price, 114.0)
         self.assertIsNotNone(forecast.atr)
+        self.assertEqual(forecast.candle_30m_direction, "BULLISH")
+        self.assertIsNone(forecast.candle_1h_direction)
+
+    def test_completed_higher_timeframes_use_full_candles_only(self):
+        timestamps = pd.date_range(
+            ET.localize(datetime(2026, 8, 14, 9, 30)), periods=6, freq="15min"
+        )
+        frame = pd.DataFrame({
+            "timestamp": timestamps,
+            "open": [100, 101, 102, 103, 104, 105],
+            "close": [101, 102, 103, 99, 105, 106],
+        })
+        # 9:30-10:30 is a complete bearish 1h candle. The two newer bars form
+        # a complete bullish 30m candle but not a newer complete 1h candle.
+        self.assertEqual(_completed_timeframe_direction(frame, 15, 30), "BULLISH")
+        self.assertEqual(_completed_timeframe_direction(frame, 15, 60), "BEARISH")
+
+    def test_plain_english_market_state_labels(self):
+        self.assertEqual(momentum_label(-79), "Strong downward")
+        self.assertEqual(momentum_label(0), "Flat / weak")
+        self.assertEqual(momentum_label(70), "Strong upward")
+        self.assertEqual(extension_label(48), "Moderate")
+        self.assertIn("reversal risk", extension_label(70))
 
     def test_momentum_grader_requires_exact_same_session_next_bar(self):
         timestamps = pd.DatetimeIndex([
