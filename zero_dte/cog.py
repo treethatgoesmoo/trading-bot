@@ -66,6 +66,8 @@ from zero_dte.embeds import (
     bb_alert_embed,
     volume_alert_embed,
     forecast_embed,
+    momentum_label,
+    extension_label,
 )
 from zero_dte.views import ForecastView, MenuView
 
@@ -261,9 +263,9 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 # only, shown as state not as a probability claim.
                 extra = []
                 if fc.momentum_score is not None:
-                    extra.append(f"mom {fc.momentum_score:+.0f}")
+                    extra.append(f"momentum {momentum_label(fc.momentum_score).lower()} ({fc.momentum_score:+.0f})")
                 if fc.extension_score is not None:
-                    extra.append(f"ext {fc.extension_score:.0f}")
+                    extra.append(f"stretch {extension_label(fc.extension_score).lower()} ({fc.extension_score:.0f})")
                 extra_txt = f" [{', '.join(extra)}]" if extra else ""
                 status_lines.append(f"Intraday now: {dir_txt} ({fc.timestamp}){extra_txt}")
             else:
@@ -433,6 +435,8 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         atr=e.get("atr"),
                         momentum_score=e.get("momentum_score"),
                         extension_score=e.get("extension_score"),
+                        candle_30m_direction=e.get("candle_30m_direction"),
+                        candle_1h_direction=e.get("candle_1h_direction"),
                     )
         if last_fc:
             logger.info("Rehydrated today's forecast state from data/ (%s)", sorted(last_fc))

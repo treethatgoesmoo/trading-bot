@@ -6,6 +6,17 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-09-04 — Forecast post simplified; higher-timeframe candles added as context
+
+**Status:** ⚠️ display adjusted; 30m/1h candles are descriptive context only; divergence removed from the live vote
+
+- The forecast post now leads with the actionable 15m direction, completed 30m/1h candle direction, and plain-English momentum/stretch labels alongside their raw values. Price, VWAP, RSI, EMA, MACD, day range, individual signal rows, and visible `(w:...)` values were removed from this post because they made the read harder to interpret. Internal weights still determine the forecast and remain available in analytics; this is a presentation change, not an untested equal-vote rewrite.
+- Completed higher-timeframe candles are assembled from the already-fetched completed 15m bars, so no extra provider calls or incomplete-candle look-ahead are introduced. Frozen cross-asset testing (`backtest_timeframe_context.py`) found no next-15m predictive edge: 30m candle direction scored SPY 48.3%, QQQ 47.1%, IWM 46.9%, DIA 47.5%; 1h scored 50.3%, 49.4%, 49.0%, and 49.0%, respectively (n=774–816; all roughly at/below always-BULLISH drift). They are therefore explicitly context, not voters.
+- Pivot RSI divergence was removed from the live vote and post. In accumulated logs it was only 49.4% on 15m (n=154) and 51.0% on the muted 5m stream (n=259), with no robust cross-asset extension result. The detector remains solely for reproducing historical research.
+- Momentum labels now read Strong upward / Upward / Flat or weak / Downward / Strong downward. Stretch reads Low / Moderate / High; High explicitly says “reversal risk, not confirmation.” Every post says the turning point is not confirmed—the bot does not claim to know the exact peak or bottom.
+
+---
+
 ## 2026-08-15 — Momentum/extension (top/bottom) score: rejected as a predictive signal; live embed inaccurate-claim cleanup
 
 **Status:** ❌ rejected as a graded/predictive signal → kept only as a descriptive readout; separately, the live forecast embed's Confidence% and nightly Report Card were removed as uncalibrated/misleading

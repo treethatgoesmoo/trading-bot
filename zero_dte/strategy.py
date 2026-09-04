@@ -19,7 +19,6 @@ from config import (
     FORECAST_REPOST_CONFIDENCE_DELTA,
     FORECAST_VOLATILE_CONFIDENCE,
     RSI_DIV_LOOKBACK, RSI_PIVOT_ORDER,
-    RSI_DIV_RSI_GATE,
     RSI_OB_WARN, RSI_OS_WARN,
     TUNED_WEIGHT_FLOOR,
     VIX_FORECAST_WEIGHT,
@@ -38,10 +37,6 @@ INDICATOR_WEIGHTS = {
     "VWAP": 2.0,
     "MACD": 2.0,
     "MACD_Mom": 0.5,
-    # Modest default: the detector switched to pivot-based divergence (see
-    # _detect_divergence), so the old endpoint-compare backtest no longer
-    # justifies a top-tier weight. Retune from live results with tune_weights.py.
-    "Divergence": 1.5,
     "Volume": 1.0,
     "Momentum": 1.0,
     "VIX": VIX_FORECAST_WEIGHT,
@@ -166,7 +161,7 @@ class DirectionForecast:
     rsi_30m: float | None
     ema_direction: str | None
     macd_direction: str | None
-    divergence: str | None  # "BULLISH_DIV", "BEARISH_DIV", or None
+    divergence: str | None  # legacy/research field; no longer used by live forecasts
     signals: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)
     divergence_tf: str | None = None  # timeframe that showed it, e.g. "15m"/"5m"
@@ -187,7 +182,9 @@ class DirectionForecast:
     # a hit/miss without a fresh backtest clearing the same bar every other
     # stream here had to clear.
     momentum_score: float | None = None    # -100..+100, 3-bar price move in ATR units
-    extension_score: float | None = None   # 0..100, RSI/VWAP stretch + divergence-against-trend bonus
+    extension_score: float | None = None   # 0..100, RSI/VWAP stretch
+    candle_30m_direction: str | None = None  # latest completed 30m candle; context only
+    candle_1h_direction: str | None = None   # latest completed 1h candle; context only
 
 
 def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
@@ -250,7 +247,9 @@ def forecast_post_reason(fc: DirectionForecast,
     if fc.direction != prev.direction:
         return f"read changed: {prev.direction} → {fc.direction}"
     if abs(fc.confidence - prev.confidence) >= FORECAST_REPOST_CONFIDENCE_DELTA:
-        return f"confidence {prev.confidence:.0f}% → {fc.confidence:.0f}%"
+        # Confidence remains an internal change detector, not a calibrated
+        # probability shown to the user.
+        return "directional strength changed"
     # New session extreme since the last posted read (the tracked high/low
     # replaced the projected-range breach trigger when the day forecast was
     # removed). Small ticks over the old mark don't ping — 0.1% hysteresis.
@@ -434,17 +433,16 @@ def check_relative_volume(candles: pd.DataFrame, lookback: int = RVOL_LOOKBACK) 
 # directional/reversal predictors on real ATR-normalized SPY history and
 # found no robust cross-asset directional edge (docs/strategy-log.md,
 # 2026-08-15) — they are kept only as a "what does the current bar look like"
-# readout, same status as day_high/day_low. The score constants match the
-# backtest; the live divergence input can differ when its auxiliary 5m frame
-# is used, so research must still treat live logs as the source of truth.
+# readout, same status as day_high/day_low. Live extension now intentionally
+# excludes the rejected divergence component; research must treat logged live
+# scores, rather than reconstructed historical scores, as the source of truth.
 EXTENSION_ATR_CAP = 3.0    # ATR multiples of price-vs-VWAP distance treated as "fully extended" (score 100)
 MOMENTUM_ATR_CAP = 1.0     # ATR multiples of the 3-bar price move treated as "max velocity" (score 100)
-DIVERGENCE_SCORE_BONUS = 30
 
 
 def _momentum_extension(closes: pd.Series, rsi_val: float | None, vwap_val: float | None,
-                        current_price: float, atr_val: float | None,
-                        divergence: str | None) -> tuple[float | None, float | None]:
+                        current_price: float,
+                        atr_val: float | None) -> tuple[float | None, float | None]:
     """(momentum_score, extension_score) — see the module-level note above.
     Returns (None, None) when there isn't enough data (short session, no ATR
     yet) rather than a fabricated 0, so callers/embeds can tell "unknown"
@@ -461,16 +459,49 @@ def _momentum_extension(closes: pd.Series, rsi_val: float | None, vwap_val: floa
         if vwap_val:
             vwap_dist_atr = abs(current_price - vwap_val) / atr_val
             vwap_component = float(np.clip(vwap_dist_atr / EXTENSION_ATR_CAP, 0, 1) * 100)
-        call = ("BULLISH" if momentum_score > 0
-                else "BEARISH" if momentum_score < 0 else None)
-        against = call is not None and (
-            (divergence == "BULLISH_DIV" and call == "BEARISH")
-            or (divergence == "BEARISH_DIV" and call == "BULLISH")
-        )
-        bonus = DIVERGENCE_SCORE_BONUS if against else 0
-        extension_score = min(100.0, 0.5 * rsi_component + 0.5 * vwap_component + bonus)
+        extension_score = min(100.0, 0.5 * rsi_component + 0.5 * vwap_component)
 
     return round(momentum_score, 1), (round(extension_score, 1) if extension_score is not None else None)
+
+
+def _completed_timeframe_direction(candles: pd.DataFrame, base_interval: int,
+                                   target_interval: int) -> str | None:
+    """Direction of the latest fully assembled regular-session candle.
+
+    Higher-timeframe context is derived from already-fetched completed bars,
+    avoiding extra provider calls. It is display-only and never enters the
+    weighted forecast vote.
+    """
+    if candles.empty or target_interval % base_interval or target_interval <= base_interval:
+        return None
+    timestamps = pd.to_datetime(candles["timestamp"])
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    timestamps = timestamps.dt.tz_convert(ET)
+    offsets = timestamps.dt.hour * 60 + timestamps.dt.minute - (9 * 60 + 30)
+    regular = (offsets >= 0) & (offsets < 390)
+    frame = candles.loc[regular.values, ["open", "close"]].copy()
+    if frame.empty:
+        return None
+    frame["session"] = timestamps[regular].dt.date.to_numpy()
+    frame["offset"] = offsets[regular].to_numpy()
+    frame["bucket"] = (frame["offset"] // target_interval).astype(int)
+    needed = target_interval // base_interval
+    for _, group in reversed(list(frame.groupby(["session", "bucket"], sort=True))):
+        group = group.sort_values("offset")
+        expected_start = int(group["bucket"].iat[0]) * target_interval
+        expected_offsets = list(range(expected_start, expected_start + target_interval,
+                                      base_interval))
+        if len(group) != needed or group["offset"].astype(int).tolist() != expected_offsets:
+            continue
+        first_open = float(group["open"].iat[0])
+        last_close = float(group["close"].iat[-1])
+        if last_close > first_open:
+            return "BULLISH"
+        if last_close < first_open:
+            return "BEARISH"
+        return "NEUTRAL"
+    return None
 
 
 def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
@@ -620,35 +651,11 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         signals["MACD_Mom"] = "BULLISH" if macd_val > macd_prev else "BEARISH"
         weights["MACD_Mom"] = indicator_weights["MACD_Mom"]
 
-    # Divergence — pivot-based reversal signal, voted at face value.
-    # (The old endpoint-compare detector was inverted per its backtest; that
-    # inversion doesn't carry over to the pivot detector.)
-    # The forecast checks its own frame first, then falls back to 5m so the
-    # faster frame's divergence still enters the weighted vote. Live only:
-    # the backfill replay can't align a second timeframe.
-    divergence = _detect_divergence(closes, rsi_vals) if rsi_val is not None else None
-    divergence_tf = f"{interval}m" if divergence else None
-    if divergence is None and asof is None and client is not None and interval != 5:
-        try:
-            data_5m = await client.fetch_candles(ticker, interval="5", count=60)
-            if data_5m is not None and len(data_5m) >= 15:
-                closes_5m = data_5m["close"].astype(float)
-                rsi_5m = rsi_series(closes_5m, 14)
-                cur_5m = float(rsi_5m.iloc[-1])
-                div_5m = None if np.isnan(cur_5m) else _detect_divergence(closes_5m, rsi_5m)
-                # Watcher-style gate: only while RSI is still on the reversal
-                # side of 50 — past it the move already happened.
-                if ((div_5m == "BEARISH_DIV" and cur_5m >= RSI_DIV_RSI_GATE)
-                        or (div_5m == "BULLISH_DIV" and cur_5m <= RSI_DIV_RSI_GATE)):
-                    divergence, divergence_tf = div_5m, "5m"
-        except Exception:
-            pass
-    if divergence == "BULLISH_DIV":
-        signals["Divergence"] = "BULLISH"
-        weights["Divergence"] = indicator_weights["Divergence"]
-    elif divergence == "BEARISH_DIV":
-        signals["Divergence"] = "BEARISH"
-        weights["Divergence"] = indicator_weights["Divergence"]
+    # RSI divergence was removed from the live read and vote: its historical
+    # accuracy did not justify another directional label. The detector remains
+    # below only so frozen research scripts can reproduce the rejected test.
+    divergence = None
+    divergence_tf = None
 
     # Volume trend
     if len(volumes) >= 6:
@@ -679,7 +686,9 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
     # blending yesterday's closing bars into an "intraday" score.
     score_closes = today_data["close"].astype(float)
     momentum_score, extension_score = _momentum_extension(
-        score_closes, rsi_val, vwap_val, current_price, atr_val, divergence)
+        score_closes, rsi_val, vwap_val, current_price, atr_val)
+    candle_30m_direction = _completed_timeframe_direction(data, interval, 30)
+    candle_1h_direction = _completed_timeframe_direction(data, interval, 60)
 
     # VIX (inverse): rising VIX -> SPY bearish, falling -> bullish.
     # Live only — skipped when replaying historical data (asof set) since the
@@ -747,4 +756,6 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         atr=(round(atr_val, 4) if atr_val is not None else None),
         momentum_score=momentum_score,
         extension_score=extension_score,
+        candle_30m_direction=candle_30m_direction,
+        candle_1h_direction=candle_1h_direction,
     )

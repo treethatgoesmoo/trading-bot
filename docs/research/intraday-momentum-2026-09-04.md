@@ -27,6 +27,7 @@ python backtest_momentum_extension.py --ticker QQQ --interval 15 --refresh
 python backtest_momentum_extension.py --ticker IWM --interval 15 --refresh
 python backtest_momentum_extension.py --ticker DIA --interval 15 --refresh
 python backtest_open_close_momentum.py --ticker SPY
+python backtest_timeframe_context.py
 python analyze_session_thirds.py --stream 5
 python analyze_session_thirds.py --stream 15
 ```
@@ -54,4 +55,8 @@ The hashes identify the exact evidence but do not make ignored raw data independ
 - Opening-to-closing SPY test: 58 days, correlation +0.061, bootstrap 95% interval −0.253 to +0.281, directional agreement 41.4%.
 - Independent accumulated live logs through 2026-09-03 also weakened rather than strengthened the rolling forecast case. On exact paired directional rows, 15m forecast/baseline accuracy was 54.5%/54.5% at the open (n=33), 54.2%/51.2% midday (n=203), and 44.4%/52.4% near the close (n=63). The muted 5m stream was 62.3%/56.5% (n=69), 50.1%/50.3% (n=483), and 47.1%/55.6% (n=187), respectively. These repository logs use legacy grading schema 1 and are reported separately from schema 2.
 
-**Decision:** keep momentum/extension scores descriptive-only. Do not add them to the weighted forecast or post a new alert. The literature-aligned hypothesis remains research-only until a multi-year frozen dataset and untouched chronological holdout are available.
+### Higher-timeframe display follow-up
+
+Completed 30m and 1h candles were also tested as predictors of the exact next directional 15m outcome. The 30m accuracy was SPY 48.3%, QQQ 47.1%, IWM 46.9%, and DIA 47.5%; 1h was 50.3%, 49.4%, 49.0%, and 49.0% (n=774–816). None cleared the same-row always-BULLISH baseline robustly. They may be shown as backward-looking context but must not enter the forecast vote without new evidence.
+
+**Decision:** keep momentum/extension scores and completed higher-timeframe candles descriptive-only. Do not add them to the weighted forecast or post a new alert. The literature-aligned hypothesis remains research-only until a multi-year frozen dataset and untouched chronological holdout are available.
