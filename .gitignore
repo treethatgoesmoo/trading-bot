@@ -14,3 +14,5 @@ dashboard.html
 data/dashboard.html
 .api_budget.json
 .research-data/
+# Licensed ThetaData/OPRA research snapshots; never commit or redistribute.
+.thetadata-data/

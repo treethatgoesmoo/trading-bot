@@ -29,6 +29,32 @@ class FakeThetaClient:
             "price": [7700.25, 16.5],
         })
 
+    def index_history_ohlc(self, **kwargs):
+        return pd.DataFrame({
+            "timestamp": ["2026-09-04T09:30:00-04:00", "2026-09-04T09:31:00-04:00"],
+            "open": [7700.0, 7701.0], "high": [7702.0, 7703.0],
+            "low": [7699.0, 7700.0], "close": [7701.0, 7702.0],
+        })
+
+    def option_history_trade_quote(self, **kwargs):
+        return pd.DataFrame({
+            "symbol": ["SPXW"], "expiration": [kwargs["expiration"]],
+            "strike": [7700.0], "right": ["call"],
+            "trade_timestamp": ["2026-09-04T10:00:01-04:00"],
+            "quote_timestamp": ["2026-09-04T10:00:00.500-04:00"],
+            "sequence": [42], "condition": [0], "size": [3], "exchange": [5],
+            "price": [8.5], "bid_size": [10], "bid": [8.0],
+            "ask_size": [12], "ask": [8.5],
+        })
+
+    def option_history_quote(self, **kwargs):
+        return pd.DataFrame({
+            "timestamp": ["2026-09-04T10:15:00-04:00"],
+            "symbol": ["SPXW"], "expiration": [kwargs["expiration"]],
+            "strike": [float(kwargs["strike"])], "right": [kwargs["right"]],
+            "bid_size": [7], "bid": [9.0], "ask_size": [8], "ask": [9.4],
+        })
+
     def option_snapshot_quote(self, **kwargs):
         return pd.DataFrame({
             "timestamp": ["2026-09-04T14:00:00Z", "2026-09-04T14:00:00Z"],
@@ -48,6 +74,7 @@ class FakeThetaClient:
             "expiration": [kwargs["expiration"], kwargs["expiration"]],
             "strike": [7700.0, 7700.0],
             "right": ["call", "put"],
+            "timestamp": ["2026-09-04T14:00:00Z"] * 2,
             "delta": [0.51, -0.49],
             "theta": [-1.2, -1.1],
             "vega": [0.4, 0.4],
@@ -95,6 +122,24 @@ class ThetaDataClientTests(unittest.TestCase):
             client.list_expirations("SPX"),
             [date(2026, 9, 4), date(2026, 9, 5)],
         )
+
+    def test_historical_index_and_trade_quote_normalization(self):
+        client = ThetaDataClient(client=FakeThetaClient())
+        bars = client.index_history_ohlc(date(2026, 9, 4))
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[-1].close, 7702.0)
+        trades = client.option_trade_quotes(date(2026, 9, 4), strike_range=3)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0].symbol, "SPXW")
+        self.assertEqual(trades[0].sequence, 42)
+        self.assertEqual(trades[0].size, 3)
+        self.assertEqual(trades[0].trade_timestamp.tzinfo, timezone.utc)
+        quotes = client.option_quote_history(
+            date(2026, 9, 4), expiration=date(2026, 9, 4), strike=7700,
+            right="call",
+        )
+        self.assertEqual(quotes[0].bid, 9.0)
+        self.assertEqual(quotes[0].timestamp.hour, 14)
 
     def test_option_snapshot_uses_nbbo_and_merges_standard_details(self):
         client = ThetaDataClient(client=FakeThetaClient())

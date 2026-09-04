@@ -10,6 +10,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DATA_DIR = os.path.join(ROOT, "data")
 LOGS_DIR = os.path.join(ROOT, "logs")
+# Licensed ThetaData/OPRA snapshots are local-only and must never enter data/.
+THETADATA_DATA_DIR = os.path.join(ROOT, ".thetadata-data")
 
 WATCHLIST_FILE = os.path.join(ROOT, ".watchlist.json")
 SWING_WATCHLIST_FILE = os.path.join(ROOT, ".swing_watchlist.json")
