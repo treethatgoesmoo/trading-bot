@@ -69,6 +69,9 @@ def log_forecast(ticker: str, forecast, now: datetime) -> dict:
         # reconstructing from categorical fields, not because they're graded now.
         "momentum_score": getattr(forecast, "momentum_score", None),
         "extension_score": getattr(forecast, "extension_score", None),
+        # Display-only higher-timeframe context derived from completed bars.
+        "candle_30m_direction": getattr(forecast, "candle_30m_direction", None),
+        "candle_1h_direction": getattr(forecast, "candle_1h_direction", None),
     }
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")

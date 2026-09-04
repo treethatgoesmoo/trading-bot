@@ -50,6 +50,7 @@ python analyze_days.py                        # per-day accuracy summary
 python analyze_session_thirds.py --stream 15  # paired forecast-vs-drift results by session third
 python backtest_momentum_extension.py --ticker SPY --interval 15  # frozen, same-session next-bar research
 python backtest_open_close_momentum.py --ticker SPY  # Gao et al. opening->closing-half-hour experiment
+python backtest_timeframe_context.py             # completed 30m/1h candle context vs next 15m
 
 # regression + import smoke tests after structural changes
 python -m unittest discover -s tests -v
