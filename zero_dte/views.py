@@ -8,19 +8,14 @@ break-and-retest trade alerts — were removed along with that feature. The
 MenuView's Bias/Range/Test buttons were removed for the same reason.)
 """
 
-from datetime import datetime
-
 import discord
-import pytz
-
-ET = pytz.timezone("US/Eastern")
 
 from zero_dte.strategy import DirectionForecast
 from zero_dte.tracker import log_user_vote
 
 
 class ForecastView(discord.ui.View):
-    """Agree/Disagree buttons on a forecast — votes are scored at end of day."""
+    """Agree/Disagree buttons; votes are logged for possible future stats."""
 
     def __init__(self, ticker: str, forecast: DirectionForecast, forecast_time_iso: str):
         super().__init__(timeout=4 * 3600)
@@ -36,7 +31,7 @@ class ForecastView(discord.ui.View):
         log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
                       user_dir, interaction.user.name)
         if user_dir:
-            msg = f"Logged: you agree with **{user_dir}** on {self.ticker}. Scored at 4 PM."
+            msg = f"Logged: you agree with **{user_dir}** on {self.ticker}."
         else:
             msg = f"Logged your agree on a {self.forecast.direction} forecast (not scored)."
         await interaction.response.send_message(msg, ephemeral=True)
@@ -52,42 +47,16 @@ class ForecastView(discord.ui.View):
         log_user_vote(self.ticker, self.forecast_time_iso, self.forecast.direction,
                       user_dir, interaction.user.name)
         if user_dir:
-            msg = f"Logged: you disagree — your call is **{user_dir}** on {self.ticker}. Scored at 4 PM."
+            msg = f"Logged: you disagree — your call is **{user_dir}** on {self.ticker}."
         else:
             msg = f"Logged your disagree on a {self.forecast.direction} forecast (not scored)."
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-class ReportDetailsView(discord.ui.View):
-    """View Details button on the daily forecast report card."""
-
-    def __init__(self, ticker: str, date_str: str, results: list[dict]):
-        super().__init__(timeout=86400)
-        self.ticker = ticker
-        self.date_str = date_str
-        self.results = results
-
-    @discord.ui.button(label="🔎 View Details", style=discord.ButtonStyle.primary)
-    async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title=f"Forecast Details — {self.ticker} ({self.date_str})",
-            color=0x5865F2,
-        )
-        lines = []
-        for r in self.results:
-            ftime = datetime.fromisoformat(r["time"]).astimezone(ET).strftime("%I:%M %p")
-            if r.get("correct") is None:
-                icon = "\U0001f7e1"
-            elif r["correct"]:
-                icon = "✅"
-            else:
-                icon = "❌"
-            sigs = " ".join(f"{k}={v[:4]}" for k, v in r.get("signals", {}).items())
-            lines.append(f"{icon} **{ftime}** {r['direction']} ({r['confidence']}%) -> {r['actual']} ({r['move']:+.2f})\n   {sigs}")
-        for i in range(0, len(lines), 10):
-            embed.add_field(name=f"Forecasts {i + 1}-{min(i + 10, len(lines))}",
-                            value="\n".join(lines[i:i + 10])[:1024], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+# ReportDetailsView (the report card's "View Details" button) was removed
+# 2026-08-15 along with forecast_results_embed — see zero_dte/embeds.py.
+# Grading remains active; review data/results-*.json, !stats, or
+# dashboard.py instead (new rows use the schema-v2 signal-time ATR boundary).
 
 
 class MenuView(discord.ui.View):

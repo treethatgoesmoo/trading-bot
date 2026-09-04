@@ -14,7 +14,7 @@ Two features run side by side:
 
 Both features grade their own predictions against actuals and feed a self-tuning loop.
 
-There is no test suite and no linter. Verify changes by running the relevant script (a backtest for strategy changes, the import/assembly smoke tests below for refactors).
+There is a small `unittest`/pytest regression suite but no linter. Run `python -m unittest discover -s tests -v`, then verify strategy changes with the relevant backtest and structural changes with the import/assembly smoke test below.
 
 ## AI workflow commands
 
@@ -47,8 +47,12 @@ python dashboard.py 30 --open                 # HTML performance dashboard from 
 python tune_weights.py --days 20 --write      # retune 0DTE forecast weights → data/indicator_weights.json
 python tune_swing_weights.py --write          # retune swing weights → data/swing_weights.json
 python analyze_days.py                        # per-day accuracy summary
+python analyze_session_thirds.py --stream 15  # paired forecast-vs-drift results by session third
+python backtest_momentum_extension.py --ticker SPY --interval 15  # frozen, same-session next-bar research
+python backtest_open_close_momentum.py --ticker SPY  # Gao et al. opening->closing-half-hour experiment
 
-# quick smoke test after structural changes
+# regression + import smoke tests after structural changes
+python -m unittest discover -s tests -v
 python -c "import main, bot.core, zero_dte.cog, swing.cog, core.analytics"
 ```
 
