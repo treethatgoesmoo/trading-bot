@@ -20,6 +20,9 @@ SWING_ENABLED = _flag("SWING_ENABLED")
 # API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+# ThetaData v3 direct Python client (Python 3.12+; no local Java terminal).
+# Prefer a revocable API key over storing the account password.
+THETADATA_API_KEY = os.getenv("THETADATA_API_KEY", "")
 
 # Rate limits
 TWELVEDATA_CALLS_PER_MIN = 7
