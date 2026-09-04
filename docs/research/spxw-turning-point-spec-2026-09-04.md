@@ -1,7 +1,9 @@
 # SPXW turning-point and option-flow research specification
 
-**Status:** Proposed research/shadow feature only. No live voter, trade alert, or
-contract recommendation is authorized by this document.
+**Status:** Experimental live shadow authorized by the owner on 2026-09-04,
+disabled by default. It is isolated from the forecast voter, never executes an
+order, and may show only explicitly paper-only observations/candidates. No
+predictive or executable edge has been established.
 
 ## User constraints
 
@@ -73,7 +75,7 @@ rule is allowed, primary OPRA trade-condition codes and likely complex-order
 prints must be profiled rather than silently treated as simple directional
 orders.
 
-## Candidate state machine (to be implemented after collection)
+## Candidate state machine (provisional live-shadow implementation)
 
 Continuous features are stored before thresholds are tuned: distance to each
 level, VWAP deviation, SMA20/SMA200 distance and slope, ATR, relative volume,
@@ -92,9 +94,16 @@ to produce follow-through or flow reverses. A bottom is symmetric. Multiple
 completed closes beyond the level with continued progress become **trend
 continuation**, never an automatic fade. Everything else is **WAIT**.
 
-Exact proximity, strong-flow, failed-progress, and bar-count thresholds will be
-fixed using only a chronological training partition, then frozen for validation
-and a final untouched holdout.
+The owner requested immediate live paper testing before historical validation.
+The provisional implementation therefore fixes, rather than tunes, these
+starting values: 2.5 SPX points of level proximity, 3.0 VWAP deviations, 0.5
+SPX points of five-minute momentum, 15% directional-flow imbalance, one point
+of rejection, and two points of acceptance. Potential tops must actually trade
+at/above the watched level and potential bottoms at/below it. Episodes expire
+after ten minutes. Only condition-code 0 option prints contribute directional
+premium until the frozen condition profile is reviewed; at least 25 prints and
+20% classifiable flow are required. These choices are hypotheses, not evidence,
+and must be replayed unchanged before any wording is upgraded.
 
 ## Contract policy for shadow decisions
 
@@ -125,10 +134,20 @@ presented as established profitable values.
   fade, and same-time random-direction baselines.
 - Split chronologically by session. Tune on training days only; evaluate once
   on a frozen untouched holdout with day-clustered uncertainty.
-- Then run prospectively in silent shadow mode. Discord recommendations remain
-  disabled unless both holdout and shadow ask-to-bid returns show useful edge,
-  adequate sample size, and acceptable drawdown. No result authorizes order
-  execution.
+- The owner elected to expose the prospective shadow state in Discord before
+  holdout testing. Every message is marked experimental/paper-only, the feature
+  is disabled by default, `!spxflow` only reads the latest cached sample, and raw
+  OPRA rows remain in memory. Automatic posts are change-driven and stop at
+  least 30 minutes before close.
+- Posted observations are persisted only under ignored
+  `.thetadata-data/shadow` and receive SPX direction outcomes after 15 and 30
+  minutes. A displayed paper contract is graded from its signal-time ask to the
+  first valid bid from exact contract quote history at each horizon. Missing
+  exits remain explicit.
+- Wording may not be upgraded from paper-only and the feature may not enter the
+  forecast voter unless chronological holdout plus prospective ask-to-bid
+  results show useful edge, adequate sample size, and acceptable drawdown. No
+  result authorizes order execution.
 
 ## Collection
 

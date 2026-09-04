@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
+import math
 from typing import Iterable, Sequence
 
 from core.market_calendar import ET, is_trading_day
@@ -23,6 +24,17 @@ class Aggressor(str, Enum):
     BID = "BID"
     MID = "MID"
     INVALID = "INVALID"
+
+
+class TurningState(str, Enum):
+    """Paper-only state labels; none claims the exact session extreme."""
+
+    WAIT = "WAIT"
+    POTENTIAL_TOP = "POTENTIAL_TOP"
+    TOP_CONFIRMED = "TOP_CONFIRMED"
+    POTENTIAL_BOTTOM = "POTENTIAL_BOTTOM"
+    BOTTOM_CONFIRMED = "BOTTOM_CONFIRMED"
+    TREND_CONTINUATION = "TREND_CONTINUATION"
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,35 @@ class FlowSummary:
     @property
     def classified_pct(self) -> float:
         return self.classified_trades / self.total_trades * 100.0 if self.total_trades else 0.0
+
+
+@dataclass(frozen=True)
+class ProvisionalTurningThresholds:
+    """Explicit starting rules for live shadow observation, not tuned values."""
+
+    level_proximity_points: float = 2.5
+    vwap_extension_z: float = 3.0
+    minimum_momentum_points: float = 0.5
+    strong_flow_ratio: float = 0.15
+    reversal_flow_ratio: float = 0.05
+    minimum_classified_pct: float = 20.0
+    minimum_classified_trades: int = 25
+    rejection_points: float = 1.0
+    acceptance_points: float = 2.0
+
+
+@dataclass(frozen=True)
+class TurningPointAssessment:
+    state: TurningState
+    level: KeyLevel | None
+    momentum_points: float
+    vwap_z: float | None
+    flow_ratio: float
+    reason: str
+
+    @property
+    def is_confirmed_reversal(self) -> bool:
+        return self.state in {TurningState.TOP_CONFIRMED, TurningState.BOTTOM_CONFIRMED}
 
 
 @dataclass(frozen=True)
@@ -107,7 +148,8 @@ def infer_aggressor(trade: OptionTradeQuote, *, max_quote_age_seconds: float = 2
 
 
 def summarize_option_flow(
-    trades: Iterable[OptionTradeQuote], *, max_quote_age_seconds: float = 2.0
+    trades: Iterable[OptionTradeQuote], *, max_quote_age_seconds: float = 2.0,
+    allowed_condition_codes: frozenset[int] = frozenset({0}),
 ) -> FlowSummary:
     """Aggregate classified call/put premium into an inferred direction.
 
@@ -120,6 +162,11 @@ def summarize_option_flow(
     total = classified = 0
     for trade in trades:
         total += 1
+        # Until the frozen OPRA condition profile is reviewed, only ordinary
+        # condition-0 prints may contribute directional premium. Complex,
+        # corrected, auction, and unknown prints remain in the quality count.
+        if trade.condition not in allowed_condition_codes:
+            continue
         side = infer_aggressor(trade, max_quote_age_seconds=max_quote_age_seconds)
         key = (trade.right, side)
         if key not in buckets:
@@ -132,6 +179,110 @@ def summarize_option_flow(
     put_bid = buckets[("put", Aggressor.BID)]
     net = call_ask + put_bid - call_bid - put_ask
     return FlowSummary(total, classified, call_ask, call_bid, put_ask, put_bid, net)
+
+
+def assess_turning_point(
+    *,
+    price: float,
+    recent_prices: Sequence[float],
+    vwap_z: float | None,
+    flow: FlowSummary,
+    levels: Sequence[KeyLevel],
+    previous_state: TurningState = TurningState.WAIT,
+    watched_level: KeyLevel | None = None,
+    thresholds: ProvisionalTurningThresholds = ProvisionalTurningThresholds(),
+) -> TurningPointAssessment:
+    """Apply provisional, paper-only turning-point state transitions.
+
+    A potential state needs level contact, a 3-sigma VWAP extension, momentum
+    into the level, and aligned inferred option flow. A confirmed reversal can
+    only follow the matching potential state at the same watched level. Moving
+    through that level with continued momentum is continuation, not a fade.
+    """
+    usable_prices = [float(value) for value in recent_prices if math.isfinite(float(value))]
+    momentum = price - usable_prices[0] if usable_prices else 0.0
+    components = (
+        flow.call_ask_premium + flow.call_bid_premium
+        + flow.put_ask_premium + flow.put_bid_premium
+    )
+    flow_ratio = flow.net_directional_premium / components if components > 0 else 0.0
+
+    def result(state: TurningState, level: KeyLevel | None, reason: str) -> TurningPointAssessment:
+        return TurningPointAssessment(
+            state, level, round(momentum, 4), vwap_z, round(flow_ratio, 4), reason
+        )
+
+    if not math.isfinite(price) or price <= 0:
+        return result(TurningState.WAIT, None, "WAIT: invalid SPX price")
+    if previous_state in {TurningState.POTENTIAL_TOP, TurningState.POTENTIAL_BOTTOM}:
+        if watched_level is None:
+            return result(TurningState.WAIT, None, "WAIT: potential state has no watched level")
+        level_price = watched_level.price
+        if previous_state == TurningState.POTENTIAL_TOP:
+            reversed_read = (
+                momentum <= -thresholds.minimum_momentum_points
+                or flow_ratio <= -thresholds.reversal_flow_ratio
+            )
+            if price <= level_price - thresholds.rejection_points and reversed_read:
+                return result(
+                    TurningState.TOP_CONFIRMED, watched_level,
+                    "Paper-only rejection: price returned below resistance with momentum/flow reversal",
+                )
+            if (price >= level_price + thresholds.acceptance_points
+                    and momentum >= thresholds.minimum_momentum_points):
+                return result(
+                    TurningState.TREND_CONTINUATION, watched_level,
+                    "Price accepted above resistance; do not fade the move",
+                )
+        else:
+            reversed_read = (
+                momentum >= thresholds.minimum_momentum_points
+                or flow_ratio >= thresholds.reversal_flow_ratio
+            )
+            if price >= level_price + thresholds.rejection_points and reversed_read:
+                return result(
+                    TurningState.BOTTOM_CONFIRMED, watched_level,
+                    "Paper-only bounce: price returned above support with momentum/flow reversal",
+                )
+            if (price <= level_price - thresholds.acceptance_points
+                    and momentum <= -thresholds.minimum_momentum_points):
+                return result(
+                    TurningState.TREND_CONTINUATION, watched_level,
+                    "Price accepted below support; do not fade the move",
+                )
+        if abs(price - level_price) <= thresholds.level_proximity_points * 2:
+            return result(previous_state, watched_level, "Potential setup remains unconfirmed")
+
+    if not levels:
+        return result(TurningState.WAIT, None, "WAIT: no prior-known level is available")
+    nearest = min(levels, key=lambda level: abs(level.price - price))
+    touching = abs(nearest.price - price) <= thresholds.level_proximity_points
+    if not touching or vwap_z is None or not math.isfinite(vwap_z):
+        return result(TurningState.WAIT, nearest, "WAIT: no extended level test")
+    if (flow.classified_trades < thresholds.minimum_classified_trades
+            or flow.classified_pct < thresholds.minimum_classified_pct):
+        return result(TurningState.WAIT, nearest, "WAIT: insufficient classifiable option flow")
+    if (
+        price >= nearest.price
+        and vwap_z >= thresholds.vwap_extension_z
+        and momentum >= thresholds.minimum_momentum_points
+        and flow_ratio >= thresholds.strong_flow_ratio
+    ):
+        return result(
+            TurningState.POTENTIAL_TOP, nearest,
+            "Potential top: extended rise and bullish flow reached a known level; rejection not confirmed",
+        )
+    if (
+        price <= nearest.price
+        and vwap_z <= -thresholds.vwap_extension_z
+        and momentum <= -thresholds.minimum_momentum_points
+        and flow_ratio <= -thresholds.strong_flow_ratio
+    ):
+        return result(
+            TurningState.POTENTIAL_BOTTOM, nearest,
+            "Potential bottom: extended decline and bearish flow reached a known level; bounce not confirmed",
+        )
+    return result(TurningState.WAIT, nearest, "WAIT: level, extension, momentum, and flow do not align")
 
 
 def build_key_levels(

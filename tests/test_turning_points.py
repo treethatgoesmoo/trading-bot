@@ -6,7 +6,11 @@ from datetime import date, datetime, timedelta, timezone
 from core.thetadata_client import OptionSnapshot, OptionTradeQuote
 from zero_dte.turning_points import (
     Aggressor,
+    FlowSummary,
+    KeyLevel,
     SessionOHLC,
+    TurningState,
+    assess_turning_point,
     build_key_levels,
     infer_aggressor,
     select_contract,
@@ -70,6 +74,91 @@ class OptionFlowTests(unittest.TestCase):
         self.assertEqual(summary.classified_trades, 4)
         self.assertAlmostEqual(summary.net_directional_premium, 0.0)
         self.assertEqual(summary.classified_pct, 100.0)
+
+        special = OptionTradeQuote(**{**trade(price=2.0).__dict__, "condition": 125})
+        filtered = summarize_option_flow([trade(price=2.0), special])
+        self.assertEqual(filtered.total_trades, 2)
+        self.assertEqual(filtered.classified_trades, 1)
+
+
+class TurningPointAssessmentTests(unittest.TestCase):
+    level = KeyLevel(7700.0, "Round level 7700", "round")
+    bullish_flow = FlowSummary(100, 80, 800_000, 50_000, 50_000, 100_000, 800_000)
+    bearish_flow = FlowSummary(100, 80, 50_000, 100_000, 800_000, 50_000, -800_000)
+
+    def test_requires_extended_level_contact_momentum_and_aligned_flow(self):
+        top = assess_turning_point(
+            price=7700.5, recent_prices=[7699.0, 7700.5], vwap_z=3.2,
+            flow=self.bullish_flow, levels=[self.level],
+        )
+        self.assertEqual(top.state, TurningState.POTENTIAL_TOP)
+        self.assertFalse(top.is_confirmed_reversal)
+        self.assertEqual(top.level, self.level)
+
+        no_extension = assess_turning_point(
+            price=7700.5, recent_prices=[7699.0, 7700.5], vwap_z=2.9,
+            flow=self.bullish_flow, levels=[self.level],
+        )
+        self.assertEqual(no_extension.state, TurningState.WAIT)
+
+        low_quality = FlowSummary(1000, 10, 800_000, 50_000, 50_000, 100_000, 800_000)
+        insufficient = assess_turning_point(
+            price=7700.5, recent_prices=[7699.0, 7700.5], vwap_z=3.2,
+            flow=low_quality, levels=[self.level],
+        )
+        self.assertEqual(insufficient.state, TurningState.WAIT)
+        self.assertIn("classifiable", insufficient.reason)
+
+        never_reached = assess_turning_point(
+            price=7698.0, recent_prices=[7697.0, 7698.0], vwap_z=3.2,
+            flow=self.bullish_flow, levels=[self.level],
+        )
+        self.assertEqual(never_reached.state, TurningState.WAIT)
+
+    def test_top_requires_prior_potential_then_rejection(self):
+        direct = assess_turning_point(
+            price=7698.5, recent_prices=[7700.0, 7698.5], vwap_z=2.5,
+            flow=self.bearish_flow, levels=[self.level],
+        )
+        self.assertEqual(direct.state, TurningState.WAIT)
+
+        confirmed = assess_turning_point(
+            price=7698.5, recent_prices=[7700.0, 7698.5], vwap_z=2.5,
+            flow=self.bearish_flow, levels=[self.level],
+            previous_state=TurningState.POTENTIAL_TOP, watched_level=self.level,
+        )
+        self.assertEqual(confirmed.state, TurningState.TOP_CONFIRMED)
+        self.assertTrue(confirmed.is_confirmed_reversal)
+
+    def test_bottom_requires_prior_potential_then_bounce(self):
+        potential = assess_turning_point(
+            price=7699.5, recent_prices=[7701.0, 7699.5], vwap_z=-3.2,
+            flow=self.bearish_flow, levels=[self.level],
+        )
+        self.assertEqual(potential.state, TurningState.POTENTIAL_BOTTOM)
+
+        confirmed = assess_turning_point(
+            price=7701.5, recent_prices=[7699.5, 7701.5], vwap_z=-2.4,
+            flow=self.bullish_flow, levels=[self.level],
+            previous_state=potential.state, watched_level=potential.level,
+        )
+        self.assertEqual(confirmed.state, TurningState.BOTTOM_CONFIRMED)
+
+    def test_acceptance_beyond_watched_level_is_continuation_not_reversal(self):
+        above = assess_turning_point(
+            price=7702.5, recent_prices=[7700.0, 7702.5], vwap_z=3.5,
+            flow=self.bullish_flow, levels=[self.level],
+            previous_state=TurningState.POTENTIAL_TOP, watched_level=self.level,
+        )
+        self.assertEqual(above.state, TurningState.TREND_CONTINUATION)
+        self.assertIn("do not fade", above.reason)
+
+        below = assess_turning_point(
+            price=7697.5, recent_prices=[7700.0, 7697.5], vwap_z=-3.5,
+            flow=self.bearish_flow, levels=[self.level],
+            previous_state=TurningState.POTENTIAL_BOTTOM, watched_level=self.level,
+        )
+        self.assertEqual(below.state, TurningState.TREND_CONTINUATION)
 
 
 class ContractSelectionTests(unittest.TestCase):

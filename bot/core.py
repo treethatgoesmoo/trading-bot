@@ -14,7 +14,9 @@ from config import (
     COMMAND_PREFIX,
     DISCORD_TOKEN,
     POLL_INTERVAL_SECONDS,
+    SPX_FLOW_ENABLED,
     SWING_ENABLED,
+    THETADATA_API_KEY,
     ZERO_DTE_ENABLED,
 )
 from core.git_sync import get_version
@@ -42,8 +44,9 @@ async def run_bot():
     @bot.event
     async def on_ready():
         logger.info("Bot connected as %s (ID: %s) | Version: %s", bot.user, bot.user.id, get_version())
-        logger.info("Config: channel=%s poll=%ds | features: zero_dte=%s swing=%s",
-                    ALERT_CHANNEL_ID, POLL_INTERVAL_SECONDS, ZERO_DTE_ENABLED, SWING_ENABLED)
+        logger.info("Config: channel=%s poll=%ds | features: zero_dte=%s swing=%s spx_flow=%s",
+                    ALERT_CHANNEL_ID, POLL_INTERVAL_SECONDS, ZERO_DTE_ENABLED,
+                    SWING_ENABLED, SPX_FLOW_ENABLED)
         logger.info("Data sources: TwelveData=%s Finnhub=%s yfinance=always",
                     "configured" if client.twelvedata_limiter else "not set",
                     "configured" if client.finnhub_limiter else "not set")
@@ -57,6 +60,13 @@ async def run_bot():
         if SWING_ENABLED:
             from swing.cog import SwingCog
             await bot.add_cog(SwingCog(bot, client))
+        if SPX_FLOW_ENABLED:
+            if not THETADATA_API_KEY:
+                logger.error("SPX flow watch enabled but THETADATA_API_KEY is missing; feature not started")
+            else:
+                from core.thetadata_client import ThetaDataClient
+                from zero_dte.flow_cog import SPXFlowCog
+                await bot.add_cog(SPXFlowCog(bot, client, ThetaDataClient()))
         try:
             await bot.start(DISCORD_TOKEN)
         finally:

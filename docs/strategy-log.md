@@ -6,6 +6,19 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ---
 
+## 2026-09-04 — Experimental SPXW turning-point watch enabled for paper-only live testing
+
+**Status:** ⚠️ prospective shadow experiment only; default-off; no forecast vote or validated recommendation
+
+- Owner requested immediate Discord testing after the production Pi successfully collected a complete session: 391 SPX minute bars and 100,997 deduplicated SPXW trade/preceding-NBBO rows across 13 bounded windows for 2026-09-04. This validates data access and processing, not predictive edge.
+- Added an isolated `SPXFlowCog`, gated by `SPX_FLOW_ENABLED=0` by default. It polls fresh SPX snapshots and two-minute near-ATM SPXW history off the Discord event loop, deduplicates a five-minute in-memory flow window, refreshes completed SPY one-minute VWAP context every five minutes, and does not modify the existing SPY forecast ensemble.
+- Provisional potential setups require an actual level touch/sweep, absolute 3.0 weighted VWAP deviations, five-minute price momentum, and aligned option flow. A rejection/bounce can occur only after a matching potential episode; acceptance beyond the level is explicitly `TREND_CONTINUATION` rather than an automatic fade. Episodes expire after ten minutes. Live levels initially include current open, complete previous-session OHLC when available, and nearby 25-point round levels; the full weekly/monthly framework is not implied.
+- To reduce unsupported OPRA intent claims, only condition-code 0 prints with a preceding valid NBBO may contribute directional premium; at least 25 classified prints and 20% classifiable share are required. This conservative filter is provisional pending a full frozen condition-code/premium profile.
+- Automatic Discord posts are change-driven, stop 30 minutes before the calendar-aware close, and are visibly marked experimental/paper-only. `!spxflow` reads the latest cached sample and cannot mutate the state machine. A paper contract appears only after an observed rejection/bounce and must satisfy 0DTE, ask ≤$10, positive fresh NBBO/size, spread ≤12%, and absolute delta 0.30–0.65.
+- Every posted observation is stored under ignored `.thetadata-data/shadow` and graded on SPX direction after 15 and 30 minutes. Displayed paper contracts are graded conservatively from signal ask to the first valid exact-contract bid at each horizon. This live record must show value over price-only baselines before the feature can lose its experimental wording or influence another signal.
+
+---
+
 ## 2026-09-04 — Forecast post simplified; higher-timeframe candles added as context
 
 **Status:** ⚠️ display adjusted; 30m/1h candles are descriptive context only; divergence removed from the live vote
