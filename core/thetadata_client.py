@@ -261,40 +261,63 @@ class ThetaDataClient:
         except Exception as exc:
             raise ThetaDataError(f"ThetaData option trade/quote history failed: {exc}") from exc
 
+        if frame.empty:
+            return []
+        # A full OPRA window can contain hundreds of thousands of rows. Parse
+        # columns once, then use itertuples; per-row iterrows/pd.to_datetime was
+        # prohibitively slow on the deployment Pi.
+        required = {
+            "symbol", "expiration", "strike", "right", "trade_timestamp",
+            "quote_timestamp", "size", "price", "bid", "ask",
+        }
+        if missing := required.difference(frame.columns):
+            raise ThetaDataError(f"ThetaData trade/quote response missing columns: {sorted(missing)}")
+        frame["expiration"] = pd.to_datetime(frame["expiration"], errors="coerce").dt.date
+        frame["trade_timestamp"] = _utc_timestamp_column(frame["trade_timestamp"])
+        frame["quote_timestamp"] = _utc_timestamp_column(frame["quote_timestamp"])
+        frame["symbol"] = frame["symbol"].astype(str).str.upper()
+        frame["right"] = frame["right"].astype(str).str.lower()
+        for column in ("strike", "size", "price", "bid_size", "bid", "ask_size", "ask",
+                       "sequence", "condition", "exchange"):
+            if column not in frame:
+                frame[column] = 0 if column in {"bid_size", "ask_size", "sequence"} else float("nan")
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        valid = (
+            frame["expiration"].notna()
+            & frame["trade_timestamp"].notna()
+            & frame["strike"].notna()
+            & frame["price"].notna()
+            & frame["size"].gt(0)
+            & frame["right"].isin(("call", "put"))
+            & frame["symbol"].ne("")
+        )
+        frame = frame.loc[valid].copy()
+        frame["sequence"] = frame["sequence"].fillna(0).astype("int64")
+        frame = frame.drop_duplicates(
+            subset=["symbol", "expiration", "strike", "right", "trade_timestamp", "sequence", "exchange"]
+        ).sort_values(["trade_timestamp", "sequence", "exchange"], na_position="first")
+
         records: list[OptionTradeQuote] = []
-        seen: set[tuple[str, date, float, str, datetime, int, int | None]] = set()
-        for _, row in frame.iterrows():
-            key = _contract_key(row)
-            trade_stamp = _optional_datetime(row.get("trade_timestamp"))
-            price = _optional_float(row.get("price"))
-            size = _optional_int(row.get("size"))
-            if key is None or trade_stamp is None or price is None or size is None or size <= 0:
-                continue
-            contract_symbol, expiry, strike, contract_right = key
-            sequence = _optional_int(row.get("sequence")) or 0
-            exchange = _optional_int(row.get("exchange"))
-            identity = (contract_symbol, expiry, strike, contract_right, trade_stamp, sequence, exchange)
-            if identity in seen:
-                continue
-            seen.add(identity)
+        for row in frame.itertuples(index=False):
             records.append(OptionTradeQuote(
-                symbol=contract_symbol,
-                expiration=expiry,
-                strike=strike,
-                right=contract_right,
-                trade_timestamp=trade_stamp,
-                quote_timestamp=_optional_datetime(row.get("quote_timestamp")),
-                sequence=sequence,
-                condition=_optional_int(row.get("condition")),
-                size=size,
-                exchange=exchange,
-                price=price,
-                bid_size=_optional_int(row.get("bid_size")) or 0,
-                bid=_float_or_zero(row.get("bid")),
-                ask_size=_optional_int(row.get("ask_size")) or 0,
-                ask=_float_or_zero(row.get("ask")),
+                symbol=row.symbol,
+                expiration=row.expiration,
+                strike=float(row.strike),
+                right=row.right,
+                trade_timestamp=row.trade_timestamp.to_pydatetime(),
+                quote_timestamp=(row.quote_timestamp.to_pydatetime()
+                                 if pd.notna(row.quote_timestamp) else None),
+                sequence=int(row.sequence),
+                condition=_optional_int(row.condition),
+                size=int(row.size),
+                exchange=_optional_int(row.exchange),
+                price=float(row.price),
+                bid_size=_optional_int(row.bid_size) or 0,
+                bid=_float_or_zero(row.bid),
+                ask_size=_optional_int(row.ask_size) or 0,
+                ask=_float_or_zero(row.ask),
             ))
-        return sorted(records, key=lambda item: (item.trade_timestamp, item.sequence, item.exchange or -1))
+        return records
 
     def option_quote_history(
         self,
@@ -475,6 +498,14 @@ def _optional_float(value: Any) -> float | None:
 def _optional_int(value: Any) -> int | None:
     parsed = _optional_float(value)
     return int(parsed) if parsed is not None else None
+
+
+def _utc_timestamp_column(values: pd.Series) -> pd.Series:
+    """Vectorized aware-to-UTC conversion; ambiguous naïve values become NaT."""
+    parsed = pd.to_datetime(values, errors="coerce")
+    if not isinstance(parsed.dtype, pd.DatetimeTZDtype):
+        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns, UTC]")
+    return parsed.dt.tz_convert("UTC")
 
 
 def _optional_datetime(value: Any) -> datetime | None:

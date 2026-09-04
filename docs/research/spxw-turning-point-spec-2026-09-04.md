@@ -141,8 +141,11 @@ python collect_spxw_research.py --date YYYY-MM-DD
 Run collection only after the session has closed. The command rejects future
 or in-progress dates, validates opening-to-close SPX/SPY coverage, normalizes
 all stored timestamps to UTC, and freezes SPX one-minute OHLC, SPY one-minute
-OHLCV, and same-day SPXW trade/quote records around ATM. It writes request
-parameters, package versions, timestamp ranges, row counts, and SHA-256
+OHLCV, and same-day SPXW trade/quote records around ATM. OPRA history is requested in bounded
+30-minute windows and normalized with vectorized dataframe operations so a
+large response does not stall the Raspberry Pi. Progress and row counts are
+printed after every window. It writes request parameters, package versions,
+timestamp ranges, row counts, and SHA-256
 metadata, then verifies rather than replaces an existing snapshot. Publishing
 uses a staging directory so a partial provider failure cannot overwrite a good
 snapshot. Use `--refresh` only for an intentional replacement. `--skip-spy` is

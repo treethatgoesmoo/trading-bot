@@ -30,6 +30,7 @@ SCHEMA = 1
 OPTION_ROOT = "SPXW"
 START_TIME = "09:30:00"
 COMPLETION_DELAY_MINUTES = 5
+DEFAULT_CHUNK_MINUTES = 30
 
 
 def _write_csv(path: Path, rows: Iterable[dict[str, Any]]) -> int:
@@ -141,6 +142,22 @@ def _spy_rows(session_date: date) -> list[dict[str, Any]]:
     return rows
 
 
+def _time_windows(session_date: date, end_time: str, chunk_minutes: int) -> list[tuple[str, str]]:
+    if chunk_minutes <= 0:
+        raise ValueError("chunk_minutes must be positive")
+    start = datetime.combine(session_date, datetime.strptime(START_TIME, "%H:%M:%S").time())
+    end = datetime.combine(session_date, datetime.strptime(end_time, "%H:%M:%S").time())
+    windows: list[tuple[str, str]] = []
+    cursor = start
+    while cursor < end:
+        window_end = min(cursor + timedelta(minutes=chunk_minutes) - timedelta(seconds=1), end)
+        if window_end + timedelta(seconds=1) >= end:
+            window_end = end
+        windows.append((cursor.strftime("%H:%M:%S"), window_end.strftime("%H:%M:%S")))
+        cursor += timedelta(minutes=chunk_minutes)
+    return windows
+
+
 def _session_boundary(session_date: date, hour: int, minute: int) -> datetime:
     return ET.localize(datetime(
         session_date.year, session_date.month, session_date.day, hour, minute
@@ -235,12 +252,15 @@ def collect(
     strike_range: int,
     refresh: bool,
     include_spy: bool,
+    chunk_minutes: int = DEFAULT_CHUNK_MINUTES,
     now: datetime | None = None,
 ) -> Path:
     if not is_trading_day(session_date):
         raise ValueError(f"{session_date} is not an NYSE trading day")
     if strike_range < 0:
         raise ValueError("strike_range must be non-negative")
+    if chunk_minutes <= 0:
+        raise ValueError("chunk_minutes must be positive")
     now = now or datetime.now(timezone.utc)
     _validate_collection_time(session_date, now)
     data_dir = _safe_data_dir(data_dir)
@@ -258,23 +278,47 @@ def collect(
         "include_spy": include_spy,
         "timezone": "UTC",
         "completion_delay_minutes": COMPLETION_DELAY_MINUTES,
+        "option_chunk_minutes": chunk_minutes,
     }
     if not refresh and _verify_existing(destination, request):
         print(f"Verified existing frozen snapshot: {destination}")
         return destination
 
     client = ThetaDataClient()
+    print("Checking SPXW expirations...", flush=True)
     expirations = client.list_expirations(OPTION_ROOT)
     if session_date not in expirations:
         raise RuntimeError(f"{OPTION_ROOT} has no expiration on {session_date}")
 
+    print("Downloading SPX one-minute prices...", flush=True)
     index_bars: list[IndexBar] = client.index_history_ohlc(
         session_date, symbol="SPX", interval="1m", end_time=end_time
     )
-    option_trades: list[OptionTradeQuote] = client.option_trade_quotes(
-        session_date, symbol=OPTION_ROOT, expiration=session_date,
-        strike_range=strike_range, end_time=end_time,
-    )
+    windows = _time_windows(session_date, end_time, chunk_minutes)
+    option_trades: list[OptionTradeQuote] = []
+    seen_trades: set[tuple[Any, ...]] = set()
+    for number, (window_start, window_end) in enumerate(windows, 1):
+        print(
+            f"Downloading SPXW trades {window_start}-{window_end} "
+            f"({number}/{len(windows)})...",
+            flush=True,
+        )
+        chunk = client.option_trade_quotes(
+            session_date, symbol=OPTION_ROOT, expiration=session_date,
+            strike_range=strike_range, start_time=window_start, end_time=window_end,
+        )
+        for trade in chunk:
+            identity = (
+                trade.symbol, trade.expiration, trade.strike, trade.right,
+                trade.trade_timestamp, trade.sequence, trade.exchange,
+            )
+            if identity not in seen_trades:
+                seen_trades.add(identity)
+                option_trades.append(trade)
+        print(f"  {len(chunk):,} rows in chunk; {len(option_trades):,} unique total", flush=True)
+    option_trades.sort(key=lambda item: (item.trade_timestamp, item.sequence, item.exchange or -1))
+    if include_spy:
+        print("Downloading SPY one-minute prices...", flush=True)
     spy_rows = _spy_rows(session_date) if include_spy else None
     _validate_session_complete(session_date, index_bars, option_trades, spy_rows)
     outputs: dict[str, list[dict[str, Any]]] = {
@@ -329,7 +373,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Freeze one SPX/SPY/SPXW research session")
     parser.add_argument("--date", required=True, type=date.fromisoformat, help="session date YYYY-MM-DD")
     parser.add_argument("--data-dir", type=Path, default=Path(THETADATA_DATA_DIR))
-    parser.add_argument("--strike-range", type=int, default=20, help="strikes on each side of ATM")
+    parser.add_argument("--strike-range", type=int, default=5, help="strikes on each side of ATM (default: 5)")
+    parser.add_argument("--chunk-minutes", type=int, default=DEFAULT_CHUNK_MINUTES,
+                        help="minutes per bounded OPRA request (default: 30)")
     parser.add_argument("--refresh", action="store_true", help="deliberately replace a frozen snapshot")
     parser.add_argument("--skip-spy", action="store_true", help="skip the recent yfinance SPY minute snapshot")
     args = parser.parse_args()
@@ -337,6 +383,7 @@ def main() -> int:
         collect(
             args.date, data_dir=args.data_dir, strike_range=args.strike_range,
             refresh=args.refresh, include_spy=not args.skip_spy,
+            chunk_minutes=args.chunk_minutes,
         )
         return 0
     except Exception as exc:
