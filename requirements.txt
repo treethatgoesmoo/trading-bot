@@ -4,3 +4,5 @@ pandas>=2.0.0
 python-dotenv>=1.0.0
 pytz>=2023.3
 aiohttp>=3.9.0
+# Official v3 client; requires Python 3.12+ (the deployment Pi runs 3.13).
+thetadata>=1.0.10,<2
