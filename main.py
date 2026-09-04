@@ -1,13 +1,8 @@
-"""
-First Candle Strategy - Discord Trading Bot
+"""Discord market decision-support bot for manual trading.
 
-Based on the Scarface Trades strategy:
-1. Daily 50 SMA determines bullish/bearish bias
-2. Box out the first 5-minute candle at market open
-3. Wait for break-and-retest in the direction of the daily bias
-4. Enter with stop loss and 2R target
-
-Data sources: Twelve Data (primary) → Finnhub → yfinance (fallback)
+Active modules provide a graded SPY intraday forecast, descriptive Bollinger
+and volume watchers, daily swing signals, and an optional experimental
+paper-only SPXW flow shadow. The bot never executes orders.
 """
 
 import asyncio
@@ -48,8 +43,8 @@ root_logger.addHandler(console)
 root_logger.addHandler(file_handler)
 
 if __name__ == "__main__":
-    print("Starting First Candle Strategy Bot...")
-    print("Strategy: 50 SMA Daily Bias + First 5-Min Candle Break & Retest")
-    print("Data: Twelve Data → Finnhub → yfinance (fallback)")
+    print("Starting Discord Market Decision-Support Bot...")
+    print("Features: SPY intraday forecasts + swing signals + optional SPXW paper shadow")
+    print("OHLCV data: Twelve Data → Finnhub → yfinance (fallback)")
     print("-" * 50)
     asyncio.run(run_bot())

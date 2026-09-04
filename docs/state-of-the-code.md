@@ -1,170 +1,240 @@
-# State of the Code — as of 2026-08-15 (see "Feature-removal pass" section below for the latest)
+# Current Repository State — 2026-09-04
 
-## Feature-removal pass — 2026-08-15
+This is the current operational snapshot. Historical decisions, rejected ideas, and measured results remain in [`strategy-log.md`](strategy-log.md). Detailed research protocols are under [`research/`](research/).
 
-Owner request: the live channel had too many disconnected alert streams and
-it was distracting. Kept the 15m forecast ensemble (the one stream with
-measured per-indicator edge) and the Bollinger band watcher; removed
-everything else that wasn't earning its slot on the graded evidence below,
-and added a volume-spike watcher as a replacement low-cost stream.
+## Purpose and safety boundary
 
-**Removed (code deleted or disconnected from the live bot; historical
-`data/` files untouched):**
+This repository is a personal Discord decision-support bot. It posts observations for manual review and **never executes orders**. Strategy changes are expected to be backtested, recorded, and graded after deployment. A working data integration is not evidence of predictive or profitable edge.
 
-- **Morning bias** (50 SMA + gap + first-candle 2-of-3 vote) — already
-  demoted to informational-only 2026-08-11 after grading 50.9% directional
-  vs a 52.6% always-BULLISH baseline (no measurable edge, see below). Now
-  removed from the live bot entirely: no more computation, posting, `!bias`
-  command, or nightly grading. `zero_dte/strategy.py::get_daily_bias` /
-  `DailyBias` / `FirstCandleRange` / `set_bias_from_first_candle` are kept
-  **only** because `backfill.py --bias-report` still replays the rule against
-  history on demand — nothing in the live bot calls them anymore.
-- **Break-and-retest entries + trade tracking** — removed along with the
-  bias it depended on (`check_for_setup`, `TradeSignal`/`FilteredSignal`
-  dataclasses, the entry filter stack, Take/Skip/Modify buttons, `!range`
-  `!test` commands, the Daily Summary / Monitoring-started-ended messages).
-  No honest replay of this system currently exists (see the backfill.py note
-  under Commands) — `backtest_filters.py` still audits the historical
-  `data/filters-*.jsonl` record left behind by the live years it ran.
-- **5-minute companion forecast stream** (`FORECAST_5M_ENABLED`) — never beat
-  its own always-BULLISH baseline (51.4% vs 55.4%, see below) and was
-  already not posted; now the computation/logging is gone too.
-- **Standalone VIX spike/regime watcher + `!vix` command** — the VIX vote
-  *inside* the 15m/5m forecast ensemble (`core/vix.py::forecast_signal`) is
-  unaffected and still live; only the separate alert stream (regime-cross
-  and spike pings, `VixWatcher`) and its nightly grading were removed.
-- **Standalone candlestick pattern watcher + `!patterns` command** — daily
-  and weekly patterns had already backtested to no directional edge
-  (docs/strategy-log.md); the 1h horizon was still unbacktested when this
-  was cut. `core.indicators.detect_candlestick_patterns` stays —
-  `backtest_patterns.py` still uses it for offline research.
+## Recent completed work
 
-**Added:**
+All four changes below are merged into `master`:
 
-- **Volume-spike watcher** (`zero_dte/volume_watcher.py`, `VOLUME_WATCH_*`
-  config) — mirrors the BB watcher's shape: pings once when a closed 5m
-  bar's volume clears `VOLUME_SPIKE_MULT` (default 2.0x) times its trailing
-  `VOLUME_SPIKE_LOOKBACK`-bar average, re-arms after a bar back under the
-  threshold, cooldown-gated, graded nightly (`evaluate_volume_alerts`) the
-  same continuation-vs-reversal way the old VIX-ping grading worked. It has
-  **no track record yet** — same "prove it or lose the slot" bar as every
-  other stream here; watch `data/volume_alerts-*.jsonl` and the nightly
-  grading before trusting it.
+### PR #33 — intraday momentum validation and grading hardening
 
-See `CLAUDE.md`'s `zero_dte/` description and the Commands table for the
-current (post-removal) command list and config knobs.
+- Corrected the momentum-strength backtest to use absolute, same-session momentum and exact next-bar labels.
+- Added frozen, checksum-backed SPY/QQQ/IWM/DIA research.
+- Found no robust cross-asset next-bar continuation edge, so the new momentum and extension scores remain descriptive only.
+- Added signal-time ATR to forecasts and schema-2 grading.
+- Made analytics and weight tuning select one grading schema rather than pooling incompatible deadbands.
 
----
+### PR #34 — simpler forecast display and timeframe context
 
-# State of the Code — as of 2026-08-11 (superseded by the pass above for
-what's live; the graded numbers below are what justified each removal)
+- Removed visible confidence percentages, individual signal weights, indicator details, price, and day range from forecast posts.
+- Removed RSI divergence from the live vote and extension score.
+- Added plain-English momentum and stretch labels.
+- Added latest completed 30-minute and one-hour candle directions as context only.
+- Backtesting did not establish predictive edge for the higher-timeframe context, so it does not vote.
 
-A point-in-time snapshot of what's live, what the graded data says, what was
-just fixed, and what's deliberately still open. Companion to
-`docs/strategy-log.md` (the experiment-by-experiment record) and `CLAUDE.md`
-(architecture + conventions). Refresh this doc when the picture changes
-materially; the strategy log stays the append-only history.
+### PR #35 — ThetaData v3 foundation
 
-## What's running
+- Added direct API-key authentication through the official ThetaData v3 client.
+- Added normalized SPX/VIX snapshots, SPX index history, SPXW expiration discovery, narrow option snapshots, NBBO, Greeks, volume, and open interest.
+- Kept ThetaData separate from the standard OHLCV fallback chain.
+- Confirmed direct operation on the aarch64 Raspberry Pi with Python 3.13.5 and no Java.
 
-| Feature | Status | Notes |
-|---|---|---|
-| 0DTE first-candle bias + break-and-retest (zero_dte) | live | Bias demoted to informational 2026-08-11 (graded 50.9% vs 52.6% always-BULLISH): entries fire either direction, NEUTRAL still stands down; LONG entries carry a below-breakeven warning (3/34, −21.8R lifetime) |
-| Morning day forecast (direction + ATR-projected high/low) | **removed 2026-08-12** | Replaced by the actual session high/low tracked on every alert |
-| Intraday weighted-vote forecasts, 15m + 5m streams | live | Change-driven posting; VOLATILE class for conflicts; per-stream tuned weights as of today |
-| VIX / Bollinger-touch watchers | live | BB watcher added 2026-08-07 (1m+5m, yfinance-only). RSI watcher + `!rsi` removed 2026-08-12 (already default-off; caution line lives on forecast embeds) |
-| SPX 0DTE range feed (`zero_dte/spx_options.py`) | **removed 2026-08-12** | No options coverage remains — alerts are underlying-price signals for manual SPX trades |
-| SPY ATM option projection + EOD grading | **removed 2026-08-11** | Owner trades SPX only; historical `option_projections`/`option_outcomes` files remain, kinds retired |
-| Swing signals (TSLA/AMD/GOOG/META, 7–14 DTE picks) | live | Pre-open scan + midday confirmation; self-heals via `swing_open.json` |
-| Nightly self-tune + git auto-commit of `data/` | live | Both tuners now shrinkage-damped and step-capped (see below) |
+### PR #36 — SPXW turning-point research and live paper shadow
 
-## What the graded data says (all sample sizes still small)
+- Added bounded historical SPXW trade/preceding-NBBO and exact-contract quote retrieval.
+- Added an idempotent, checksum-verified collector for complete sessions.
+- Added conservative aggressor inference, prior-known key levels, provisional turning-point states, and strict paper-contract selection.
+- Added a separate, default-off `SPXFlowCog` for controlled Discord shadow testing.
+- Added restart-safe 15- and 30-minute SPX and ask-to-bid contract outcome grading.
+- A production Pi plumbing test collected 391 SPX minute bars and 100,997 deduplicated SPXW trade/quote rows. This validates access and normalization, not strategy edge.
 
-- **Morning bias: the 2-of-3 vote has no measurable edge.** Honest 60-day
-  replay (2026-08-11, report-only mode): 50.9% directional (29/57) vs a
-  52.6% always-BULLISH bar on the same days; bullish calls sit exactly on
-  drift, bearish calls 47.4%. The 65% adoption number was lookahead
-  artifact; the 5/6 live record was small-sample luck. (±13p at n=57 — not
-  provably worse than the baseline, but nothing measurable in its favor.)
-- **15m forecast stream:** a real ensemble once measured per-stream — RSI
-  61.3% (n=75), VWAP 58.9% (n=158), MACD 57.6% (n=158), Momentum 56.3%
-  (n=158) against a 53.8% always-BULLISH baseline.
-- **5m companion stream:** no measurable edge — always-BULLISH grades 55.4%,
-  at or above every 5m indicator. Its directional value is an open question.
-- **Confidence is uncalibrated:** stated 70–80% → 53.8% realized, 80–90% →
-  53.1%, 90–100% → 53.4% (810 directional calls). Read posted confidence as
-  vote margin, not win probability. VOLATILE leans grade 48.7% — that class
-  is correctly signaling "don't trust this."
-- **Indicator overlap:** EMA+RSI agree 100% (15m, n=113); RSI+VWAP
-  96.5–99.5%; EMA+VWAP 86.5% (5m). RSI/EMA/VWAP are one trend signal voted
-  three times — the margin (and stated confidence) double-counts it.
+## Runtime architecture
 
-## Fixed in the 2026-08-11 session (branch `claude/code-review-spsv37`)
+Dependency direction is:
 
-1. **Bias replay lookahead** — `backfill.py` fed the replay day's completed
-   bar to `get_daily_bias`, so the 50 SMA trend + RSI override saw the close
-   at 9:35 AM. Live had the mirror hazard (provider-dependent partial-bar
-   `iloc[-1]`). Both paths now use completed daily bars only.
-2. **Weight tuning pooled the 5m and 15m streams** (plus 416 unlabeled
-   pre-2026-07-27 rows) — the 5m noise floored the genuinely useful 15m
-   ensemble. Weights are now tuned and loaded per stream
-   (`{"15": {...}, "5": {...}}` schema; flat legacy files still load).
-3. **Tuner rigor** — accuracy shrunk toward 50% by `TUNED_WEIGHT_SHRINKAGE`
-   (50) pseudo-samples, weight movement capped at `TUNED_WEIGHT_MAX_STEP`
-   (0.5) per retune, below-`min_samples` indicators hold their last tuned
-   value (no snap-back to code defaults). Baselines + overlap surfaced in the
-   tuner report, `!stats`, and the dashboard.
-4. **SPY option projection bugs found in review, then the feature was removed
-   entirely** — capture used the 9:30 open as spot, grading ran at 16:00
-   (options trade to 16:15), and the promised catch-up didn't exist. Fixed,
-   then removed same-day at the owner's request (SPX only).
+```text
+config / core.paths -> core -> zero_dte or swing -> bot
+```
 
-## Fixed in the 2026-08-11 review round 2 (branch `claude/repo-review-u9qq0t`)
+`bot/core.py` constructs one shared `MarketDataClient` and conditionally installs:
 
-1. **Forecast grading asymmetry** — NEUTRAL/VOLATILE graded correct on flat
-   windows but only ungraded on real moves: 101 free wins over the last 10
-   result files (headline 63.4% vs 54.6% directional-only). Now symmetric.
-2. **Swing option P&L** — the contemporaneous-requote branch was unreachable
-   (grading is pre-open, lag always ≥ 1), so every outcome used the
-   optimistic delta estimate; requote now accepted at lag ≤ 1. Grading made
-   idempotent (no duplicate outcomes after a crash between writes).
-3. **Restart recovery** — no more duplicate Daily Summary / Report Card after
-   a late restart; open trades restored from levels now persisted in the
-   fired `filters` row; swing done-flags persisted (no pre-open replay with a
-   stale entry price mid-session; late first pass grades but doesn't scan).
-4. **Ops** — nightly auto-commit scoped to `data/` only; push-after-commit
-   failures reported honestly; `evaluate_bias` no longer rewrites bias files
-   nightly on NEUTRAL days; EXPIRED trades excluded from the per-direction
-   track record; `!stats` tolerates legacy outcomes without option P&L.
+1. `SharedCog`
+2. `ZeroDTECog` when `ZERO_DTE_ENABLED=1` (default on)
+3. `SwingCog` when `SWING_ENABLED=1` (default on)
+4. `SPXFlowCog` when `SPX_FLOW_ENABLED=1` and a ThetaData key exists (default off)
 
-## Known data caveats
+### Shared operations
 
-- `bias-*.jsonl` before 2026-08-06: old bias rule — don't judge the current
-  vote by them.
-- `results-*.json` before 2026-08-10 evening: graded under pre-fix pooled
-  weights; rows before 2026-07-27 lack the `interval` label entirely and are
-  excluded from tuning (reported as the "mixed" stream in analytics).
-- `option_projections`/`option_outcomes` (2026-08-10 only): produced by the
-  removed feature, capture-spot bug applies — historical record only.
-- `results-*.json` graded before 2026-08-11 evening carry the old one-sided
-  NEUTRAL/VOLATILE grades (free wins on flat windows, ungraded on moves) —
-  headline accuracy isn't comparable across that boundary. Per-indicator
-  numbers are unaffected (always directional-only).
+`SharedCog` owns statistics, dashboards, economic-event output, nightly tuning, and automatic capture commits for tracked `data/`. Market scheduling uses the repository NYSE calendar, including holidays and early closes.
 
-## Open decisions / next steps
+### SPY intraday system
 
-1. **Bias role decided 2026-08-11 (owner): direction gate removed.**
-   Break-and-retest fires either side; NEUTRAL mornings still stand down;
-   bias stays computed/logged/graded and still skews the day-forecast range.
-   Watch item: LONG setups are no longer suppressed on non-BULLISH days and
-   LONGs are 3/34 lifetime — the per-alert direction record is the guard.
-2. **Confidence calibration** — map vote margin to empirical hit rate and
-   re-derive `FORECAST_VOLATILE_CONFIDENCE` on the calibrated scale. Deferred
-   because the gate and the scale must move together.
-3. **De-correlate the ensemble** — drop/merge the weaker of EMA/RSI/VWAP
-   after a `backtest_30m.py` check (changes live voting; not done unilaterally).
-4. **Decide the 5m stream's role** — informational/VOLATILE-only vs.
-   directional; it currently doesn't beat always-BULLISH.
-5. **Let clean data accumulate** — the 15m stream has ~11 days of
-   stream-labeled grades; distinguishing 55% from 50% needs ~250–300 windows
-   per indicator (roughly 3–4 more weeks).
+The active forecast is a change-driven 15-minute SPY directional ensemble. It may output bullish, bearish, or volatile with an optional lean. Internal weighted aggregation remains active, but individual votes and weights are intentionally hidden from Discord.
+
+Current internal inputs include RSI, EMA, VWAP, MACD, MACD momentum, volume, the legacy momentum voter, and VIX. RSI divergence is retired from live voting. The removed five-minute companion forecast is neither computed nor posted.
+
+The forecast display contains:
+
+- the 15-minute forecast;
+- latest completed 30-minute and one-hour candle directions;
+- plain-English momentum plus its raw descriptive score;
+- plain-English stretch plus its raw descriptive score; and
+- `Turning point: Not confirmed`.
+
+The higher-timeframe candles, descriptive momentum, and stretch score are context—not probabilities, independent predictions, or reversal confirmation.
+
+Two separately graded watcher streams remain:
+
+- five-minute Bollinger-band touches; and
+- five-minute relative-volume spikes.
+
+Historical Bollinger results argue against blindly fading a touch. Volume results remain too sparse for a strong conclusion.
+
+### Swing system
+
+The swing cog scans daily candles for TSLA, AMD, GOOG, and META by default. It performs a pre-open scan and midday follow-up, maintains restart-safe open-signal state, grades matured outcomes, tunes separately, and may suggest a 7–14 DTE yfinance option contract. It remains independent of both SPY intraday forecasts and SPXW flow research.
+
+## Experimental SPXW flow shadow
+
+The SPXW feature is isolated, paper-only, and disabled by default:
+
+```env
+THETADATA_API_KEY=...
+SPX_FLOW_ENABLED=1
+```
+
+It cannot place orders and does not feed the SPY forecast.
+
+### Data roles
+
+- ThetaData Indices Standard: current and historical SPX prices.
+- ThetaData Options Standard: SPXW trades paired with preceding NBBO, snapshots, Greeks, and exact-contract quote history.
+- Existing SPY OHLCV provider chain: current-session VWAP-extension context.
+
+### Implemented live levels
+
+- current-session open;
+- previous-session high, low, and close, only when minute coverage is complete; and
+- nearby 25-point round levels.
+
+Weekly/monthly levels, SMA20/SMA200 context, and the broader volume framework described in the research design are not yet wired into the live cog.
+
+### Provisional state rules
+
+Internal states are `WAIT`, `POTENTIAL_TOP`, `TOP_CONFIRMED`, `POTENTIAL_BOTTOM`, `BOTTOM_CONFIRMED`, and `TREND_CONTINUATION`. “Confirmed” means only that a rejection or bounce matched the provisional rule; it does not mean the session's final high or low is known.
+
+A potential setup currently requires:
+
+- price actually reaches the watched level;
+- approximately three SPY VWAP deviations of extension;
+- sufficient elapsed-time SPX momentum;
+- at least 25 classifiable ordinary OPRA prints;
+- at least 20% classifiable flow; and
+- at least 15% aligned directional-flow imbalance.
+
+A reversal observation requires a matching potential episode followed by a rejection or bounce within ten minutes. Acceptance beyond the level is reported as continuation with explicit “do not fade” language. Only ordinary OPRA condition-code `0` prints contribute directional premium.
+
+The `!spxflow` command reads the latest cached state and cannot mutate the automatic monitor.
+
+### Paper contract policy
+
+A contract is considered only after a reversal observation. It must satisfy all of the following:
+
+- SPXW, same-day expiration, and direction-matching call or put;
+- ask above zero and no more than $10.00 ($1,000 maximum debit at the 100× multiplier);
+- positive displayed bid and sizes;
+- fresh, non-crossed NBBO and fresh Greeks;
+- spread no wider than 12%;
+- absolute delta from 0.30 through 0.65; and
+- enough session time for both outcome horizons.
+
+Eligible contracts are ranked toward 0.50 absolute delta. Failure to find or fetch a contract produces `WAIT`; it does not suppress the market-state observation.
+
+### Shadow grading and operations
+
+Every automatically posted observation is persisted before Discord delivery and receives:
+
+- 15-minute and 30-minute SPX movement;
+- directional correctness;
+- exact-contract bid exits where an executable matching quote exists;
+- ask-to-bid paper return; and
+- quote timestamp/delay or an explicit pending/missing state.
+
+New observations stop early enough to finish both horizons before the close; prior observations continue grading. Provider calls run in worker threads, durations of 15 seconds or more are warned, and three consecutive failures pause polling for five minutes. A permanently hung SDK worker cannot be forcibly terminated, so live endpoint latency remains a monitored risk.
+
+## Providers
+
+### Standard OHLCV
+
+`MarketDataClient` uses this fallback order:
+
+1. Twelve Data
+2. Finnhub
+3. yfinance
+
+Returned timestamps are normalized to UTC.
+
+### ThetaData
+
+`ThetaDataClient` is a separate synchronous adapter, not another fallback provider. It requires Python 3.12+ and `THETADATA_API_KEY`; no Theta Terminal or Java is required. Bot code must call it through a worker thread.
+
+The production account currently has Options Standard and Indices Standard. SPXW is used for daily expirations; SPX identifies traditional monthly contracts and is not interchangeable.
+
+## Storage and data handling
+
+| Location | Tracked? | Contents |
+|---|---:|---|
+| `data/` | Yes | Bot history, evaluations, and learned weight files; may be auto-committed |
+| `.research-data/` | No | Frozen Yahoo research snapshots and metadata |
+| `.thetadata-data/` | No | Licensed SPX/SPXW research snapshots and derived shadow outcomes |
+| `.env` | No | Credentials and deployment configuration |
+
+Never hand-edit or delete committed `data/` history. Never place raw ThetaData/OPRA records in `data/`, logs, Discord, or Git. Raw live OPRA rows remain in memory; compact derived shadow records are local to the Pi under `.thetadata-data/shadow/`.
+
+All stored timestamps use UTC ISO. User-facing times use US/Eastern. Filesystem paths are centralized in `core/paths.py`.
+
+## Validation state
+
+At the completion of PR #36:
+
+```text
+Full unittest suite:       37 passed
+Python 3.12 focused suite: 26 passed
+compileall:                passed
+import smoke:              passed
+git diff --check:          passed
+```
+
+Tests cover provider normalization, collector integrity, checksum/tamper detection, key-level completeness, OPRA filtering, provisional state transitions, contract selection, fallible contract lookup, executable exit-quote validation, and persisted 15/30-minute outcomes.
+
+These checks establish implementation and data plumbing. They do **not** establish predictive accuracy, executable profitability, adequate sample size, or acceptable drawdown.
+
+## Known limitations and next evidence gates
+
+1. The SPXW turning-point hypothesis has no established edge and must remain paper-only.
+2. The production collection proves one complete session of access, not a historical strategy result.
+3. OPRA aggressor side is inferred from trade price versus preceding NBBO; it cannot reveal opening/closing intent, dealer inventory, multi-leg intent, or full-book liquidity.
+4. The usable share of condition-code `0` prints and live request latency still need measurement across full sessions.
+5. Weekly/monthly levels and some preregistered context fields are not implemented in the live watch.
+6. SPY forecast grading measures underlying direction, not executable SPXW returns; only the new shadow stream begins exact-contract grading.
+7. Licensed shadow data is local to the Pi, so retention and backup need an explicit compliant process.
+8. Promotion beyond paper-only requires frozen chronological backtesting plus prospective shadow results, compared with price-only and always-directional baselines.
+
+## Operator quick reference
+
+```bash
+# Run
+python main.py
+
+# Validate
+python -m unittest discover -s tests -v
+python -m compileall -q .
+python -c "import main, bot.core, zero_dte.cog, zero_dte.flow_cog, swing.cog"
+
+# ThetaData connectivity
+python -m core.thetadata_client --symbol SPXW
+
+# Complete-session licensed research collection (after close)
+python collect_spxw_research.py --date YYYY-MM-DD
+
+# Relevant frozen research
+python backtest_momentum_extension.py --ticker SPY --interval 15
+python backtest_timeframe_context.py
+python analyze_session_thirds.py --stream 15
+```
+
+On the Raspberry Pi, deployment remains a repository pull followed by the owner's normal restart procedure. Secrets stay in the ignored `.env` and are not replaced by Git pulls.

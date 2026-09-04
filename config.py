@@ -72,7 +72,7 @@ FORECAST_VOLATILE_CONFIDENCE = float(os.getenv("FORECAST_VOLATILE_CONFIDENCE", "
 # fixed-threshold labeling). Also reused by the volume-spike watcher's grading.
 FORECAST_DEADBAND_ATR_MULT = float(os.getenv("FORECAST_DEADBAND_ATR_MULT", "0.25"))
 # Posting mode: "change" posts a forecast only when the read changed —
-# direction flip, confidence jump, projected-range breach, or heartbeat —
+# direction flip, internal directional-strength change, range-state change, or heartbeat —
 # while every computed forecast is still logged and graded. "always" restores
 # the old post-every-cycle firehose.
 FORECAST_POST_MODE = os.getenv("FORECAST_POST_MODE", "change").lower()
@@ -104,8 +104,8 @@ KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com
 ECON_EVENTS_ENABLED = _flag("ECON_EVENTS_ENABLED")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
-# RSI thresholds used by the intraday forecast (rsi_caution line + the
-# pivot-based divergence voter).
+# RSI thresholds used by the intraday forecast and retained historical
+# divergence-research settings. Divergence is no longer a live voter.
 RSI_OB_WARN = 70.0     # overbought warning
 RSI_OS_WARN = 30.0     # oversold warning
 RSI_DIV_LOOKBACK = 40  # bars to scan for divergence pivots
@@ -145,12 +145,12 @@ VOLUME_SPIKE_LOOKBACK = int(os.getenv("VOLUME_SPIKE_LOOKBACK", "20"))
 VOLUME_SPIKE_MULT = float(os.getenv("VOLUME_SPIKE_MULT", "2.0"))
 VOLUME_ALERT_COOLDOWN_MINUTES = int(os.getenv("VOLUME_ALERT_COOLDOWN_MINUTES", "15"))
 
-# VIX ("fear gauge", inverse to SPY) — still folded into the 15m/5m forecast
+# VIX ("fear gauge", inverse to SPY) — still folded into the 15m forecast
 # ensemble as a weighted vote (core/vix.py::forecast_signal). The standalone
 # VIX spike/regime watcher and its !vix command were removed.
 VIX_SIGNAL_DEADBAND_PCT = 0.3  # early-day fallback: VIX 30-min move below this % is neutral
 VIX_SIGNAL_MIN_Z = float(os.getenv("VIX_SIGNAL_MIN_Z", "1.0"))  # 30-min move must clear this many std devs of today's moves to vote
-VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 30-min forecast
+VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 15-min forecast
 
 # Nightly self-tuning: retune forecast + swing indicator weights from graded
 # history after each session close (before the git auto-commit).
