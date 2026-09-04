@@ -48,16 +48,27 @@ def log_forecast(ticker: str, forecast, now: datetime) -> dict:
         "ticker": ticker,
         "time": now.astimezone(pytz.UTC).isoformat(),
         "interval": getattr(forecast, "interval", FORECAST_INTERVAL_MINUTES),
+        "grading_schema": 2,  # v2 stores signal-time ATR for ex-ante deadbands
         "direction": forecast.direction,
         "lean": forecast.lean,
         "confidence": forecast.confidence,
         "price": forecast.current_price,
         "vwap": forecast.vwap,
+        "day_high": getattr(forecast, "day_high", None),
+        "day_low": getattr(forecast, "day_low", None),
         "rsi_30m": forecast.rsi_30m,
         "ema_direction": forecast.ema_direction,
         "macd_direction": forecast.macd_direction,
         "divergence": forecast.divergence,
         "signals": forecast.signals,
+        # Ex-ante volatility scale for grading. Historical rows without this
+        # additive field retain the old outcome-candle fallback below.
+        "atr": getattr(forecast, "atr", None),
+        # Descriptive-only (see zero_dte/strategy.py module note) — logged so
+        # a future honest backtest can grade them for real instead of
+        # reconstructing from categorical fields, not because they're graded now.
+        "momentum_score": getattr(forecast, "momentum_score", None),
+        "extension_score": getattr(forecast, "extension_score", None),
     }
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -99,7 +110,13 @@ def log_user_vote(ticker: str, forecast_time_iso: str, bot_direction: str,
 
 
 def evaluate_votes(ticker: str, date_str: str, results: list[dict]) -> tuple[int, int]:
-    """Score user votes against actual outcomes. Returns (correct, total)."""
+    """Score user votes against actual outcomes. Returns (correct, total).
+
+    Currently unused by the live bot (the report card that displayed this
+    was removed 2026-08-15 along with the Confidence% field — see
+    zero_dte/embeds.py) — kept as a pure function over already-logged
+    votes-*.jsonl/results-*.json in case a future !mystats-style command
+    wants it; ForecastView still logs votes via log_user_vote."""
     path = os.path.join(DATA_DIR, f"votes-{date_str}.jsonl")
     if not os.path.exists(path):
         return 0, 0
@@ -135,8 +152,10 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
     long as the candle window still covers them.
 
     Volatility-scaled deadband: windows whose |move| is under
-    FORECAST_DEADBAND_ATR_MULT x the interval ATR(14) at that candle grade as
-    actual=FLAT — a directional call on a flat window goes ungraded (noise,
+    FORECAST_DEADBAND_ATR_MULT x the signal-time interval ATR(14) grade as
+    actual=FLAT. Historical entries without stored signal-time ATR fall back
+    to the outcome-candle ATR to preserve catch-up compatibility. A
+    directional call on a flat window goes ungraded (noise,
     not a miss) and a NEUTRAL/VOLATILE call on it grades correct. On a
     directional window NEUTRAL/VOLATILE grade wrong — the hedge classes get a
     symmetric payoff, not free wins.
@@ -179,7 +198,13 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
                 continue
             outcome_close = float(future.iloc[0]["close"])
             pos = int(np.argmax(mask))
-            band_atr = float(atr_vals.iloc[pos]) if not np.isnan(atr_vals.iloc[pos]) else atr_fallback
+            signal_atr = entry.get("atr")
+            if isinstance(signal_atr, (int, float)) and np.isfinite(signal_atr) and signal_atr > 0:
+                band_atr = float(signal_atr)
+                atr_source = "signal"
+            else:
+                band_atr = float(atr_vals.iloc[pos]) if not np.isnan(atr_vals.iloc[pos]) else atr_fallback
+                atr_source = "outcome_fallback"
             deadband = FORECAST_DEADBAND_ATR_MULT * band_atr
             move = outcome_close - entry["price"]
 
@@ -187,6 +212,7 @@ async def evaluate_forecasts(client, ticker: str, date_str: str) -> list[dict] |
             result["actual_price"] = round(outcome_close, 2)
             result["move"] = round(move, 2)
             result["deadband"] = round(deadband, 3)
+            result["deadband_atr_source"] = atr_source
             if abs(move) < deadband:
                 # Flat window: a directional call goes ungraded (noise, not a
                 # miss); calling no-edge on a no-move window is correct.

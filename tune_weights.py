@@ -38,6 +38,7 @@ from datetime import datetime
 import pytz
 
 from config import TUNED_WEIGHT_FLOOR
+from core.analytics import latest_grading_rows
 from core.paths import DATA_DIR
 from core.tracking import available_dates
 from core.tuning import accuracy_to_weight, load_previous_weights, shrunk_accuracy, step_limited
@@ -122,7 +123,9 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         dates = dates[-days:]
     if not dates:
         return None
-    stats = indicator_stats([r for d in dates for r in load_results(d)])
+    all_rows = [r for d in dates for r in load_results(d)]
+    rows, grading_schema = latest_grading_rows(all_rows)
+    stats = indicator_stats(rows)
     if not stats:
         return None
     prev_all = _previous_weights()
@@ -131,6 +134,8 @@ def retune(days: int = 0, min_samples: int = 20, write: bool = False) -> dict | 
         "days": len(dates),
         "date_range": [dates[0], dates[-1]],
         "min_samples": min_samples,
+        "grading_schema": grading_schema,
+        "excluded_older_schema_rows": len(all_rows) - len(rows),
         # Nested per-interval schema ({"15": {...}, "5": {...}}); the live
         # loader (strategy._weight_overrides) detects it and picks the set
         # matching the stream it's forecasting.
@@ -164,19 +169,22 @@ def main() -> None:
         return
 
     all_rows = [r for d in dates for r in load_results(d)]
-    stats = indicator_stats(all_rows)
+    rows, grading_schema = latest_grading_rows(all_rows)
+    stats = indicator_stats(rows)
     if not stats:
         print(f"No graded indicator signals in {len(dates)} result day(s) "
-              "(interval-labeled rows only; pre-2026-07-27 grades are excluded).")
+              "(latest grading schema and interval-labeled rows only).")
         return
 
     prev_all = _previous_weights()
     # Naive baselines: an indicator below these is worse than doing nothing.
     from core.analytics import indicator_overlap, stream_baselines
-    baselines = {b["stream"]: b for b in stream_baselines(all_rows)}
-    flagged_overlap = [o for o in indicator_overlap(all_rows) if o["flagged"]]
+    baselines = {b["stream"]: b for b in stream_baselines(rows)}
+    flagged_overlap = [o for o in indicator_overlap(rows) if o["flagged"]]
 
-    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}):")
+    excluded = len(all_rows) - len(rows)
+    print(f"Indicator accuracy over {len(dates)} day(s) ({dates[0]} to {dates[-1]}), "
+          f"grading schema {grading_schema} ({excluded} older-schema rows excluded):")
     for interval in sorted(stats, key=lambda k: -int(k)):
         s_int = stats[interval]
         prev = _prev_for_interval(prev_all, interval)

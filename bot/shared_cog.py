@@ -83,9 +83,14 @@ def stats_embed(report: dict) -> discord.Embed:
 
     acc = fc["accuracy"]
     color = 0x00CC66 if acc >= 55 else (0xFFAA00 if acc >= 45 else 0xFF4444)
+    schema = report.get("grading_schema")
+    excluded = report.get("forecast_rows_excluded_by_schema", 0)
+    schema_note = (f" · grading v{schema}"
+                   f"{' (' + str(excluded) + ' older rows excluded)' if excluded else ''}"
+                   if schema is not None else "")
     embed = discord.Embed(
         title="\U0001f4ca Performance Stats",
-        description=f"{lo} → {hi} · {n_days} day(s) · {fc['total']} forecasts",
+        description=f"{lo} → {hi} · {n_days} day(s) · {fc['total']} forecasts{schema_note}",
         color=color,
     )
     embed.add_field(

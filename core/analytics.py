@@ -48,6 +48,24 @@ def _pct(correct: int, total: int) -> float:
     return round(correct / total * 100, 1) if total else 0.0
 
 
+def latest_grading_rows(results: list[dict]) -> tuple[list[dict], int | None]:
+    """Return only rows using the newest forecast-label definition.
+
+    Missing markers are schema 1. Mixing schemas can silently change which
+    windows are FLAT/directional and corrupt accuracy or tuned weights.
+    """
+    if not results:
+        return [], None
+    schemas = []
+    for row in results:
+        try:
+            schemas.append(int(row.get("grading_schema", 1)))
+        except (TypeError, ValueError):
+            schemas.append(1)
+    newest = max(schemas)
+    return [row for row, schema in zip(results, schemas) if schema == newest], newest
+
+
 # ── Data collection across a date range ──────────────────────────────────
 
 def all_dates() -> list[str]:
@@ -408,10 +426,13 @@ def build_report(days: int | None = None) -> dict:
     if days is not None and days > 0:
         dates = dates[-days:]
     data = _collect(dates)
-    results = data["results"]
+    all_results = data["results"]
+    results, grading_schema = latest_grading_rows(all_results)
     return {
         "dates": dates,
         "date_range": (dates[0], dates[-1]) if dates else (None, None),
+        "grading_schema": grading_schema,
+        "forecast_rows_excluded_by_schema": len(all_results) - len(results),
         "forecast": forecast_stats(results),
         "indicators": per_indicator_accuracy(results),
         "baselines": stream_baselines(results),

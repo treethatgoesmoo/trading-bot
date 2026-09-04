@@ -57,7 +57,6 @@ from zero_dte.strategy import (
 from zero_dte.tracker import (
     log_forecast,
     evaluate_forecasts,
-    evaluate_votes,
     evaluate_bb_alerts,
     evaluate_volume_alerts,
 )
@@ -67,9 +66,8 @@ from zero_dte.embeds import (
     bb_alert_embed,
     volume_alert_embed,
     forecast_embed,
-    forecast_results_embed,
 )
-from zero_dte.views import ForecastView, MenuView, ReportDetailsView
+from zero_dte.views import ForecastView, MenuView
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
@@ -257,7 +255,17 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
             if st.last_forecast:
                 fc = st.last_forecast
                 dir_txt = f"VOLATILE, leaning {fc.lean}" if fc.direction == "VOLATILE" and fc.lean else fc.direction
-                status_lines.append(f"Intraday now: {dir_txt} ({fc.confidence}%, {fc.timestamp})")
+                # No confidence % here (2026-08-15: stated confidence proved
+                # uncalibrated — 70-100% stated realized ~53%, see
+                # docs/strategy-log.md) — momentum/extension are descriptive
+                # only, shown as state not as a probability claim.
+                extra = []
+                if fc.momentum_score is not None:
+                    extra.append(f"mom {fc.momentum_score:+.0f}")
+                if fc.extension_score is not None:
+                    extra.append(f"ext {fc.extension_score:.0f}")
+                extra_txt = f" [{', '.join(extra)}]" if extra else ""
+                status_lines.append(f"Intraday now: {dir_txt} ({fc.timestamp}){extra_txt}")
             else:
                 status_lines.append("Intraday now: Not set")
             if st.session_high is not None and st.session_low is not None:
@@ -419,6 +427,12 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                         divergence=e.get("divergence"),
                         signals=e.get("signals", {}),
                         lean=e.get("lean"),
+                        interval=e.get("interval", FORECAST_INTERVAL_MINUTES),
+                        day_high=e.get("day_high"),
+                        day_low=e.get("day_low"),
+                        atr=e.get("atr"),
+                        momentum_score=e.get("momentum_score"),
+                        extension_score=e.get("extension_score"),
                     )
         if last_fc:
             logger.info("Rehydrated today's forecast state from data/ (%s)", sorted(last_fc))
@@ -463,16 +477,16 @@ class ZeroDTECog(commands.Cog, name="ZeroDTE"):
                 if not st.forecast_eval_done:
                     evaluation_succeeded = True
                     try:
+                        # Grading still runs and writes data/results-*.json
+                        # every night (feeds tune_weights.py + !stats/dashboard)
+                        # — only the live "Forecast Report Card" post is gone
+                        # (2026-08-15: bare accuracy % with no baseline shown
+                        # read as a claim it couldn't back up; see
+                        # zero_dte/embeds.py docstring + docs/strategy-log.md).
                         results = await evaluate_forecasts(self.client, ticker, today_str)
                         if results:
-                            user_score = evaluate_votes(ticker, today_str, results)
                             logger.info("[%s] [%s] Forecast evaluation: %d forecasts scored, saved to data/results-%s.json",
                                         time_str, ticker, len(results), today_str)
-                            if channel:
-                                await channel.send(
-                                    embed=forecast_results_embed(ticker, today_str, results, user_score),
-                                    view=ReportDetailsView(ticker, today_str, results),
-                                )
                     except Exception as exc:
                         evaluation_succeeded = False
                         logger.exception("[%s] [%s] Forecast evaluation error: %s", time_str, ticker, exc)

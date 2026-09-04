@@ -8,7 +8,7 @@ from datetime import datetime
 import pytz
 
 from core.market_data import MarketDataClient
-from core.indicators import rsi_series, pivots as _pivots
+from core.indicators import rsi_series, pivots as _pivots, atr as _atr
 from core.paths import INDICATOR_WEIGHTS_FILE as _WEIGHTS_FILE
 from config import (
     SMA_PERIOD,
@@ -175,6 +175,19 @@ class DirectionForecast:
     interval: int = FORECAST_INTERVAL_MINUTES  # candle interval/window (minutes)
     day_high: float | None = None     # actual session high so far (not a projection)
     day_low: float | None = None      # actual session low so far
+    atr: float | None = None          # signal-time ATR used by the future grader
+    # Descriptive-only state, NOT graded and NOT a claim of predictive edge.
+    # backtest_momentum_extension.py tests both as directional/reversal
+    # predictors on frozen ATR-normalized intraday history and has not found
+    # a robust cross-asset directional edge (see docs/strategy-log.md,
+    # 2026-08-15 entry) — they exist here purely as a
+    # "what does the current bar look like" readout (velocity + how
+    # stretched vs VWAP/RSI), same status as day_high/day_low or the RSI
+    # caution line. Never feed these into the weighted vote or grade them as
+    # a hit/miss without a fresh backtest clearing the same bar every other
+    # stream here had to clear.
+    momentum_score: float | None = None    # -100..+100, 3-bar price move in ATR units
+    extension_score: float | None = None   # 0..100, RSI/VWAP stretch + divergence-against-trend bonus
 
 
 def _rsi_caution(prev: float | None, cur: float | None) -> str | None:
@@ -416,6 +429,50 @@ def check_relative_volume(candles: pd.DataFrame, lookback: int = RVOL_LOOKBACK) 
 
 # ── 30-min forecast ─────────────────────────────────────────
 
+# Descriptive-only momentum/extension scoring (NOT graded, NOT a voter in the
+# weighted vote below). backtest_momentum_extension.py tested both as
+# directional/reversal predictors on real ATR-normalized SPY history and
+# found no robust cross-asset directional edge (docs/strategy-log.md,
+# 2026-08-15) — they are kept only as a "what does the current bar look like"
+# readout, same status as day_high/day_low. The score constants match the
+# backtest; the live divergence input can differ when its auxiliary 5m frame
+# is used, so research must still treat live logs as the source of truth.
+EXTENSION_ATR_CAP = 3.0    # ATR multiples of price-vs-VWAP distance treated as "fully extended" (score 100)
+MOMENTUM_ATR_CAP = 1.0     # ATR multiples of the 3-bar price move treated as "max velocity" (score 100)
+DIVERGENCE_SCORE_BONUS = 30
+
+
+def _momentum_extension(closes: pd.Series, rsi_val: float | None, vwap_val: float | None,
+                        current_price: float, atr_val: float | None,
+                        divergence: str | None) -> tuple[float | None, float | None]:
+    """(momentum_score, extension_score) — see the module-level note above.
+    Returns (None, None) when there isn't enough data (short session, no ATR
+    yet) rather than a fabricated 0, so callers/embeds can tell "unknown"
+    from "flat"."""
+    if atr_val is None or atr_val <= 0 or len(closes) < 4:
+        return None, None
+    mom_raw = float(closes.iloc[-1] - closes.iloc[-4])
+    momentum_score = float(np.clip(mom_raw / atr_val / MOMENTUM_ATR_CAP * 100, -100, 100))
+
+    extension_score = None
+    if rsi_val is not None:
+        rsi_component = abs(rsi_val - 50) / 50 * 100
+        vwap_component = 0.0
+        if vwap_val:
+            vwap_dist_atr = abs(current_price - vwap_val) / atr_val
+            vwap_component = float(np.clip(vwap_dist_atr / EXTENSION_ATR_CAP, 0, 1) * 100)
+        call = ("BULLISH" if momentum_score > 0
+                else "BEARISH" if momentum_score < 0 else None)
+        against = call is not None and (
+            (divergence == "BULLISH_DIV" and call == "BEARISH")
+            or (divergence == "BEARISH_DIV" and call == "BULLISH")
+        )
+        bonus = DIVERGENCE_SCORE_BONUS if against else 0
+        extension_score = min(100.0, 0.5 * rsi_component + 0.5 * vwap_component + bonus)
+
+    return round(momentum_score, 1), (round(extension_score, 1) if extension_score is not None else None)
+
+
 def _detect_divergence(closes: pd.Series, rsi_values: pd.Series,
                        lookback: int = RSI_DIV_LOOKBACK,
                        order: int = RSI_PIVOT_ORDER) -> str | None:
@@ -539,7 +596,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         timestamps = timestamps.dt.tz_localize("UTC").dt.tz_convert(ET)
     else:
         timestamps = timestamps.dt.tz_convert(ET)
-    today_mask = timestamps.dt.date == today
+    today_mask = ((timestamps.dt.date == today) & (timestamps >= session_start))
     today_data = data[today_mask.values]
     vwap_val = compute_vwap(today_data)
     if vwap_val is not None:
@@ -611,6 +668,19 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         signals["Momentum"] = "BULLISH" if mom > 0 else "BEARISH"
         weights["Momentum"] = indicator_weights["Momentum"]
 
+    # Descriptive-only momentum/extension readout (see module-level note near
+    # _momentum_extension) — computed here where RSI/VWAP/divergence/ATR are
+    # already in scope, never fed into signals/weights above.
+    atr_val = float(_atr(data, 14).iloc[-1]) if len(data) >= 14 else None
+    if atr_val is not None and np.isnan(atr_val):
+        atr_val = None
+    # Velocity is explicitly intraday: all four closes must come from today's
+    # session. The 10:00/10:15 reads therefore remain unknown rather than
+    # blending yesterday's closing bars into an "intraday" score.
+    score_closes = today_data["close"].astype(float)
+    momentum_score, extension_score = _momentum_extension(
+        score_closes, rsi_val, vwap_val, current_price, atr_val, divergence)
+
     # VIX (inverse): rising VIX -> SPY bearish, falling -> bullish.
     # Live only — skipped when replaying historical data (asof set) since the
     # backfill can't align a historical VIX series.
@@ -674,4 +744,7 @@ async def compute_30m_forecast(client: MarketDataClient, ticker: str,
         interval=interval,
         day_high=day_high,
         day_low=day_low,
+        atr=(round(atr_val, 4) if atr_val is not None else None),
+        momentum_score=momentum_score,
+        extension_score=extension_score,
     )

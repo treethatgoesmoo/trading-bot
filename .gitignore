@@ -13,3 +13,4 @@ dashboard.html
 # Ignore the generated dashboard and any scratch files, but keep the JSON history.
 data/dashboard.html
 .api_budget.json
+.research-data/

@@ -59,6 +59,11 @@ def render(report: dict) -> str:
     fc = report["forecast"]
     n_days = len(report["dates"])
     range_txt = f"{lo} → {hi}" if lo else "no data yet"
+    grading_schema = report.get("grading_schema")
+    excluded_schema_rows = report.get("forecast_rows_excluded_by_schema", 0)
+    schema_txt = (f" · grading v{grading_schema}"
+                  f"{' (' + str(excluded_schema_rows) + ' older rows excluded)' if excluded_schema_rows else ''}"
+                  if grading_schema is not None else "")
 
     # ── Headline KPIs ────────────────────────────────────────────────────
     bias, trades = report["bias"], report["trades"]
@@ -239,7 +244,7 @@ def render(report: dict) -> str:
 <body>
 <header>
   <h1>📊 Trading Bot — Performance Dashboard</h1>
-  <div class="sub">{_esc(range_txt)} · {n_days} day(s) with data · {fc['total']} forecasts · {fc['neutral']} neutral · avg confidence {fc['avg_confidence']:.0f}%</div>
+  <div class="sub">{_esc(range_txt)} · {n_days} day(s) with data · {fc['total']} forecasts · {fc['neutral']} neutral · avg confidence {fc['avg_confidence']:.0f}%{_esc(schema_txt)}</div>
 </header>
 <div class="wrap">
   <div class="kpis">{kpi_html}</div>
