@@ -12,7 +12,7 @@ Personal Discord decision-support bot for manual trading. It posts and grades ma
 | Swing signals | On | Daily signals for TSLA, AMD, GOOG, and META with paper 7–14 DTE contract suggestions |
 | SPXW flow shadow | Off | Experimental, paper-only turning-point and continuation observations using ThetaData |
 
-The forecast also displays completed 30-minute and one-hour candle direction, momentum, and stretch as **context only**. These fields are not independent trade signals. See [docs/state-of-the-code.md](docs/state-of-the-code.md) for the authoritative current snapshot and [docs/strategy-log.md](docs/strategy-log.md) for the evidence history.
+The forecast also displays completed 30-minute and one-hour candle direction, momentum, and stretch as **context only**. These fields are not independent trade signals. See [docs/state-of-the-code.md](docs/state-of-the-code.md) for the authoritative current snapshot, [docs/next-steps.md](docs/next-steps.md) for the prioritized roadmap, and [docs/strategy-log.md](docs/strategy-log.md) for the evidence history.
 
 ## Setup
 
