@@ -49,13 +49,13 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 | Idea | Status | Key number |
 |---|---|---|
-| 5m forecast stream as a posted alert | ⚠️ muted (still graded) | 51.4% directional (186/362) vs 55.4% always-BULLISH bar on 5m windows; posts removed 2026-08-12, stream keeps logging/grading |
+| 5m forecast stream | ❌ removed from live computation/posting | Historical 51.4% directional (186/362) vs 55.4% always-BULLISH; retained only in old data/research references |
 | BB touch watcher 1m stream | ❌ dropped | ~15 ungraded pings/day (loudest stream in the channel, no evidence attached); 5m stream stays and is now graded (revert-to-middle vs extend) |
 | Candlestick patterns → next-bar direction (daily AND weekly) | ❌ rejected both horizons | Daily: 48.3% (n=1066) vs 54.3% drift. Weekly, 25y × 4 ETFs: 52.4% (n=1283) vs 50.9% weighted bar; every "edge" flipped sign on out-of-sample DIA (Hammer +18.6p IWM / −11.2p DIA) |
-| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ demoted to informational | 50.9% (29/57) vs 52.6% always-BULLISH; direction gate removed from break-and-retest 2026-08-11; NEUTRAL still stands down; still logged/graded |
+| Daily bias: 2-of-3 vote (first candle + gap + 50 SMA) | ❌ removed from live bot | 50.9% (29/57) vs 52.6% always-BULLISH; historical replay helpers remain only for research |
 | Forecast weight tuning pooled 5m+15m streams | ⚠️ fixed to per-stream | Pooling floored real 15m signals (MACD 57.6% on 15m vs 50.5% on 5m); confidence still uncalibrated (90%+ stated → 53% realized) |
 | Tuner statistical rigor: shrinkage + step cap + baselines + overlap audit | ✅ adopted | Always-BULLISH grades 55.4% on 5m — above every 5m indicator; EMA+RSI vote-agreement 100% on 15m (one signal counted 2-3×) |
-| LONG break-and-retest entries | ❌ rejected (warned, not removed) | 3/34 wins, −21.8R lifetime; no exit geometry fixes it |
+| Break-and-retest entries (including LONG) | ❌ removed from live bot | LONG was 3/34 wins and −21.8R lifetime; historical data remains |
 | Dow Theory reversal rule as swing voter | ❌ rejected | 50.5–51.3% at +10 bars vs 55% Structure voter, 60% constant-BULLISH baseline |
 | VWAP as hard veto filter | ⚠️ demoted to advisory | Only filter that vetoed would-be winners; never correct as sole veto |
 | VIX vote (original spec: stale 30m bars, fixed deadband) | ⚠️ rebuilt | 47% over 329 live windows → z-score gate on fresh 5m bars |
@@ -65,7 +65,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 | VOLATILE conflict guard (vote-count version) | ⚠️ recalibrated | Suppressed 60%-accurate forecasts, passed 0/6 → weight-ratio 0.75 guard (27% above vs 61% below) |
 | RSI divergence inversion hack | ❌ removed as overfit | Fitted to old 5-bar endpoint compare; replaced with pivot detector at face value |
 | Prev-day candle direction as bias | ❌ rejected | 48% (random) over backtest |
-| Standalone RSI watcher pings | ⚠️ folded into forecast | Alert spam without decision value; divergence now a forecast voter |
+| Standalone RSI watcher / pivot divergence | ❌ removed from live output and voting | Watcher was noisy; later divergence results did not justify a live vote |
 | MACD momentum + candle direction as forecast voters | ⚠️ downweighted to noise floor | 48.9% / 48.8% (coin flip) over 55-day backtest |
 
 ---
