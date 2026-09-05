@@ -1,6 +1,6 @@
 # Current Repository State — 2026-09-04
 
-This is the current operational snapshot. Historical decisions, rejected ideas, and measured results remain in [`strategy-log.md`](strategy-log.md). Detailed research protocols are under [`research/`](research/).
+This is the current operational snapshot. The prioritized implementation and evidence roadmap is in [`next-steps.md`](next-steps.md). Historical decisions, rejected ideas, and measured results remain in [`strategy-log.md`](strategy-log.md). Detailed research protocols are under [`research/`](research/).
 
 ## Purpose and safety boundary
 
