@@ -13,13 +13,9 @@ LOGS_DIR = os.path.join(ROOT, "logs")
 # Licensed ThetaData/OPRA snapshots are local-only and must never enter data/.
 THETADATA_DATA_DIR = os.path.join(ROOT, ".thetadata-data")
 
-WATCHLIST_FILE = os.path.join(ROOT, ".watchlist.json")
-SWING_WATCHLIST_FILE = os.path.join(ROOT, ".swing_watchlist.json")
-SWING_STATE_FILE = os.path.join(ROOT, ".swing_daily_state.json")
+# Historical research paths; no live watchlist or swing state remains.
 API_BUDGET_FILE = os.path.join(ROOT, ".api_budget.json")
 
 INDICATOR_WEIGHTS_FILE = os.path.join(DATA_DIR, "indicator_weights.json")
 SWING_WEIGHTS_FILE = os.path.join(DATA_DIR, "swing_weights.json")
-SWING_OPEN_FILE = os.path.join(DATA_DIR, "swing_open.json")
-
 DASHBOARD_OUT = os.path.join(ROOT, "dashboard.html")

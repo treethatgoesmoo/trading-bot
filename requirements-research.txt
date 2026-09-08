@@ -1,0 +1,4 @@
+# Optional. Never required just to start the Discord service.
+-r requirements.txt
+yfinance>=0.2.30
+aiohttp>=3.9.0
