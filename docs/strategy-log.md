@@ -4,9 +4,15 @@ A running record of every strategy idea, signal, filter, and tuning change we've
 
 Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what was tried, the evidence, and the commit(s).
 
-## Local implementation — experimental SPX Action checklist (pending deployment)
+## Local implementation — BB events replace rejected SPX indicator
 
-**Status:** ⚠️ owner-approved prospective paper hypothesis; frozen `spx-action-retest-v1`, not a validated strategy. No commit, push, deployment, or paid data calls for this addition.
+**Status:** ⚠️ observational replacement at owner request, not adoption of a proven trading rule. The owner found the current signals unhelpful and requested 1m/5m/15m BB contacts with RSI/MACD. `bb-events-v1` distinguishes fresh contacts, outside closes, rejection/back-inside and second-close continuation. Parameters are fixed at BB(20,2), RSI(14), MACD(12,26,9), with completed-candle/receipt-time gates and two prior sessions for warm-up. No directional score or option recommendation is inferred.
+
+Active SPX Action/context and legacy streams are removed, along with mode selection, flow/proxy collection and shared notification chatter. Historical modules/data and frozen ORB evidence remain. New BB delivery evidence is separate; BB outcomes are **not evaluated**. See [research memo](research/bb-multitimeframe-and-ai-tools.md) and [implementation contract](bb-notifications.md). 252 offline regression tests pass; no held-out event study, live delivery or profitability validation. No AI subscription added and no deployment performed.
+
+## Historical implementation — experimental SPX Action checklist (now retired from live assembly)
+
+**Status:** ⚠️ owner-approved prospective paper hypothesis; frozen `spx-action-retest-v1`, not a validated strategy. Merged through PR #39; Pi deployment and live paid-data validation are not verified.
 
 - Adds Action before the five context fields: CONSIDER CALLS/PUTS — experimental, WAIT FOR CONFIRMATION, WAIT FOR RETEST — DON'T CHASE, WAIT FOR REVERSAL CONFIRMATION, NO TRADE.
 - Price-only rule: fresh complete opening-range structure plus an observed current boundary retest and aligned steady/strengthening completed five-minute momentum may produce a candidate. Aligned holds wait for retest; first/reclaimed breaks wait for confirmation; failed attempts wait rather than imply an opposite entry. Fading/mixed/opposed/missing momentum cannot qualify a retest candidate. No extension threshold is invented.
@@ -17,7 +23,7 @@ Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what wa
 
 ## Local implementation — unified SPX notification replacement (pending deployment)
 
-**Status:** ✅ owner-adopted UI/data-use workflow; ⚠️ no strategy edge adopted or demonstrated. Prepared for review on `feat/spx-context-actions-audit`; Pi deployment is not verified.
+**Status:** ✅ owner-adopted UI/data-use workflow; ⚠️ no strategy edge adopted or demonstrated. Merged through PR #39; Pi deployment is not verified. The owner's subsequent correction requires removing the retained legacy notification mode, not merely disabling it; that cleanup is pending. See [session-handoff.md](session-handoff.md).
 
 - The owner replaced all old automatic notifications with **Structure, Setup, Momentum, Confirmation, and Invalidation**. Default `NOTIFICATION_MODE=spx` overrides the old forecast, watcher, swing and full-shadow feature flags. Legacy code/history remain for explicit rollback; automatic legacy tuning does not run in replacement mode.
 - The new description uses completed SPX opening-range/session structure, complete immediately prior-session levels, descriptive five-minute candle geometry, indicative Yahoo SPY confirmation, and optional experimental SPXW flow. Flow does not change price-derived direction. No probability, turning-point guarantee, contract recommendation, or revived break-and-retest entry is claimed.

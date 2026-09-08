@@ -59,48 +59,29 @@ class QuietFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AssemblyTests(unittest.IsolatedAsyncioTestCase):
-    async def assemble(self, start, *, full_flow=False, key='fake', audit_flow=True):
+    async def assemble(self, start, *, key='fake'):
         import bot.core as core
         bot = MagicMock()
         bot.__aenter__ = AsyncMock(return_value=bot)
         bot.__aexit__ = AsyncMock(return_value=False)
         bot.add_cog = AsyncMock()
         bot.start = AsyncMock()
-        client = MagicMock()
-        client.close = AsyncMock()
-        values = dict(DISCORD_TOKEN='fake', ZERO_DTE_ENABLED=False, SWING_ENABLED=False,
-                      SPX_FLOW_ENABLED=full_flow, THETADATA_API_KEY=key,
-                      THETA_AUDIT_START_DATE=start, THETA_AUDIT_DAYS=30,
-                      THETA_AUDIT_FLOW_ENABLED=audit_flow, NOTIFICATION_MODE='legacy')
+        values = dict(DISCORD_TOKEN='fake', THETADATA_API_KEY=key, SPX_CONTEXT_CHANNEL_ID=0)
         with patch.multiple(core, **values), patch.object(core, 'build_bot', return_value=bot), \
-                patch.object(core, 'MarketDataClient', return_value=client), \
+                patch('config.THETA_AUDIT_START_DATE', start), \
                 patch('core.theta_usage.audit_active', return_value=True):
             await core.run_bot()
         return [c.args[0] for c in bot.add_cog.call_args_list]
 
-    async def test_default_off(self):
-        cogs = await self.assemble('')
+    async def test_real_bb_cog_is_the_only_collector_with_or_without_audit(self):
+        for start in ('', '2026-09-08', 'not-a-date'):
+            with self.subTest(start=start):
+                cogs = await self.assemble(start)
+                self.assertEqual([type(c).__name__ for c in cogs], ['SharedCog', 'BBSignalCog'])
+                self.assertEqual(cogs[1].theta_client._purpose, 'bb_events')
+                self.assertEqual({command.name for command in cogs[1].get_commands()},
+                                 {'bb', 'status', 'audit'})
+
+    async def test_no_key_never_installs_fallback_or_flow_sampler(self):
+        cogs = await self.assemble('2026-09-08', key='')
         self.assertEqual([type(c).__name__ for c in cogs], ['SharedCog'])
-
-    async def test_audit_installs_quiet_flow_not_full_watch(self):
-        cogs = await self.assemble('2026-09-08')
-        self.assertEqual([type(c).__name__ for c in cogs], ['SharedCog', 'SPXFlowCog', 'AuditCog'])
-        self.assertTrue(cogs[1].audit_only)
-        self.assertEqual(cogs[1].theta_client._purpose, 'audit_flow')
-        self.assertEqual(cogs[2].theta_client._purpose, 'audit')
-
-    async def test_existing_flow_is_not_duplicated(self):
-        cogs = await self.assemble('2026-09-08', full_flow=True)
-        flows = [c for c in cogs if isinstance(c, SPXFlowCog)]
-        self.assertEqual(len(flows), 1)
-        self.assertFalse(flows[0].audit_only)
-        self.assertEqual(flows[0].theta_client._purpose, 'spx_flow')
-
-    async def test_no_key_or_invalid_date_no_sampler(self):
-        for start, key in [('2026-09-08', ''), ('not-a-date', 'fake')]:
-            cogs = await self.assemble(start, key=key)
-            self.assertEqual([type(c).__name__ for c in cogs], ['SharedCog'])
-
-    async def test_price_only_opt_out(self):
-        cogs = await self.assemble('2026-09-08', audit_flow=False)
-        self.assertEqual([type(c).__name__ for c in cogs], ['SharedCog', 'AuditCog'])

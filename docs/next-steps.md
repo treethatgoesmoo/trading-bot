@@ -1,5 +1,7 @@
 # Next Steps
 
+> **Current next steps:** the BB 1m/5m/15m + RSI/MACD replacement and removal of old notification registration/mode selection are implemented locally. Follow [bb-notifications.md](bb-notifications.md): review/merge, then validate data freshness, warm-up, private delivery and deduplication on the Pi. Separately complete the held-out BB rejection/continuation event study; no signal edge has been established. Preserve the original audit date and licensed evidence. No paid AI integration is selected. The phases below are historical, not instructions to restore SPX actions or flow notifications.
+
 This plan starts from the repository state documented on 2026-09-04. The immediate goal is to learn whether the experimental SPXW shadow is operationally reliable and adds information—not to promote it into a trading recommendation.
 
 ## Phase 1 — Deploy the paper shadow safely

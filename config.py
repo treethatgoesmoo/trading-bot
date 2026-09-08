@@ -13,33 +13,23 @@ def _flag(name: str, default: str = "1") -> bool:
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 
-# Feature toggles
-ZERO_DTE_ENABLED = _flag("ZERO_DTE_ENABLED")
-SWING_ENABLED = _flag("SWING_ENABLED")
-# Isolated, paper-only SPXW turning-point shadow watch. Disabled by default
-# because its provisional rules have not established predictive edge.
-SPX_FLOW_ENABLED = _flag("SPX_FLOW_ENABLED", "0")
-
-# Unified SPX notifications replace ALL legacy trading streams by default,
-# including when old .env feature toggles remain set. Explicit rollback only.
-NOTIFICATION_MODE = os.getenv("NOTIFICATION_MODE", "spx").strip().lower()
+# Sole live stream: completed 1m/5m/15m BB events with RSI/MACD context.
+# Preserve the existing private-channel and poll keys for Pi migration.
+# No notification selector or legacy feature flags can install other streams.
 SPX_CONTEXT_CHANNEL_ID = int(os.getenv("SPX_CONTEXT_CHANNEL_ID", "0"))
 SPX_CONTEXT_POLL_SECONDS = max(30, int(os.getenv("SPX_CONTEXT_POLL_SECONDS", "60")))
-SPX_CONTEXT_COOLDOWN_SECONDS = max(0, int(os.getenv("SPX_CONTEXT_COOLDOWN_SECONDS", "120")))
-SPX_CONTEXT_HEARTBEAT_MINUTES = max(1, int(os.getenv("SPX_CONTEXT_HEARTBEAT_MINUTES", "30")))
-SPX_CONTEXT_PROXY_ENABLED = _flag("SPX_CONTEXT_PROXY_ENABLED", "1")
-# Optional experimental flow runs only within the explicit audit window.
-SPX_CONTEXT_FLOW_ENABLED = _flag("SPX_CONTEXT_FLOW_ENABLED", "1")
+# Historical context-module test compatibility only; not live controls.
+SPX_CONTEXT_COOLDOWN_SECONDS = 120
+SPX_CONTEXT_HEARTBEAT_MINUTES = 30
+SPX_CONTEXT_PROXY_ENABLED = False
 
 # Opt-in 30-calendar-day subscription/ORB audit. Set an explicit ET start date
 # on deployment; never restart the clock automatically on process restarts.
 THETA_AUDIT_START_DATE = os.getenv("THETA_AUDIT_START_DATE", "").strip()
 THETA_AUDIT_DAYS = int(os.getenv("THETA_AUDIT_DAYS", "30"))
-# If the full SPXFlow watch is off, collect morning flow quietly for the paired
-# ORB comparison. No Discord alerts, contract selection, or orders are added.
-THETA_AUDIT_FLOW_ENABLED = _flag("THETA_AUDIT_FLOW_ENABLED", "1")
+# The live BB collector makes index requests only, never options-flow calls.
 
-# API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
+# Historical research sources; live BB data comes from ThetaData only.
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 # ThetaData v3 direct Python client (Python 3.12+; no local Java terminal).
@@ -51,7 +41,9 @@ TWELVEDATA_CALLS_PER_MIN = 7
 TWELVEDATA_DAILY_LIMIT = 750
 FINNHUB_CALLS_PER_MIN = 55
 
-# Trading
+# Historical strategy/replay settings below do NOT configure BB events.
+# BB(20,2), RSI(14), MACD(12,26,9) are versioned in zero_dte/bb_signals.py.
+# Shared operational settings (git housekeeping/prefix) remain active.
 TICKERS = [t.strip().upper() for t in os.getenv("TICKERS", "SPY").split(",") if t.strip()]
 # SMA_PERIOD/RISK_REWARD_RATIO are no longer read by the live bot (morning
 # bias + break-and-retest entries were removed) but stay live for
@@ -109,9 +101,6 @@ FORECAST_END_MINUTE = 0
 # pattern watcher were removed in a later pass — see
 # docs/state-of-the-code.md for the full list and rationale.)
 
-# Post the latest git change to the alert channel when the bot (re)starts.
-STARTUP_CHANGELOG_ENABLED = _flag("STARTUP_CHANGELOG_ENABLED")
-
 # Market hours (Eastern Time) — still read by bot/shared_cog.py and
 # swing/cog.py even though zero_dte's own premarket/first-candle logic
 # (which used to read this too) was removed.
@@ -120,7 +109,6 @@ MARKET_OPEN_MINUTE = 30
 
 # Economic events (Kalshi public market-data API — no key required)
 KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
-ECON_EVENTS_ENABLED = _flag("ECON_EVENTS_ENABLED")
 ECON_LOOKAHEAD_DAYS = int(os.getenv("ECON_LOOKAHEAD_DAYS", "14"))  # Briefing look-ahead window
 
 # RSI thresholds used by the intraday forecast and retained historical
@@ -171,9 +159,7 @@ VIX_SIGNAL_DEADBAND_PCT = 0.3  # early-day fallback: VIX 30-min move below this 
 VIX_SIGNAL_MIN_Z = float(os.getenv("VIX_SIGNAL_MIN_Z", "1.0"))  # 30-min move must clear this many std devs of today's moves to vote
 VIX_FORECAST_WEIGHT = 2.0     # weight of the VIX vote in the 15-min forecast
 
-# Nightly self-tuning: retune forecast + swing indicator weights from graded
-# history after each session close (before the git auto-commit).
-AUTO_TUNE_ENABLED = _flag("AUTO_TUNE_ENABLED")
+# Historical offline weight-tuning settings; no automatic tuning is installed.
 # Rolling window for the nightly 0DTE retune (days of graded history; 0 = all).
 # Keeps pre-deadband force-labeled days from dominating the stats forever.
 AUTO_TUNE_DAYS = int(os.getenv("AUTO_TUNE_DAYS", "30"))
