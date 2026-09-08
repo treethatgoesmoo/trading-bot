@@ -20,6 +20,25 @@ SWING_ENABLED = _flag("SWING_ENABLED")
 # because its provisional rules have not established predictive edge.
 SPX_FLOW_ENABLED = _flag("SPX_FLOW_ENABLED", "0")
 
+# Unified SPX notifications replace ALL legacy trading streams by default,
+# including when old .env feature toggles remain set. Explicit rollback only.
+NOTIFICATION_MODE = os.getenv("NOTIFICATION_MODE", "spx").strip().lower()
+SPX_CONTEXT_CHANNEL_ID = int(os.getenv("SPX_CONTEXT_CHANNEL_ID", "0"))
+SPX_CONTEXT_POLL_SECONDS = max(30, int(os.getenv("SPX_CONTEXT_POLL_SECONDS", "60")))
+SPX_CONTEXT_COOLDOWN_SECONDS = max(0, int(os.getenv("SPX_CONTEXT_COOLDOWN_SECONDS", "120")))
+SPX_CONTEXT_HEARTBEAT_MINUTES = max(1, int(os.getenv("SPX_CONTEXT_HEARTBEAT_MINUTES", "30")))
+SPX_CONTEXT_PROXY_ENABLED = _flag("SPX_CONTEXT_PROXY_ENABLED", "1")
+# Optional experimental flow runs only within the explicit audit window.
+SPX_CONTEXT_FLOW_ENABLED = _flag("SPX_CONTEXT_FLOW_ENABLED", "1")
+
+# Opt-in 30-calendar-day subscription/ORB audit. Set an explicit ET start date
+# on deployment; never restart the clock automatically on process restarts.
+THETA_AUDIT_START_DATE = os.getenv("THETA_AUDIT_START_DATE", "").strip()
+THETA_AUDIT_DAYS = int(os.getenv("THETA_AUDIT_DAYS", "30"))
+# If the full SPXFlow watch is off, collect morning flow quietly for the paired
+# ORB comparison. No Discord alerts, contract selection, or orders are added.
+THETA_AUDIT_FLOW_ENABLED = _flag("THETA_AUDIT_FLOW_ENABLED", "1")
+
 # API keys (Twelve Data and Finnhub are primary; yfinance is the free fallback)
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")

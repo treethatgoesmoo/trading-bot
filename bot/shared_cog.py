@@ -26,6 +26,7 @@ from config import (
     MARKET_OPEN_HOUR,
     MARKET_OPEN_MINUTE,
     STARTUP_CHANGELOG_ENABLED,
+    NOTIFICATION_MODE,
 )
 from core import analytics, market_calendar
 from core.economic_events import EconEvent, fetch_events
@@ -162,7 +163,7 @@ class SharedCog(commands.Cog, name="Shared"):
         """Post the latest change once per process — so a restart (deploy)
         shows what's now running. on_ready re-fires on reconnects; the flag
         keeps this to the first."""
-        if self._startup_notice_sent or not STARTUP_CHANGELOG_ENABLED:
+        if NOTIFICATION_MODE != "legacy" or self._startup_notice_sent or not STARTUP_CHANGELOG_ENABLED:
             return
         self._startup_notice_sent = True
         channel = self.bot.get_channel(ALERT_CHANNEL_ID)
@@ -184,7 +185,7 @@ class SharedCog(commands.Cog, name="Shared"):
 
     async def maybe_post_econ_briefing(self, channel, today_str: str) -> None:
         """Post the economic-event briefing once per trading day. Best-effort."""
-        if not ECON_EVENTS_ENABLED or channel is None:
+        if NOTIFICATION_MODE != "legacy" or not ECON_EVENTS_ENABLED or channel is None:
             return
         if self._econ_briefing_date == today_str:
             return
@@ -201,7 +202,7 @@ class SharedCog(commands.Cog, name="Shared"):
         """Nightly self-tune: refresh both weight files from graded history
         (once per trading day, after close — before the git auto-commit so the
         tuned weights land in the same history commit)."""
-        if not AUTO_TUNE_ENABLED or self._tune_date == today_str:
+        if NOTIFICATION_MODE != "legacy" or not AUTO_TUNE_ENABLED or self._tune_date == today_str:
             return
         self._tune_date = today_str  # set first so a failure doesn't retry every poll
 
@@ -237,7 +238,7 @@ class SharedCog(commands.Cog, name="Shared"):
         message = f"Capture trading history for {today_str}"
         changed, detail = await asyncio.to_thread(commit_data_history, message, GIT_AUTOCOMMIT_PUSH)
         logger.info("History auto-commit (%s): %s", today_str, detail)
-        if changed and channel:
+        if changed and channel and NOTIFICATION_MODE == "legacy":
             await channel.send(f"\U0001f4be History saved to git — {detail} ({today_str}).")
 
     @tasks.loop(seconds=60)
@@ -307,6 +308,9 @@ class SharedCog(commands.Cog, name="Shared"):
     @commands.command(name="stats")
     async def cmd_stats(self, ctx, days: int = None):
         """Show performance stats across history. Usage: !stats [days]"""
+        if NOTIFICATION_MODE == "spx":
+            await ctx.send('The old forecast/swing stats are historical, not SPX context results. Use !audit in the private SPX channel.')
+            return
         try:
             report = await asyncio.to_thread(analytics.build_report, days)
         except Exception as exc:

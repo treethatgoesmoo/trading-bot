@@ -4,6 +4,30 @@ A running record of every strategy idea, signal, filter, and tuning change we've
 
 Entry format: **Status** (✅ adopted / ⚠️ adjusted / ❌ rejected), what was tried, the evidence, and the commit(s).
 
+## Local implementation — experimental SPX Action checklist (pending deployment)
+
+**Status:** ⚠️ owner-approved prospective paper hypothesis; frozen `spx-action-retest-v1`, not a validated strategy. No commit, push, deployment, or paid data calls for this addition.
+
+- Adds Action before the five context fields: CONSIDER CALLS/PUTS — experimental, WAIT FOR CONFIRMATION, WAIT FOR RETEST — DON'T CHASE, WAIT FOR REVERSAL CONFIRMATION, NO TRADE.
+- Price-only rule: fresh complete opening-range structure plus an observed current boundary retest and aligned steady/strengthening completed five-minute momentum may produce a candidate. Aligned holds wait for retest; first/reclaimed breaks wait for confirmation; failed attempts wait rather than imply an opposite entry. Fading/mixed/opposed/missing momentum cannot qualify a retest candidate. No extension threshold is invented.
+- Prior-session levels, SPY proxy and experimental options flow are contextual only, not action gates. Metadata preserves version, reason, candidate direction and source roles; SPX consumed request IDs remain linked. A contextual flow observation gets no action-input credit.
+- Sent-only report groups recorded valid candidates using existing delivery-time SPX outcomes. Wait/no-trade receives no directional action score, zero return or avoided-loss credit. Unknown/legacy actions remain unclassified, terminal outcomes are not backfilled, and correlated observations are not independent trades or option P&L.
+- Manual fresh bid/ask/spread and premium-risk checks are required before any purchase. No contract selection, orders, positions or exits. The price-derived direction and frozen first-close ORB rule are untouched.
+- **Evidence:** synthetic regression tests only. Prior rejected momentum/extension studies remain relevant: these ingredients cannot be promoted as predictive just because a checklist is implemented. Multi-regime honest replay, out-of-sample evidence and executable option validation are still missing. Record the prospective results before any strategy promotion or retuning.
+
+## Local implementation — unified SPX notification replacement (pending deployment)
+
+**Status:** ✅ owner-adopted UI/data-use workflow; ⚠️ no strategy edge adopted or demonstrated. Prepared for review on `feat/spx-context-actions-audit`; Pi deployment is not verified.
+
+- The owner replaced all old automatic notifications with **Structure, Setup, Momentum, Confirmation, and Invalidation**. Default `NOTIFICATION_MODE=spx` overrides the old forecast, watcher, swing and full-shadow feature flags. Legacy code/history remain for explicit rollback; automatic legacy tuning does not run in replacement mode.
+- The new description uses completed SPX opening-range/session structure, complete immediately prior-session levels, descriptive five-minute candle geometry, indicative Yahoo SPY confirmation, and optional experimental SPXW flow. Flow does not change price-derived direction. No probability, turning-point guarantee, contract recommendation, or revived break-and-retest entry is claimed.
+- Source/request provenance connects fetched data to incorporation and actual delivered notifications. Sent observations, including fresh on-demand views, receive 15/30-minute forward SPX movement from availability after Discord acknowledgement. Missing/stale/unknown delivery and outcomes remain explicit; neutral descriptions have no invented correctness score. These correlated observations are not independent trades or option P&L.
+- The [frozen first-close ORB protocol](research/theta-subscription-audit.md) remains unchanged and separate. It compares identical candidates with/without a flow filter using the same collector, not another current-session SPX request. No thresholds are tuned from this month's results.
+- Evidence so far is implementation testing with synthetic/mocked inputs—not live replacement results or a historical profitability backtest. The retired ensemble/break-and-retest still lacks an honest replay harness; multi-regime and executable-option validation remain required before strategy promotion.
+- Deployment requires the [private-channel migration checklist](spx-notifications.md), an explicit fixed ET audit start, and verified Pi collection **and delivery**. Live index use continues after the audit ends; optional flow/telemetry/audit mirrors stop, billing does not.
+
+**Pending evidence:** record the month’s capture quality, fetched-versus-used data, delivered outcomes, paired ORB comparison, and renewal decision here when the experiment concludes. UI adoption is not the experiment's successful conclusion.
+
 ---
 
 ## 2026-09-04 — Experimental SPXW turning-point watch enabled for paper-only live testing

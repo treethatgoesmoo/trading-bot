@@ -284,7 +284,7 @@ def collect(
         print(f"Verified existing frozen snapshot: {destination}")
         return destination
 
-    client = ThetaDataClient()
+    client = ThetaDataClient(purpose="research_collector")
     print("Checking SPXW expirations...", flush=True)
     expirations = client.list_expirations(OPTION_ROOT)
     if session_date not in expirations:
