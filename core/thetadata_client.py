@@ -22,6 +22,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 import config
+from core import theta_usage
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +126,48 @@ class OptionSnapshot:
 class ThetaDataClient:
     """Small adapter around the current ThetaData v3 Python library."""
 
-    def __init__(self, api_key: str | None = None, *, client: Any | None = None) -> None:
+    def __init__(
+        self, api_key: str | None = None, *, client: Any | None = None,
+        purpose: str = "unspecified",
+    ) -> None:
         self._api_key = api_key or config.THETADATA_API_KEY
         self._client = client
+        self._purpose = purpose if purpose in theta_usage.PURPOSES else "unspecified"
+        # Dedicated single-flight collectors copy this immediately after a call.
+        # None outside the audit window; never invent persisted request evidence.
+        self._last_request_id: str | None = None
+
+    def _request(self, endpoint: str, **kwargs: Any) -> Any:
+        """Audit each SDK invocation, before normalization or optional fallback.
+
+        Counts SDK calls, not internal transport retries. Client initialization
+        failures are recorded against the endpoint attempted. Telemetry must
+        never change the SDK result or exception.
+        """
+        ticket = theta_usage.begin_request(endpoint, self._purpose)
+        self._last_request_id = ticket.request_id if ticket is not None else None
+        try:
+            result = getattr(self._get_client(), endpoint)(**kwargs)
+        except BaseException as exc:
+            theta_usage.finish_request(ticket, error=exc)
+            raise
+        rows = None
+        if ticket is not None:
+            try:
+                # Dataframes/Arrow expose shape or num_rows. Do not consume
+                # iterators or copy licensed data merely to count records.
+                if hasattr(result, "shape"):
+                    rows = int(result.shape[0])
+                elif hasattr(result, "num_rows"):
+                    rows = int(result.num_rows)
+                elif isinstance(result, (list, tuple)):
+                    rows = len(result)
+                elif result is None:
+                    rows = 0
+            except Exception:
+                pass
+        theta_usage.finish_request(ticket, rows=rows)
+        return result
 
     @property
     def configured(self) -> bool:
@@ -171,7 +211,7 @@ class ThetaDataClient:
     def list_expirations(self, symbol: str = "SPXW") -> list[date]:
         """List available option expiration dates for an underlying."""
         try:
-            frame = _pandas(self._get_client().option_list_expirations(symbol=symbol.upper()))
+            frame = _pandas(self._request("option_list_expirations", symbol=symbol.upper()))
         except Exception as exc:
             raise ThetaDataError(f"ThetaData expiration lookup failed for {symbol}: {exc}") from exc
         if frame.empty or "expiration" not in frame:
@@ -183,7 +223,7 @@ class ThetaDataClient:
         """Fetch current index prices from the separate Index subscription."""
         requested = [str(symbol).upper() for symbol in symbols]
         try:
-            frame = _pandas(self._get_client().index_snapshot_price(symbol=requested))
+            frame = _pandas(self._request("index_snapshot_price", symbol=requested))
         except Exception as exc:
             raise ThetaDataError(f"ThetaData index snapshot failed: {exc}") from exc
         snapshots: list[IndexSnapshot] = []
@@ -209,7 +249,7 @@ class ThetaDataClient:
     ) -> list[IndexBar]:
         """Fetch one regular-session index OHLC series for research."""
         try:
-            frame = _pandas(self._get_client().index_history_ohlc(
+            frame = _pandas(self._request("index_history_ohlc",
                 symbol=symbol.upper(),
                 start_date=session_date,
                 end_date=session_date,
@@ -247,7 +287,7 @@ class ThetaDataClient:
         if strike_range < 0:
             raise ValueError("strike_range must be non-negative")
         try:
-            frame = _pandas(self._get_client().option_history_trade_quote(
+            frame = _pandas(self._request("option_history_trade_quote",
                 symbol=symbol.upper(),
                 expiration=expiration,
                 date=session_date,
@@ -335,7 +375,7 @@ class ThetaDataClient:
         if right not in {"call", "put"}:
             raise ValueError("right must be 'call' or 'put'")
         try:
-            frame = _pandas(self._get_client().option_history_quote(
+            frame = _pandas(self._request("option_history_quote",
                 symbol=symbol.upper(), expiration=expiration, interval=interval,
                 date=session_date, strike=str(strike), right=right,
                 start_time=start_time, end_time=end_time,
@@ -377,7 +417,6 @@ class ThetaDataClient:
         if strike_range < 0:
             raise ValueError("strike_range must be non-negative")
 
-        client = self._get_client()
         params = {
             "symbol": symbol.upper(),
             "expiration": expiration,
@@ -386,7 +425,7 @@ class ThetaDataClient:
             "strike_range": strike_range,
         }
         try:
-            quotes = _pandas(client.option_snapshot_quote(**params))
+            quotes = _pandas(self._request("option_snapshot_quote", **params))
         except Exception as exc:
             raise ThetaDataError(f"ThetaData option quote snapshot failed: {exc}") from exc
         if quotes.empty:
@@ -400,7 +439,7 @@ class ThetaDataClient:
                 ("ohlc", "option_snapshot_ohlc"),
             ):
                 try:
-                    details[name] = _pandas(getattr(client, method_name)(**params))
+                    details[name] = _pandas(self._request(method_name, **params))
                 except Exception as exc:
                     logger.warning("ThetaData %s snapshot unavailable: %s", name, exc)
                     details[name] = pd.DataFrame()
@@ -528,7 +567,7 @@ def _subscription_name(value: Any) -> str | None:
 
 
 def _diagnose(symbol: str) -> int:
-    client = ThetaDataClient()
+    client = ThetaDataClient(purpose="diagnostics")
     try:
         print("Entitlements:", client.subscription_summary())
         prices = client.index_snapshots(("SPX", "VIX"))

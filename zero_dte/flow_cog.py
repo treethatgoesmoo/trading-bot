@@ -31,6 +31,7 @@ from config import (
 from core import market_calendar
 from core.market_data import MarketDataClient
 from core.paths import THETADATA_DATA_DIR
+from core.theta_usage import audit_active
 from core.thetadata_client import IndexBar, OptionTradeQuote, ThetaDataClient
 from zero_dte.turning_points import (
     ContractDecision,
@@ -57,10 +58,17 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
         bot: commands.Bot,
         market_client: MarketDataClient,
         theta_client: ThetaDataClient,
+        *,
+        audit_only: bool = False, context_session: bool = False,
     ) -> None:
         self.bot = bot
         self.market_client = market_client
         self.theta_client = theta_client
+        self.audit_only = audit_only
+        self.context_session = context_session
+        self._trade_request_ids: dict = {}
+        self._last_flow_request_id = None
+        self._last_flow_request_ids: list[str] = []
         self._session_date: date | None = None
         self._levels: list[KeyLevel] = []
         self._recent_prices: deque[tuple[datetime, float]] = deque(maxlen=10)
@@ -70,6 +78,8 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
         self._last_price: float | None = None
         self._last_decision: ContractDecision | None = None
         self._last_sample_at: datetime | None = None
+        self._last_trade_at: datetime | None = None
+        self._last_new_trade_rows = 0
         self._potential_started_at: datetime | None = None
         self._last_spy_update: datetime | None = None
         self._vwap_z: float | None = None
@@ -83,8 +93,8 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
         self.flow_monitor.change_interval(seconds=SPX_FLOW_POLL_SECONDS)
         self.flow_monitor.start()
         logger.info(
-            "Experimental SPX flow monitor started (paper-only, every %ds)",
-            SPX_FLOW_POLL_SECONDS,
+            "Experimental SPX flow monitor started (paper-only, every %ds, audit_only=%s)",
+            SPX_FLOW_POLL_SECONDS, self.audit_only,
         )
 
     async def cog_unload(self) -> None:
@@ -93,6 +103,9 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
     @commands.command(name="spxflow")
     async def cmd_spxflow(self, ctx: commands.Context) -> None:
         """Show a fresh experimental SPX flow observation."""
+        if self.audit_only:
+            await ctx.send("Local-only subscription audit: flow is being evaluated, not used for trade alerts.")
+            return
         now = datetime.now(ET)
         if not market_calendar.is_market_open(now):
             await ctx.send("SPX flow watch is paper-only and available only during market hours.")
@@ -112,6 +125,9 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
     @tasks.loop(seconds=60)
     async def flow_monitor(self) -> None:
         now = datetime.now(ET)
+        if self.audit_only:
+            await self._audit_flow_poll(now)
+            return
         if not market_calendar.is_market_open(now):
             return
         grading_only = market_calendar.session_close(now) - now <= timedelta(
@@ -173,6 +189,65 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
         except Exception as exc:
             logger.exception("SPX flow Discord delivery failed; duplicate retry suppressed: %s", exc)
 
+    async def _audit_flow_poll(self, now: datetime) -> None:
+        """Morning flow cache only: no index/chain calls, alerts, or tuning.
+
+        Separate from the full watch so paying for the audit doesn't silently
+        enable experimental turning-point recommendations. The existing full
+        watch, if explicitly enabled, retains its own lifecycle after expiry.
+        """
+        now = now.astimezone(ET)
+        if (not audit_active(now) or not market_calendar.is_market_open(now)
+                or (not self.context_session and now.hour >= 11)):
+            return
+        if now < now.replace(hour=9, minute=32, second=0, microsecond=0):
+            return
+        if self._paused_until is not None and now < self._paused_until:
+            return
+        async with self._lock:
+            try:
+                if self._session_date != now.date():
+                    self._trades.clear()
+                    self._trade_request_ids.clear()
+                    self._last_sample_at = None
+                    self._session_date = now.date()
+                end = now - timedelta(seconds=5)
+                start = max(now.replace(hour=9, minute=30, second=0, microsecond=0),
+                            end - timedelta(minutes=2))
+                trades = await _theta_call(
+                    "audit morning flow", self.theta_client.option_trade_quotes,
+                    now.date(), symbol="SPXW", expiration=now.date(),
+                    strike_range=SPX_FLOW_STRIKE_RANGE,
+                    start_time=start.strftime("%H:%M:%S"),
+                    end_time=end.strftime("%H:%M:%S"),
+                )
+                self._merge_trades(trades, now)
+                cutoff = now.astimezone(timezone.utc) - timedelta(minutes=SPX_FLOW_LOOKBACK_MINUTES)
+                sampled = [
+                    trade for trade in self._trades.values()
+                    if cutoff <= trade.trade_timestamp.astimezone(timezone.utc)
+                    <= now.astimezone(timezone.utc)
+                ]
+                flow = summarize_option_flow(sampled)
+                self._last_trade_at = max((trade.trade_timestamp for trade in sampled), default=None)
+                self._last_new_trade_rows = len(trades)
+                self._last_flow_request_id = getattr(self.theta_client, '_last_request_id', None)
+                self._last_flow_request_ids = sorted({
+                    self._trade_request_ids[key] for key, trade in self._trades.items()
+                    if cutoff <= trade.trade_timestamp.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+                    and isinstance(self._trade_request_ids.get(key), str)
+                })
+                self._last_flow = flow
+                # Start time, not completion time: slow responses remain stale.
+                self._last_sample_at = now
+                self._consecutive_failures = 0
+                self._paused_until = None
+            except Exception:
+                self._consecutive_failures += 1
+                logger.warning("Theta audit flow sample failed")
+                if self._consecutive_failures >= 3:
+                    self._paused_until = now + timedelta(minutes=5)
+
     @flow_monitor.before_loop
     async def before_flow_monitor(self) -> None:
         await self.bot.wait_until_ready()
@@ -205,6 +280,7 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
                 start_time=start.strftime("%H:%M:%S"),
                 end_time=end.strftime("%H:%M:%S"),
             )
+            flow_request_id = getattr(self.theta_client, '_last_request_id', None)
             self._merge_trades(new_trades, now)
             flow_start = now.astimezone(timezone.utc) - timedelta(minutes=SPX_FLOW_LOOKBACK_MINUTES)
             flow_trades = [
@@ -278,6 +354,14 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
                     logger.warning("Paper contract lookup failed; state remains observable: %s", exc)
                     decision = ContractDecision(None, "WAIT: option snapshot unavailable")
             self._last_flow = flow
+            self._last_trade_at = max((trade.trade_timestamp for trade in flow_trades), default=None)
+            self._last_new_trade_rows = len(new_trades)
+            self._last_flow_request_id = flow_request_id
+            self._last_flow_request_ids = sorted({
+                self._trade_request_ids[key] for key, trade in self._trades.items()
+                if flow_start <= trade.trade_timestamp.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+                and isinstance(self._trade_request_ids.get(key), str)
+            })
             self._last_price = price
             self._last_decision = decision
             self._last_sample_at = now
@@ -468,6 +552,7 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
         self._session_date = now.date()
         self._recent_prices.clear()
         self._trades.clear()
+        self._trade_request_ids.clear()
         self._assessment = _wait_assessment("WAIT: new session")
         self._potential_started_at = None
         self._last_spy_update = None
@@ -482,12 +567,14 @@ class SPXFlowCog(commands.Cog, name="SPXFlow"):
                 trade.trade_timestamp, trade.sequence, trade.exchange,
             )
             self._trades[identity] = trade
+            self._trade_request_ids[identity] = getattr(self.theta_client, '_last_request_id', None)
         cutoff = now.astimezone(timezone.utc) - timedelta(minutes=10)
         self._trades = {
             key: trade for key, trade in self._trades.items()
             if trade.trade_timestamp.tzinfo is not None
             and trade.trade_timestamp.astimezone(timezone.utc) >= cutoff
         }
+        self._trade_request_ids = {key: self._trade_request_ids.get(key) for key in self._trades}
 
     @staticmethod
     def _write_shadow(
