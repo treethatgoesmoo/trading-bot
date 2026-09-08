@@ -1,127 +1,42 @@
-# CLAUDE.md
+# Repository guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Product boundary
 
-## What this is
+The owner's current requirement is **bullish, bearish and volatile SPX alerts, on completed candles, delivered privately through Discord**. Direction and volatility are separate observations, not option-entry recommendations. Read `README.md` for the operational contract and `docs/product-scope.md` for the scope decision. Do not restore a legacy mode, ORB background experiment, swing/forecast/flow notifications, auto-tuning or automatic Git synchronization.
 
-A personal Discord decision-support bot for the owner's **manual SPX 0DTE trades** — it never executes orders. The current stream describes structure, setup, momentum, confirmation and invalidation, grades delivered underlying observations, and audits subscription data use. Descriptive context is not a prediction or proven edge. Strategy ideas require honest backtests and prospective evidence before promotion; see `docs/strategy-log.md` for adopted and rejected hypotheses.
+## Source of truth and ownership
 
+- `bot/core.py` defines actual cog registration. A tested module or old document does not mean a feature is enabled. During integration, inspect this file before claiming the new service is deployed.
+- `market_state/` owns the pure versioned classifier, embeds and single Discord collector.
+- `core/session_bars.py` and `core/state_store.py` own neutral bars, first-seen receipt semantics, migration and durable observations/delivery attempts. Never import historical ORB helpers into the runtime.
+- `config.py` is the live configuration boundary. `research/config.py` is separate and must never be imported by startup. Historical settings cannot enable a live feature or break startup through parsing.
+- `research/` contains explicit manual tools and historical readers only; see `research/README.md` before running one. No cogs, notification mode or background research scheduler belong there.
+- `core/paths.py` anchors shared paths to the repository root; moving a module must not relocate evidence.
 
-## Latest owner instruction — BB replacement implemented locally
-
-The owner rejected the SPX indicator's usefulness and requested 1m/5m/15m BB events with RSI/MACD. **This supersedes the preserve-SPX-actions instruction below.** Active assembly is now only `SharedCog` + `BBSignalCog`; no legacy mode or old notification registration remains. See [`docs/bb-notifications.md`](docs/bb-notifications.md) and the updated README for the current contract. Two preceding sessions supply warm-up; `!bb`/`!status` are cached and `!audit` shows BB request/delivery counts, not evaluated returns. Flow/proxy collection stops; the frozen ORB record/history remains. No AI service, remote merge or Pi deployment was performed. Historical code remains unregistered for tests/readers, not selectable rollback.
-
-**Everything in the SPX sections below is historical**, including pending-removal wording, mode settings, commands and action rules. Do not restore it as the default or reset the original audit date.
-
-## Historical instruction — superseded
-
-Read [`docs/session-handoff.md`](docs/session-handoff.md) first next session. PR #39 is merged into remote `master` (`5adecdb`); Pi deployment and audit activation are not verified. The owner explicitly rejected the retained `legacy` rollback design: **remove old notification systems, commands/configuration and `NOTIFICATION_MODE`, rather than leave a selectable mode.** This correction is NOT implemented. Preserve committed history, shared/research dependencies, unified SPX actions, the quiet flow cache and audit/grading. Do not re-ask the owner whether to retain legacy mode. The sections below describe code as merged, not approval to keep legacy paths.
-
-## Current default: unified SPX replacement
-
-The owner explicitly replaced ALL old automatic notifications with **Action, Structure, Setup, Momentum, Confirmation, and Invalidation** for manual SPX 0DTE decisions. `NOTIFICATION_MODE=spx` is the default and overrides existing `ZERO_DTE_ENABLED`, `SWING_ENABLED`, and `SPX_FLOW_ENABLED` values. Old forecast/BB/volume/swing/full-shadow alerts, automatic economic briefings, restart notices, and retune chatter are suppressed; tracked-history auto-commit remains quiet. Legacy code/history are retained for explicit `NOTIFICATION_MODE=legacy` rollback, not run alongside the new stream.
-
-Replacement implementation merged through PR #39; deployment to the Pi is not verified. **Read `docs/spx-notifications.md` before migration.** `SPX_CONTEXT_CHANNEL_ID` defaults to `0` (collection only); configure and verify a private owner channel before publication. There is no `ALERT_CHANNEL_ID` fallback and missing credentials never revive old alerts. Preserve the Pi's existing `.env`.
-
-`SPXContextCog` uses one completed-minute SPX collector for both Action plus five-section context and the unchanged frozen ORB experiment. Prior-session history is separately fetched/cached. `SPX_CONTEXT_FLOW_ENABLED` controls the quiet full-session experimental cache, only inside the explicit audit window; `THETA_AUDIT_FLOW_ENABLED` is legacy-only. Yahoo SPY confirmation is optional/indicative (`SPX_CONTEXT_PROXY_ENABLED`), never SPX volume or guaranteed executable data.
-
-`!spx` / `!status` publish fresh cached evidence through the delivery/grading ledger without new provider calls; expired context is unavailable. `!audit` is a private offline report of requests fetched, data incorporated, delivery status, 15/30-minute SPX forward outcomes, and the separate paired ORB policy. Source incorporation is not evidence of incremental edge. `spx_actions.py` freezes `spx-action-retest-v1`: only a fresh complete aligned nonfading retest is a call/put paper candidate; aligned holds wait for retest, first/reclaimed breaks wait for confirmation, failed attempts wait for reversal confirmation, other conditions are NO TRADE. SPX alone gates actions; prior levels/SPY/flow remain contextual only. Recorded action versions/reasons/source roles and sent-only candidate outcomes are audited separately; waits receive no directional action score and old rows are never retrofitted. This new hypothesis has no demonstrated edge and does not change the frozen ORB entry rule. Grades begin after actual delivery acknowledgement; neutral observations receive no invented correctness score.
-
-Licensed continuing evidence lives in `.thetadata-data/context/`; request metadata and context/ORB mirrors live in `.thetadata-data/audit/` during the fixed window. Live index calls continue after expiry; optional flow, request telemetry and audit mirrors stop. Billing does not stop. Constituent request IDs are authoritative for consumed data; an empty refresh is not returned-trade consumption.
-
-## Legacy system (explicit rollback only)
-
-The following retained features describe legacy mode, not the current default:
-
-- **zero_dte/** — a deliberately narrow intraday signal stream (owner pared this down from a much noisier v1 — see docs/state-of-the-code.md for the full removal list). What remains: intraday weighted-vote forecasts every `FORECAST_INTERVAL_MINUTES` (default 15; directional calls under `FORECAST_VOLATILE_CONFIDENCE` post as VOLATILE), a Bollinger band touch watcher (`BB_WATCH_ENABLED`, 5m closes vs BB(20, 2.0), yfinance-only — no API budget, fires once per touch and re-arms after a close back inside), and a volume-spike watcher (`VOLUME_WATCH_ENABLED`, 5m bar volume vs its trailing `VOLUME_SPIKE_LOOKBACK`-bar average, fires once per spike past `VOLUME_SPIKE_MULT`x). Every computed forecast is logged/graded, but posting is change-driven by default (`FORECAST_POST_MODE=change`): direction flip, internal directional-strength change, new session high/low, or hourly heartbeat. The simplified Discord post intentionally omits raw price, day range, indicators, weights, and confidence. **Every alert stream grades** (house rule 2026-08-12): BB touches (revert-to-middle vs extend) and volume spikes (continuation vs reversal over the next 30 min, ATR deadband) are graded nightly in place — fields added to their own jsonl rows — so each stream's record decides whether it keeps its slot. Removed (owner decision — reduce channel noise; see docs/state-of-the-code.md for the graded evidence behind each): the morning daily-bias call (50 SMA + gap + first candle, demoted 2026-08-11 for no measurable edge, removed entirely later), break-and-retest entries/trade tracking, the 5-min companion forecast stream (no measurable edge), the standalone VIX spike/regime watcher and `!vix` command (the VIX vote inside the forecast ensemble is unaffected — `core/vix.py::forecast_signal()`), and the standalone candlestick pattern watcher and `!patterns` command. The old SPY ATM projection and SPX 0DTE range feed remain retired. Current SPXW coverage exists only in the separate, default-off ThetaData paper-shadow module described below; it does not change the SPY forecast (historical retired files remain in `data/`).
-- **swing/** — daily-timeframe weighted-vote signals on popular names (default TSLA/AMD/GOOG/META) suggesting 1–2 week option buys, with a specific 7–14 DTE contract picked from the yfinance chain. Scans twice daily (pre-open + midday confirmation of open signals).
-
-The established features grade their predictions against actuals and feed separate self-tuning loops. The optional SPXW shadow instead persists paper-only 15/30-minute outcomes and has no tuning or demonstrated edge yet.
-
-There is a small `unittest`/pytest regression suite but no linter. Run `python -m unittest discover -s tests -v`, then verify strategy changes with the relevant backtest and structural changes with the import/assembly smoke test below.
-
-## AI workflow commands
-
-Slash-command prompt templates live in `.pi/prompts/*.md` (pi) and `.claude/commands/*.md` (Claude Code) — same content, different frontmatter comment. Use them instead of ad hoc requests when they fit:
-
-| Command | Use for |
-|---|---|
-| `/initiate <description>` | Starting new work — env/git sanity check, figure out which area (zero_dte/swing/core/bot) is affected, ask clarifying questions before planning |
-| `/backtest <what changed>` | Pick the right backtest script for a strategy change and summarize pass/fail |
-| `/pr [description]` | Pre-PR checklist — smoke test, diagnostics, diff summary, draft commit message |
-| `/tune [zero_dte\|swing\|both] [--write]` | Retune indicator weights and report before/after deltas |
-
-## Owner-confirmed Pi deployment
-
-- The owner has cloned the trading bot repository on the Raspberry Pi and deploys by pulling `master`.
-- After pulling updates, the owner restarts the bot with `make restart` from the repository directory—not systemd or Docker.
-- Use this workflow in deployment instructions; do not ask again unless the owner indicates it has changed. Changes must reach remote `master` before a Pi pull can install them.
-- Preserve the Pi's ignored `.env`; do not replace it or request credentials.
-
-## Commands
+## Validation
 
 ```bash
-make install              # pip install -r requirements.txt
-make run                  # run bot in foreground (python main.py)
-make start / stop / status / restart   # background via .bot.pid (POSIX shell)
-make logs / tail          # show / follow latest logs/bot-YYYY-MM-DD.log
-
-python backtest_swing.py --start 2023-01-01 --sweep   # validate swing thresholds (bulk yfinance, no API budget)
-python backtest_filters.py                    # replay fired+vetoed setups, per-filter expectancy audit (bulk yfinance)
-python backtest_patterns.py --tickers SPY,QQQ --years 10   # daily candlestick patterns vs next-day direction (bulk yfinance; --weekly for weekly candles vs next-week)
-python backfill.py 20 SPY QQQ                 # replay live 0DTE logic over history → data/ (--bias-report: grade the bias only, write nothing)
-# (backtest.py / backtest_30m.py were deleted 2026-08-12 — both had drifted into
-# stale forks with lookahead bias; there is currently NO honest replay harness for
-# the intraday forecast ensemble or break-and-retest — build one before validating
-# changes to either, and check docs/strategy-log.md first)
-python dashboard.py 30 --open                 # HTML performance dashboard from data/
-python tune_weights.py --days 20 --write      # retune 0DTE forecast weights → data/indicator_weights.json
-python tune_swing_weights.py --write          # retune swing weights → data/swing_weights.json
-python analyze_days.py                        # per-day accuracy summary
-python analyze_session_thirds.py --stream 15  # paired forecast-vs-drift results by session third
-python backtest_momentum_extension.py --ticker SPY --interval 15  # frozen, same-session next-bar research
-python backtest_open_close_momentum.py --ticker SPY  # Gao et al. opening->closing-half-hour experiment
-python backtest_timeframe_context.py             # completed 30m/1h candle context vs next 15m
-python collect_spxw_research.py --date YYYY-MM-DD # local-only SPX/SPY/SPXW research snapshot
-python report_theta_audit.py --start YYYY-MM-DD --days 30 # offline usage + paired ORB audit
-
-# regression + import smoke tests after structural changes
-python -m unittest discover -s tests -v
-python -c "import main, bot.core, zero_dte.spx_context_cog, report_theta_audit, core.analytics"
+python -m pytest -q tests --ignore=tests/historical  # live/shared contracts
+python -m pytest -q                               # add research dependencies first
+python -m compileall -q bot core market_state research tests
+python -c "import main, bot.core, market_state.cog"
+git diff --check
 ```
 
-For current SPX-mode configuration use `docs/spx-notifications.md`: retain `DISCORD_TOKEN`/`THETADATA_API_KEY`, set the private `SPX_CONTEXT_CHANNEL_ID`, and choose an explicit `THETA_AUDIT_START_DATE` with `THETA_AUDIT_DAYS=30`. Collection is independent of audit expiry. Do not reset the start date at restart.
+Use Python 3.12+ for the official Theta SDK. Offline synthetic tests do not establish live provider correctness, Discord delivery, Pi deployment, indicator profitability or options P&L. Separate historical-reader tests from live behavior tests; do not preserve obsolete tests by restoring retired cogs. Shared indicator/calendar changes can affect both suites.
 
-Legacy mode requires a `.env` (see `.env.example`): `DISCORD_TOKEN`, `ALERT_CHANNEL_ID`, optionally `TWELVEDATA_API_KEY` / `FINNHUB_API_KEY` (else yfinance only), `ZERO_DTE_ENABLED` / `SWING_ENABLED` toggles, `SWING_TICKERS`, and `SWING_ALERT_CHANNEL_ID`. The default-off SPXW shadow additionally requires `THETADATA_API_KEY`, `SPX_FLOW_ENABLED=1`, and its alert-channel setting.
+## Data and side-effect safety
 
-ThetaData v3 options/index research uses `THETADATA_API_KEY` and the official direct client, which requires Python 3.12+ but does **not** require Theta Terminal or Java. Verify credentials and Standard entitlements with `python -m core.thetadata_client --symbol SPX`. A live option snapshot is expected to be empty outside ThetaData's current-session snapshot cache; expiration listing still verifies authentication. `core.thetadata_client` is synchronous and must be called through `asyncio.to_thread(...)` from bot loops. The default-off `SPX_FLOW_ENABLED` feature uses it in an isolated paper-only live shadow cog; it never feeds the directional forecast.
+- Keep committed `data/` and licensed ignored `.thetadata-data/` intact. Never move licensed evidence into Git, public logs or an external AI service. Verify the private destination and applicable data permissions before publication.
+- Preserve original audit dates, first-seen bars, receipt timestamps, event IDs and ambiguous delivery states. Migration failures must retain source evidence and fail closed.
+- User-facing times are ET; stored timestamps are aware UTC. Use the exchange calendar for holidays/early closes.
+- Provider clients are synchronous; runtime calls must retain single-flight ownership across thread cancellation. A process being alive does not prove data is fresh.
+- Pure event rules need an explicit new version when semantics change. Do not relabel old observations or infer confidence/edge from indicator agreement.
+- `research` does not mean network-free or read-only. Backfill, tuning, collection and dashboard tools may fetch or write. Invoke intentionally as `python -m research.<tool>` from the repository root. Do not automatically backtest or fetch paid data just because a PR changes code.
+- Stale bytecode can obscure move-related import failures on Windows. `make clean` removes caches but preserves `.bot.pid` and data; it is not a stop command.
 
-## Architecture
+## Deployment
 
-Package layout with a strict dependency direction — `config`/`core.paths` ← `core.*` ← `zero_dte`/`swing` ← `bot`. Cogs never import `bot.core`; the shared `MarketDataClient` is constructor-injected. `core.analytics` is the one core module that reads feature trackers (its `swing.strategy` import is lazy/function-local).
+The Pi already has a clone. Changes must reach remote `master` before the owner can pull them there and run `make restart`, `make status`, `make tail`. Preserve its ignored `.env`; never request or print credentials. No systemd/Docker migration, subscription change or deployment is implied by a code change.
 
-- **`zero_dte/spx_context_cog.py` / `spx_context.py` / `spx_context_embeds.py`** — current unified stream. Pure as-of Action plus five-part context and forward grading, completed-only/first-seen data, single-flight collection, persistent dedup and publication intent, receipt-aware outcomes, private cache commands. `spx_proxy.py` computes indicative Yahoo SPY VWAP and last completed 5m volume / preceding three 5m mean. No orders or exact-contract selection. `core/context_audit_report.py` extends the read-only monthly report with fetched/incorporated/delivered accounting. Every sent observation, including fresh on-demand views, enters the grading ledger; finalized missing outcomes remain immutable.
-- **`bot/`** — Discord shell. `NOTIFICATION_MODE` gates assembly; SPX mode installs the unified collector and optional quiet flow cache, never a second `AuditCog`. Shared automatic legacy posts/tuning are suppressed in SPX mode; history auto-commit remains. The following shared responsibilities describe legacy behavior: `bot/core.py::run_bot()` builds the bot and adds cogs per feature toggle. `bot/shared_cog.py` (SharedCog) owns `!stats !dashboard !commit !events` and a 60s housekeeping loop: econ briefing at market open, nightly weight retune + git auto-commit of `data/` at session close + `GIT_AUTOCOMMIT_DELAY_MINUTES`, and a restart notice (latest git change) posted once per process on ready. Housekeeping deliberately lives here so disabling a feature never stops history archiving.
-- **Legacy `zero_dte/`** — `cog.py` (ZeroDTECog) runs the 60s `market_monitor` loop driving the trading day as a per-ticker `StrategyState` machine (intraday forecasts → BB/volume watchers → EOD forecast evaluation). `strategy.py` has the forecast ensemble + `DailyBias`/`FirstCandleRange`/`get_daily_bias` (kept only for backfill.py's historical bias replay — nothing in the live bot calls them); `tracker.py` persists/evaluates; `embeds.py`/`views.py` hold the Discord UI. Commands: `!status !add !remove !watchlist !forecast !menu`.
-- **`zero_dte/flow_cog.py` + `turning_points.py`** — in SPX mode, `audit_only=True, context_session=True` provides a quiet session-wide audit-bounded cache with trade-request provenance, no contract calls or separate trading alerts. In legacy mode, optional `SPXFlowCog` and network-free research rules for the isolated ThetaData-backed SPXW paper shadow. It is disabled by default, never votes in the SPY forecast, and stores derived observations/outcomes only under ignored `.thetadata-data/shadow/`. Command: `!spxflow`.
-- **`core/theta_usage.py` + `zero_dte/audit_cog.py` / `orb_audit.py`** — fixed-date 30-calendar-day metadata and frozen SPX ORB comparison. In SPX mode the unified collector feeds ORB and audit mirrors; standalone `AuditCog` remains legacy-only. `spx_context` / `spx_context_flow` purposes separate operational index demand from optional flow. Request IDs link calls to incorporated sources; absent telemetry is not zero use. Start dates never reset. `report_theta_audit.py` is read-only. See `docs/research/theta-subscription-audit.md`; never promote rules from implementation tests. Calendar helpers expect ET even when persisted timestamps are UTC.
-- **Legacy `swing/`** — `cog.py` (SwingCog) runs a 60s loop with **per-day done-flags** (never `tasks.loop(time=)` or minute-modulo — UTC/holiday-blind and double-fire prone). Pre-open pass (~9:00 ET): grade matured signals via the `data/swing_open.json` registry (self-heals after downtime), then scan each watchlist ticker (1 daily-candle call each; skip if a signal is open or in the 3-day cooldown) and post signals with a contract from `options.py`. Midday pass (12:30 ET): check open signals for target/invalidation. `strategy.py::evaluate_daily()` is pure (no network) — `backtest_swing.py` replays the exact live logic. Commands: `!swing !swingopen !swinglist !swingadd !swingremove`.
-- **`core/`** — shared infra, no Discord, no feature logic. `market_data.py::MarketDataClient.fetch_candles()`: provider chain Twelve Data → Finnhub → yfinance with retry/backoff and rate limiting (`rate_limiter.py`). Returned frames always have UTC `timestamp` columns; all display logic converts to US/Eastern. `thetadata_client.py::ThetaDataClient` is the separate synchronous ThetaData v3 adapter for normalized SPX/VIX index, SPX history, SPXW OPRA trade/quote history, and narrow SPXW option snapshots; it is diagnostics/research infrastructure, not part of the OHLCV fallback chain. `market_calendar.py` computes NYSE holidays/early closes locally — use it, never raw weekday/hour checks. `indicators.py` is the single home for indicator math (RSI, pivots, SMA/EMA/MACD/ATR/OBV) shared by both features. `tracking.py` has the generic per-day JSONL helpers. **`paths.py` is the single source of truth for filesystem paths — never derive paths from `__file__` in feature code.**
-- **Root scripts** stay at the repo root (Makefile/muscle-memory): `main.py`, backtests, `backfill.py`, `dashboard.py`, tune scripts.
-
-**Legacy self-tuning loops** (suppressed in SPX mode; parallel per legacy feature): live signals append to `data/{kind}-YYYY-MM-DD.jsonl` → evaluation writes results (0DTE: nightly `results-*.json`; swing: `swing_outcomes-*.jsonl` after each signal's 1–2 week horizon) → `analytics.build_report()` powers `!stats`/`!dashboard`/`dashboard.py` → `tune_weights.py` / `tune_swing_weights.py --write` map per-indicator accuracy to weights → hot-reloaded live on file mtime change (no restart). The bot also runs this retune itself every night after close (`AUTO_TUNE_ENABLED`, in `bot/shared_cog.py` housekeeping, just before the git auto-commit).
-
-**tasks.loop convention:** an unhandled exception kills a loop permanently — every loop has an `@loop.error` handler that sleeps 30s and restarts, and per-ticker work is wrapped in try/except.
-
-## Conventions & gotchas
-
-- `data/` is committed trading history — auto-committed after close ("Capture trading history" commits). Don't hand-edit or delete files there. Alert kinds (`bb_alerts`, `volume_alerts`) are graded in place after the close — grading only ADDS fields (`actual`/`correct`/`resolution`), never rewrites what was captured, and is idempotent (rows with a `correct` key are skipped). Existing 0DTE file kinds (`forecasts`, `votes`, `results`, `bb_alerts`, `volume_alerts`) must keep their names; swing kinds are `swing_signals`/`swing_checks`/`swing_outcomes` + `swing_open.json` registry. (`option_projections`/`option_outcomes`/`spx_options`/`day_forecast`/`bias`/`outcomes`/`filters`/`trade_decisions`/`vix_alerts`/`candle_patterns`/`candles` are retired kinds — historical files stay for `backtest_filters.py`/`core.analytics.py`/manual review, nothing writes them anymore, don't reuse the names.)
-- All user-facing times are ET strings; all stored timestamps are UTC ISO. Mixing these up is the most common source of bugs.
-- Config lives in `config.py`, env-overridable (use the `_flag()` helper for booleans); add new knobs there rather than hardcoding.
-- Strategy/tracker modules never import discord; embeds/views live in each feature's `embeds.py`/`views.py` and `bot/shared_cog.py`.
-- yfinance is synchronous — always call it via `asyncio.to_thread(...)` from the bot (see `swing/options.py`, `core/vix.py`). Options chains: empty expiry lists, NaN/zero bid-ask outside market hours (→ `quote_stale`), and holiday weeks with no 7–14 DTE expiry must degrade gracefully, never abort a scan.
-- `YFINANCE_PERIOD["D"]` must stay ≥ 2y — the swing evaluator needs a 300-bar daily window (SMA200 + 52-week high).
-- On Windows, delete `__pycache__` dirs after moving files with git — stale bytecode masks import errors (`make clean`).
-- Raw licensed ThetaData/OPRA rows belong only under ignored `.thetadata-data/`; never put them in tracked `data/`, logs, Discord, or Git. `zero_dte/turning_points.py` contains pure aggressor, key-level, provisional state-machine, and contract-selection primitives. `zero_dte/flow_cog.py` may expose those rules only as a default-off experimental/paper-only shadow watch; derived observations and 15/30-minute outcomes remain under `.thetadata-data/shadow/`.
-- `docs/robinhood-level2.md` is completed research (no code yet) for an optional Level II order-book signal via Robinhood Gold; decision: derived-signal-only, never post raw depth.
-- **`docs/strategy-log.md` is the record of every strategy experiment** — adopted, adjusted, or rejected, with the backtest/live numbers and commits. Newest entries on top. **Update it whenever a strategy experiment concludes** (a signal/filter/threshold is adopted, retuned with evidence, or rejected). Check it before proposing a new signal idea — it may have already been tried and rejected (e.g. Dow reversal rule, prev-day-candle bias).
+Historical experiments remain in `docs/strategy-log.md` and `docs/research/`, not as current feature instructions. Old duplicated agent workflow templates were removed because they referenced retired entry points and could trigger unrelated collection/tuning. Use this guidance and the current README instead.

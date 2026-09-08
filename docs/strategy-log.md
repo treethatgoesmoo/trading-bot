@@ -1,4 +1,6 @@
-# Strategy Log
+# Historical Strategy Log
+
+**Not a current feature registry.** Forecast, swing, flow, ORB and SPX Action entries below describe prior experiments. Their notification systems have been retired; selected reproduction/readers now live under [`research/`](../research/README.md). The owner-requested product scope is in [`product-scope.md`](product-scope.md). No historical hit rate validates the new market-state classifier. Older source paths/commands refer to their recorded revisions, not current startup.
 
 A running record of every strategy idea, signal, filter, and tuning change we've tried — with the numbers that justified adopting, adjusting, or rejecting it. **Newest entries on top.** Backfilled from git history on 2026-08-06; keep it updated whenever a strategy experiment concludes (see CLAUDE.md conventions).
 
