@@ -64,6 +64,12 @@ class ThetaUsageTests(unittest.TestCase):
             "started_at", "finished_at", "elapsed_ms", "success", "error_class", "rows",
         })
 
+    def test_bb_event_purpose_is_preserved_in_telemetry(self):
+        self.sdk.index_snapshot_price.return_value = pd.DataFrame()
+        client = ThetaDataClient(api_key='PRIVATE-KEY', client=self.sdk, purpose='bb_events')
+        client.index_snapshots()
+        self.assertEqual([row['purpose'] for row in self.records()], ['bb_events', 'bb_events'])
+
     def test_sdk_error_preserves_exception_and_records_class_only(self):
         failure = RuntimeError("secret token and raw response")
         self.sdk.index_snapshot_price.side_effect = failure

@@ -1,6 +1,12 @@
-# Current Repository State — SPX replacement pending deployment
+# Repository State — BB replacement implemented locally
 
-This describes the current local code, not proof of what is running on the Pi. The unified replacement is prepared for review on `feat/spx-context-actions-audit`; Pi deployment is not verified. Earlier merged work is labeled separately below. The earlier implementation/evidence roadmap is in [`next-steps.md`](next-steps.md); the [SPX migration guide](spx-notifications.md) supersedes its deployment instructions for replacement mode. Historical decisions, rejected ideas, and measured results remain in [`strategy-log.md`](strategy-log.md). Detailed research protocols are under [`research/`](research/).
+**Current local implementation:** only `SharedCog` and `BBSignalCog` are registered. SPX 1m/5m/15m completed BB events include RSI/MACD context; the old SPX structure/action indicator, all legacy registration paths and the mode selector are removed. Cached commands are `!bb`, `!status`, `!audit`; no flow/proxy calls or old action recommendations. Two prior sessions warm indicators; separate `bb-events-v1` evidence preserves old context files and the frozen ORB experiment. **252 offline tests pass; no BB predictive evaluation or live deployment is established.** See [the current notification contract](bb-notifications.md) and README.
+
+## Historical state before BB replacement
+
+The remainder documents prior architecture and research. Its current/pending/rollback statements are historical and superseded by the section above.
+
+This describes the current local code, not proof of what is running on the Pi. The unified replacement merged through PR #39 (`5adecdb` on remote `master`); Pi deployment is not verified. **Latest owner correction: remove legacy notification systems and `NOTIFICATION_MODE` entirely. That removal is not implemented; rollback-only sections below describe current code, not the desired end state.** Read [`session-handoff.md`](session-handoff.md) for the complete next-session checklist. Earlier merged work is labeled separately below. The earlier implementation/evidence roadmap is in [`next-steps.md`](next-steps.md); the [SPX migration guide](spx-notifications.md) supersedes its deployment instructions for replacement mode. Historical decisions, rejected ideas, and measured results remain in [`strategy-log.md`](strategy-log.md). Detailed research protocols are under [`research/`](research/).
 
 ## Purpose and safety boundary
 

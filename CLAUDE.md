@@ -7,11 +7,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A personal Discord decision-support bot for the owner's **manual SPX 0DTE trades** — it never executes orders. The current stream describes structure, setup, momentum, confirmation and invalidation, grades delivered underlying observations, and audits subscription data use. Descriptive context is not a prediction or proven edge. Strategy ideas require honest backtests and prospective evidence before promotion; see `docs/strategy-log.md` for adopted and rejected hypotheses.
 
 
+## Latest owner instruction — BB replacement implemented locally
+
+The owner rejected the SPX indicator's usefulness and requested 1m/5m/15m BB events with RSI/MACD. **This supersedes the preserve-SPX-actions instruction below.** Active assembly is now only `SharedCog` + `BBSignalCog`; no legacy mode or old notification registration remains. See [`docs/bb-notifications.md`](docs/bb-notifications.md) and the updated README for the current contract. Two preceding sessions supply warm-up; `!bb`/`!status` are cached and `!audit` shows BB request/delivery counts, not evaluated returns. Flow/proxy collection stops; the frozen ORB record/history remains. No AI service, remote merge or Pi deployment was performed. Historical code remains unregistered for tests/readers, not selectable rollback.
+
+**Everything in the SPX sections below is historical**, including pending-removal wording, mode settings, commands and action rules. Do not restore it as the default or reset the original audit date.
+
+## Historical instruction — superseded
+
+Read [`docs/session-handoff.md`](docs/session-handoff.md) first next session. PR #39 is merged into remote `master` (`5adecdb`); Pi deployment and audit activation are not verified. The owner explicitly rejected the retained `legacy` rollback design: **remove old notification systems, commands/configuration and `NOTIFICATION_MODE`, rather than leave a selectable mode.** This correction is NOT implemented. Preserve committed history, shared/research dependencies, unified SPX actions, the quiet flow cache and audit/grading. Do not re-ask the owner whether to retain legacy mode. The sections below describe code as merged, not approval to keep legacy paths.
+
 ## Current default: unified SPX replacement
 
 The owner explicitly replaced ALL old automatic notifications with **Action, Structure, Setup, Momentum, Confirmation, and Invalidation** for manual SPX 0DTE decisions. `NOTIFICATION_MODE=spx` is the default and overrides existing `ZERO_DTE_ENABLED`, `SWING_ENABLED`, and `SPX_FLOW_ENABLED` values. Old forecast/BB/volume/swing/full-shadow alerts, automatic economic briefings, restart notices, and retune chatter are suppressed; tracked-history auto-commit remains quiet. Legacy code/history are retained for explicit `NOTIFICATION_MODE=legacy` rollback, not run alongside the new stream.
 
-Replacement implementation is prepared for review on `feat/spx-context-actions-audit`; deployment to the Pi is not verified. **Read `docs/spx-notifications.md` before migration.** `SPX_CONTEXT_CHANNEL_ID` defaults to `0` (collection only); configure and verify a private owner channel before publication. There is no `ALERT_CHANNEL_ID` fallback and missing credentials never revive old alerts. Preserve the Pi's existing `.env`.
+Replacement implementation merged through PR #39; deployment to the Pi is not verified. **Read `docs/spx-notifications.md` before migration.** `SPX_CONTEXT_CHANNEL_ID` defaults to `0` (collection only); configure and verify a private owner channel before publication. There is no `ALERT_CHANNEL_ID` fallback and missing credentials never revive old alerts. Preserve the Pi's existing `.env`.
 
 `SPXContextCog` uses one completed-minute SPX collector for both Action plus five-section context and the unchanged frozen ORB experiment. Prior-session history is separately fetched/cached. `SPX_CONTEXT_FLOW_ENABLED` controls the quiet full-session experimental cache, only inside the explicit audit window; `THETA_AUDIT_FLOW_ENABLED` is legacy-only. Yahoo SPY confirmation is optional/indicative (`SPX_CONTEXT_PROXY_ENABLED`), never SPX volume or guaranteed executable data.
 

@@ -1,8 +1,10 @@
-# Unified SPX notifications — deployment and behavior
+# Retired unified SPX notifications — historical deployment and behavior
+
+**Superseded by [BB notifications](bb-notifications.md).** The owner requested removal of this SPX structure/action indicator. Local active assembly now emits completed 1m/5m/15m BB events with RSI/MACD, without a mode selector, flow/proxy collection or legacy streams. This document is retained for historical ledger/rule interpretation only; do not apply its deployment settings or treat its commands as current. Original context evidence and frozen ORB history are preserved. No new deployment is confirmed.
 
 ## Status and migration
 
-The owner requested replacement of **all existing automatic notifications** with one SPX structure/setup/momentum/confirmation/invalidation stream. Implementation is prepared for review on `feat/spx-context-actions-audit`; Pi deployment is not verified. Do not treat the existing Pi process as running this version.
+The owner requested replacement of **all existing automatic notifications** with one SPX structure/setup/momentum/confirmation/invalidation stream. Implementation merged through PR #39; Pi deployment is not verified. **The owner subsequently required removal of legacy notifications and the mode selector; that correction is pending.** See [session-handoff.md](session-handoff.md). The mode/rollback instructions below describe the currently merged code only. Do not treat the existing Pi process as running this version.
 
 The owner already cloned the repository on the Pi: deployment is **pull `master`, then `make restart`** from its repository directory. Changes must first reach remote `master`. No systemd/Docker procedure is required.
 

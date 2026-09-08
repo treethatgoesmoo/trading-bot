@@ -1,74 +1,70 @@
 # Trading Bot
 
-Personal Discord decision support for manual SPX 0DTE trading. It describes and grades underlying observations; it **never places orders**.
+Private Discord observations for manual SPX 0DTE trading. The bot **never places orders** or selects options. No predictive edge or option profitability has been established.
 
-## Current default: unified SPX context
+## Current notifications: Bollinger events + RSI/MACD
 
-One notification contains **Action, Structure, Setup, Momentum, Confirmation, and Invalidation**. Action is a frozen experimental price-only checklist: consider calls/puts only on aligned nonfading retests; otherwise wait or no trade. It requires manual contract checks, does not select options, and has no demonstrated edge. The audit separately groups delivered action candidates; waits are not scored as trades. It uses completed SPX minute bars, an opening-range map, prior-session reference levels, descriptive five-minute momentum, optional indicative SPY confirmation, and experimental sampled SPXW flow.
+One stream watches completed **1m, 5m and 15m SPX candles**:
 
-`NOTIFICATION_MODE=spx` replaces all old automatic trading notifications—even if the Pi's existing `.env` still enables forecasts, Bollinger/volume watchers, swing signals, or the full flow shadow. Old automatic economic briefings, restart notices, and retune chatter are also suppressed. History auto-commit remains quiet. Legacy code/history remain available through an explicit `NOTIFICATION_MODE=legacy` rollback; they are not running alongside the replacement.
+- Bollinger Band contact, close outside, rejection/back inside, and initial continuation.
+- Each timeframe's BB levels, RSI and change, MACD histogram and change, and candle completion time.
+- Event-only posts with persistent deduplication. No routine status heartbeat or automatic buy/sell recommendation.
 
-**Status: implemented for review; not verified on the Pi.** These changes are on `feat/spx-context-actions-audit`; a Pi pull of `master` cannot install them until they reach remote `master`. Implementation tests are not evidence of strategy edge.
+The former SPX Action/Structure/Setup/Momentum/Confirmation/Invalidation indicator is removed from the running bot. Forecast, swing, old BB/volume, flow, economic, restart and retune notification paths are also removed. **There is no legacy-mode selector or fallback.** Historical modules and data remain for research and historical report compatibility; they are not installed as live cogs.
 
-## Pi migration
+See [notification definitions and migration](docs/bb-notifications.md) and [research rationale](docs/research/bb-multitimeframe-and-ai-tools.md). These changes are local until committed, reviewed and merged; Pi deployment is not verified. Older SPX documentation describes the retired system, not this release.
 
-The owner already has the repository cloned and deploys by pulling `master`, then running `make restart`. **Preserve the existing ignored `.env`; do not copy `.env.example` over it.**
+## Setup / Pi upgrade
 
-Before restarting the replacement, retain the real `DISCORD_TOKEN` and `THETADATA_API_KEY`, and configure:
+Python **3.12+** is required for the official ThetaData SDK. Install dependencies with `pip install -r requirements.txt`. For a fresh installation only, copy `.env.example` and supply credentials. **Never overwrite an existing Pi `.env`.**
+
+Keep `DISCORD_TOKEN`, `THETADATA_API_KEY` and the existing `SPX_CONTEXT_CHANNEL_ID`. The channel must be private and comply with the market-data licence. Channel `0` collects locally but cannot publish; there is no fallback to an old alert channel. A missing Theta key starts no market stream.
 
 ```env
-NOTIFICATION_MODE=spx
-SPX_CONTEXT_CHANNEL_ID=123456789012345678
-THETA_AUDIT_START_DATE=YYYY-MM-DD
+SPX_CONTEXT_CHANNEL_ID=<your-existing-private-channel-id>
+SPX_CONTEXT_POLL_SECONDS=60
+THETA_AUDIT_START_DATE=<original-fixed-start-date-or-blank>
 THETA_AUDIT_DAYS=30
-SPX_CONTEXT_FLOW_ENABLED=1
-SPX_CONTEXT_PROXY_ENABLED=1
 ```
 
-Replace the example channel ID with a **verified private owner channel** and the date with the fixed deployment start date in ET. `SPX_CONTEXT_CHANNEL_ID` defaults to `0`: no new notifications and **no fallback to `ALERT_CHANNEL_ID`**. A missing key does not revive old alerts. Channel configuration alone does not verify permissions or data-license compliance.
+Do not reset the original audit start date when upgrading. Old `NOTIFICATION_MODE`, feature flags, proxy/flow, heartbeat and cooldown settings no longer control notifications and can be removed.
 
-After the changes reach remote `master`, pull it on the Pi, update the existing environment as above, then:
+Once the changes reach remote `master`, use the existing Pi checkout:
 
 ```bash
+git pull origin master
 make restart
 make status
 make tail
 ```
 
-See [the migration checklist and notification contract](docs/spx-notifications.md) before deployment. Verify both successful collection **and an actual delivered message** during market hours; startup logs alone are insufficient.
+Check fresh minute evidence and an actual BB event delivery during market hours. Two preceding trading sessions are fetched and cached for warm-up. With two normal complete sessions, 15m is ready at its first close, **09:45 ET**; missing or insufficient history is shown as warming up, not fabricated.
 
-## Commands and subscription audit
+## Commands and audit
 
-- `!spx` / `!status`: fresh cached context, logged and graded as an on-demand delivery; no new provider requests. Expired context is unavailable, not an old directional call presented as current.
-- `!audit`: private-channel offline report of requests fetched, data incorporated, notifications delivered, and paper outcomes.
-- `!events`: optional on-demand economic calendar; not an automatic briefing.
+- `!bb` / `!status`: cached completed-candle indicators in the configured private channel; no provider requests. Stale snapshots are unavailable.
+- `!audit`: current-session BB request/delivery counts and frozen ORB status. **BB outcomes are not yet evaluated**; this is not a win-rate report.
+- `!cmd` / `!cmds`: installed command list.
+- `!commit`: owner-only, private-channel tracked-history housekeeping.
 
-```bash
-python report_theta_audit.py --start YYYY-MM-DD --days 30
-```
+The same index collector preserves the quiet frozen ORB experiment. It does not collect options flow or Yahoo SPY data. `python report_theta_audit.py --start YYYY-MM-DD --days 30` remains available for request telemetry and historical context/ORB reports; it does **not** grade new BB events. New flow-filtered comparisons have no new flow evidence.
 
-The same SPX collector supplies both notifications and the unchanged frozen ORB experiment—no duplicate current-session audit fetch. Live index collection continues after audit expiry. Optional options sampling, request telemetry, and audit mirrors stop at expiry; **billing does not**. `THETA_AUDIT_FLOW_ENABLED` is a legacy-mode setting and does not control replacement-mode flow.
+Audit expiry stops telemetry/mirrors, **not live index collection or billing**. No paid AI service has been added.
 
-Read [the audit protocol and renewal gates](docs/research/theta-subscription-audit.md). Data incorporation is not proof of usefulness; overlapping 15/30-minute SPX observations are not independent trades or option P&L.
-
-## Fresh installation and validation
-
-Python 3.12+ is required for the official ThetaData v3 client; no Theta Terminal/Java is needed. A fresh installation can create a virtual environment, run `pip install -r requirements.txt`, and copy `.env.example` **only when no existing `.env` needs preserving**. Configure the private channel and credentials before starting with `python main.py`.
+## Validation
 
 ```bash
 python -m unittest discover -s tests -v
-python -m compileall -q .
-python -c "import main, bot.core, zero_dte.spx_context_cog, report_theta_audit"
+python -m compileall -q bot core zero_dte tests
+python -c "import main, bot.core, zero_dte.bb_signal_cog, report_theta_audit"
 ```
 
-Run relevant backtests before strategy changes. There is still no honest replay harness for the retired intraday ensemble/break-and-retest system. Research commands and rejected hypotheses remain in `CLAUDE.md` and [the strategy log](docs/strategy-log.md).
+Tests use synthetic data and mocked providers; they do not prove live data quality, Discord delivery, chart-platform parity or trading returns. Held-out event studies and paper evaluation are still required before treating these observations as trade signals.
 
 ## Data boundaries
 
-- Never hand-edit/delete committed `data/` history.
-- `.research-data/` contains ignored frozen Yahoo inputs.
-- `.thetadata-data/context/` contains licensed local context evidence and delivery/outcome ledgers; `.thetadata-data/audit/` contains bounded audit mirrors and request metadata.
-- Keep licensed records private and out of Git, tracked history, and Discord attachments. Notifications expose derived context, not raw OPRA rows. Private backup/retention is the owner's responsibility.
-- Stored timestamps are UTC ISO; user-facing times are ET.
-
-[Current architecture](docs/state-of-the-code.md) · [Notification guide](docs/spx-notifications.md) · [Research evidence](docs/strategy-log.md)
+- Never edit/delete committed `data/` history.
+- Licensed BB snapshots, receipt times and delivery ledgers live under ignored `.thetadata-data/bb-events/`.
+- `.thetadata-data/audit/` holds bounded mirrors and request metadata. Existing `.thetadata-data/context/` evidence is preserved unchanged.
+- No licensed raw records belong in Git, public channels or third-party AI requests. The owner must verify channel permissions, licensing and private backup/retention.
+- Stored timestamps are UTC; displayed candle times are ET.

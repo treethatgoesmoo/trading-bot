@@ -35,7 +35,7 @@ _ENDPOINTS = {
 }
 # Closed vocabulary prevents an accidental caller label from becoming a secret
 # or raw request payload in a metadata file.
-PURPOSES = frozenset({"unspecified", "spx_flow", "research_collector", "diagnostics", "audit", "audit_flow", "spx_context", "spx_context_flow"})
+PURPOSES = frozenset({"unspecified", "spx_flow", "research_collector", "diagnostics", "audit", "audit_flow", "spx_context", "spx_context_flow", "bb_events"})
 
 
 def _now() -> datetime:

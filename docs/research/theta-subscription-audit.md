@@ -1,10 +1,12 @@
-# Theta subscription audit — SPX context and frozen ORB
+# Theta subscription audit — historical SPX context and frozen ORB
+
+**Current implementation update:** [BB notifications](../bb-notifications.md) replace SPX structure/actions and all legacy registration. New telemetry purpose is `bb_events`; new licensed ledgers use `.thetadata-data/bb-events/`. No options-flow or SPY proxy collection is installed. `!audit` reports current BB request/delivery counts and explicitly unevaluated BB outcomes. This report script still reads historical context/ORB evidence, not BB performance. The original fixed audit date/expiry and billing warnings remain applicable; do not reset the window. Deployment instructions, mode/flow settings and notification grading below are historical, not current.
 
 ## Purpose and activation
 
 The owner trades SPX 0DTE manually through Robinhood and wants underlying context, not automated option execution. Use the already-paid subscriptions for a fixed **30-calendar-day** evidence window, then assess renewal using utilization, data quality, and incremental setup evidence—not request volume alone.
 
-**Status: implemented for review on `feat/spx-context-actions-audit`; Pi deployment is not verified.** Follow the [SPX migration guide](../spx-notifications.md). The Pi already has the repository cloned; once these changes reach remote `master`, pull `master`, preserve/update the existing `.env`, and run `make restart`.
+**Status: merged through PR #39; Pi deployment and audit activation are not verified.** See the [session handoff](../session-handoff.md): removing legacy notifications/mode selection is the next implementation task. Follow the [SPX migration guide](../spx-notifications.md). The Pi already has the repository cloned; after confirming the desired changes on remote `master`, pull `master`, preserve/update the existing `.env`, and run `make restart`.
 
 ```env
 NOTIFICATION_MODE=spx
