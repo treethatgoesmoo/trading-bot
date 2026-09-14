@@ -24,7 +24,7 @@ from core.process_lock import ProcessLock
 from core.session_bars import new_record, session_time, update_record, utc
 from core.state_store import StateStore, observation_id, state_key
 from spy_setup.signals import VERSION, build_snapshot, preceding_sessions
-from spy_setup.embeds import snapshot_embed
+from spy_setup.embeds import snapshot_embed, display_time
 
 logger = logging.getLogger(__name__)
 _MINUTE = timedelta(minutes=1)
@@ -52,6 +52,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         self._persistence_fault = False
         self._failures = 0
         self._pause_until = None
+        self._replay_tasks = set()
+        self._unloading = False
 
     @staticmethod
     def _now():
@@ -79,6 +81,18 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             raise
 
     async def cog_unload(self):
+        self._unloading = True
+        replay_tasks = list(self._replay_tasks)
+        for replay_task in replay_tasks:
+            replay_task.cancel()
+        for replay_task in replay_tasks:
+            while not replay_task.done():
+                try:
+                    await asyncio.shield(replay_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
         task = self.monitor.get_task()
         self.monitor.cancel()
         # Cancellation cannot stop a provider thread. Retain process ownership
@@ -408,6 +422,51 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         channel_id = getattr(config, 'SPX_CHANNEL_ID', 0)
         return bool(channel_id and getattr(getattr(ctx, 'channel', None), 'id', None) == channel_id)
 
+    @commands.command(name='preview', help='Show five fictional setup alerts; no market requests or live state changes.')
+    @commands.cooldown(1, 30, commands.BucketType.channel)
+    async def preview(self, ctx):
+        if not self._private(ctx):
+            await ctx.send('Setup previews are available only in the configured private channel.')
+            return
+        from spy_setup.preview import DEMO, preview_embeds
+        await ctx.send(content=f'{DEMO}\nForming → triggered, followed by three ALTERNATIVE endings. '
+                               'All prices and times are fictional. CALL examples shown; PUT setups reverse direction.',
+                       embeds=preview_embeds())
+
+    @commands.command(name='replay', help='Replay a prior session: !replay [YYYY-MM-DD]. Makes up to six historical requests.')
+    @commands.cooldown(1, 300, commands.BucketType.channel)
+    @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
+    async def replay(self, ctx, session: str = None):
+        if not self._private(ctx):
+            await ctx.send('Historical replay is available only in the configured private channel.')
+            return
+        from spy_setup.replay import LABEL, replay_date, replay_session
+        try:
+            day = replay_date(session, self._now())
+        except ValueError as exc:
+            await ctx.send(f'{LABEL}: {exc}')
+            return
+        if self._unloading or not getattr(config, 'THETADATA_API_KEY', ''):
+            await ctx.send(f'{LABEL}: unavailable during shutdown or without provider credentials.')
+            return
+        task = asyncio.current_task()
+        self._replay_tasks.add(task)
+        try:
+            await ctx.send(f'{LABEL} | {day}: fetching target plus five prior sessions (up to six requests). '
+                           'Historical simulation only; no live-state changes. Times are Pacific.')
+            try:
+                embeds, summary = await self._call(replay_session, day, self._now())
+            except Exception:
+                await ctx.send(f'{LABEL} | {day}: unavailable—historical access, data completeness or provider failure. No replay alerts generated.')
+                return
+            # One embed per send avoids Discord's combined 6000-character limit.
+            # Send failures are not automatically retried.
+            for embed in embeds:
+                await ctx.send(embed=embed)
+            await ctx.send(summary)
+        finally:
+            self._replay_tasks.discard(task)
+
     @commands.command(name='status', aliases=[])
     async def cmd_status(self, ctx):
         """Cached state and operational health, restricted to the private channel."""
@@ -442,11 +501,11 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         age = f"{(now - utc(latest) - _MINUTE).total_seconds():.0f}s" if latest else 'unavailable'
         requests = state['requests'] if state else {'current': {}, 'prior': {}}
         content = (f'Cached SPY setup ({VERSION}); no provider request made.\n'
-                   f'Source: ThetaData SPY 1m | latest minute start: {latest or "unavailable"} | age from close: {age}\n'
+                   f'Source: ThetaData SPY 1m | latest minute start: {display_time(latest, include_date=True)} | age from close: {age}\n'
                    f'Collection: {"on" if collecting else "off"} | publication: {"on" if publishing else "off"} '
                    f'(requested: {"on" if requested else "off"}; blocked: {blocked}) '
                    f'| destination: {getattr(config, "SPX_CHANNEL_ID", 0)}\n'
-                   f'Last poll: {state["last_poll_at"] if state else "none"} | requests: {requests}\n'
+                   f'Last poll: {display_time(state["last_poll_at"] if state else None, include_date=True)} | requests: {requests}\n'
                    f'Deliveries: {counts}. Counts are attempts, not billing units. Outcomes not evaluated.')
         if state and state['observations']:
             recorded = state['observations'][-1]['snapshot']['classification']
@@ -454,7 +513,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             if (current.get('available') and current.get('bar_at') == recorded['bar_at']
                     and state_key(current) != state_key(recorded)):
                 content += (f'\nHistory changed: embed is a recomputation, NOT a new alert. '
-                            f'Recorded 1m start {recorded["bar_at"]}: '
+                            f'Recorded 1m start {display_time(recorded["bar_at"], include_date=True)}: '
                             f'{recorded["direction"]}, lifecycle={recorded["lifecycle"]}. '
                             f'Last acknowledged state: {state["last_acknowledged_state"]}.')
         await ctx.send(content=content, embed=snapshot_embed(snapshot))

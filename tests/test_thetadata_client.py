@@ -50,6 +50,39 @@ def test_bad_row_fails_entire_response(changes):
         client.stock_history_ohlc(DAY)
 
 
+@pytest.mark.parametrize('changes,expected_low,expected_high', [
+    ({'open': 763.4665, 'high': 763.47, 'low': 763.2800000000001, 'close': 763.28}, 763.28, 763.47),
+    ({'open': 100, 'high': 100.99999999999999, 'low': 99, 'close': 101}, 99, 101),
+    ({'open': 100, 'high': 100 - 5e-10, 'low': 100 + 5e-10, 'close': 100}, 100, 100),
+    ({'open': 100, 'high': 102, 'low': 99, 'close': 101}, 99, 102),
+])
+def test_tiny_extremum_rounding_is_normalized_outward(changes, expected_low, expected_high):
+    source = pd.DataFrame([row(**changes)])
+    original = source.copy(deep=True)
+    bar = adapter(source)[0].stock_history_ohlc(DAY)[0]
+    assert bar.low == expected_low
+    assert bar.high == expected_high
+    assert bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high
+    assert bar.open == changes['open'] and bar.close == changes['close']
+    assert bar.volume == 1200
+    pd.testing.assert_frame_equal(source, original)
+
+
+@pytest.mark.parametrize('changes', [
+    {'low': 100 + 2e-9}, {'high': 101 - 2e-9},
+    {'low': 100.01}, {'high': 100.99},
+    # A relative tolerance would incorrectly allow this at large prices.
+    {'open': 1e9, 'close': 1e9, 'high': 1e9, 'low': 1e9 + 0.01},
+    {'open': 1e9, 'close': 1e9, 'high': 1e9 - 0.01, 'low': 1e9 - 1},
+    {'open': 1e-10, 'close': 1e-10, 'high': 0, 'low': 1e-10},
+    {'open': 1e-10, 'close': 1e-10, 'high': -1e-10, 'low': 1e-10},
+    {'open': 0}, {'low': -1e-10}, {'high': None}, {'low': float('nan')},
+])
+def test_rounding_tolerance_does_not_repair_invalid_ohlc(changes):
+    with pytest.raises(ThetaDataError):
+        adapter([row(**changes)])[0].stock_history_ohlc(DAY)
+
+
 def test_missing_volume_and_duplicate_timestamps_fail():
     missing = row()
     del missing['volume']
@@ -149,6 +182,81 @@ def test_sdk_without_public_close_supported():
 
 @pytest.mark.parametrize('kwargs', [{'symbol': 'SPX'}, {'interval': '5m'}])
 def test_unsupported_request_rejected_before_network(kwargs):
+    client, sdk = adapter([])
+    with pytest.raises(ValueError):
+        client.stock_history_ohlc(DAY, **kwargs)
+    sdk.stock_history_ohlc.assert_not_called()
+
+
+def placeholder(**changes):
+    result = row(timestamp='2026-09-08T09:35:00-04:00', open=float('nan'),
+                 high=float('nan'), low=float('nan'), close=float('nan'), volume=0, count=0)
+    result.update(changes)
+    return result
+
+
+@pytest.mark.parametrize('zero', [0, 0.0])
+def test_empty_exact_end_boundary_skipped_without_mutating_response(zero):
+    frame = pd.DataFrame([row(), placeholder(volume=zero, count=zero)])
+    original = frame.copy(deep=True)
+    bars = adapter(frame)[0].stock_history_ohlc(DAY, end_time='09:35:00')
+    assert len(bars) == 1
+    assert bars[0].volume == 1200
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_placeholder_only_response_is_empty():
+    assert adapter([placeholder()])[0].stock_history_ohlc(DAY, end_time='09:35:00') == []
+
+
+@pytest.mark.parametrize('day,stamp', [
+    (DAY, '2026-09-08T13:35:00+00:00'),
+    (date(2026, 1, 6), '2026-01-06T14:35:00+00:00'),
+])
+def test_boundary_uses_eastern_session_time_across_dst(day, stamp):
+    client, _ = adapter([placeholder(timestamp=stamp)])
+    assert client.stock_history_ohlc(day, end_time='09:35:00') == []
+
+
+def test_valid_end_boundary_bar_is_not_dropped():
+    bars = adapter([row(timestamp='2026-09-08T09:35:00-04:00')])[0].stock_history_ohlc(
+        DAY, end_time='09:35:00')
+    assert len(bars) == 1
+
+
+@pytest.mark.parametrize('changes', [
+    {'timestamp': '2026-09-08T09:34:00-04:00'},  # Interior gap, not boundary.
+    {'timestamp': '2026-09-08T09:36:00-04:00'},
+    {'timestamp': '2026-09-09T09:35:00-04:00'},
+    {'timestamp': '2026-09-08T09:35:01-04:00'},
+    {'timestamp': '2026-09-08T09:35:00'},
+    {'open': 100}, {'high': 102}, {'low': 99}, {'close': 101},
+    {'volume': 1}, {'count': 1}, {'volume': False}, {'count': False},
+    {'volume': '0'}, {'count': '0'}, {'count': None},
+    {'count': float('nan')}, {'volume': float('nan')},
+])
+def test_placeholder_exception_never_hides_malformed_data(changes):
+    client, _ = adapter([row(), placeholder(**changes)])
+    with pytest.raises(ThetaDataError):
+        client.stock_history_ohlc(DAY, end_time='09:35:00')
+
+
+def test_placeholder_requires_count_and_unique_timestamp():
+    missing_count = placeholder()
+    del missing_count['count']
+    for rows in ([missing_count], [placeholder(), placeholder()],
+                 [row(timestamp='2026-09-08T09:35:00-04:00'), placeholder()]):
+        with pytest.raises(ThetaDataError):
+            adapter(rows)[0].stock_history_ohlc(DAY, end_time='09:35:00')
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'end_time': 'bad'}, {'end_time': None}, {'end_time': '25:00:00'},
+    {'end_time': '9:35:00'}, {'end_time': '09:35'},
+    {'end_time': '09:35:00-04:00'}, {'start_time': 'bad'},
+    {'start_time': '16:00:00'}, {'start_time': '17:00:00'},
+])
+def test_invalid_request_times_fail_before_network(kwargs):
     client, sdk = adapter([])
     with pytest.raises(ValueError):
         client.stock_history_ohlc(DAY, **kwargs)

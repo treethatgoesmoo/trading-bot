@@ -252,6 +252,104 @@ def test_pending_wall_clock_expiry_with_stale_feed():
     assert 'volatile' not in json.dumps(result)
 
 
+def reversal_bars():
+    return [
+        bar(DAY, 15, 100, 100, 98.5, 98.7, 200),  # put breakout
+        bar(DAY, 16, 98.7, 100.3, 98.6, 100.2, 200),  # put invalidated only
+        bar(DAY, 17, 100.2, 100.4, 99.4, 100.2, 200),  # later bullish reclaim
+        bar(DAY, 18, 100.2, 100.4, 99.1, 100.2, 100),  # low-boundary retest
+        bar(DAY, 19, 100.2, 102, 100, 100.8, 200),  # continuation, not target
+    ]
+
+
+def test_reversal_after_put_invalidation_requires_three_distinct_candles():
+    rows = reversal_bars()
+    first = snapshot(rows[:2])
+    assert first['classification']['lifecycle'] == 'invalidated'
+    assert len(first['events']) == 2
+    reclaim = snapshot(rows[:3])
+    c = reclaim['classification']
+    assert c['kind'] == 'failed_breakdown_reversal'
+    assert c['direction'] == 'bullish' and c['phase'] == 'breakout'
+    assert c['trigger'] is None
+    assert c['boundary'] == 99
+    assert c['invalidation'] == pytest.approx(98.8)
+    assert c['breakdown_at'] == session_time(DAY, 9, 46).isoformat()
+    held = snapshot(rows[:4])['classification']
+    assert held['phase'] == 'retest'
+    assert held['trigger'] == pytest.approx(100.41)
+    active = snapshot(rows)
+    c = active['classification']
+    assert c['lifecycle'] == 'triggered'
+    assert c['entry_reference'] == 100.8
+    assert c['invalidation'] == pytest.approx(99.09)
+    assert c['target'] == pytest.approx(104.22)
+    assert len(active['events']) == 5
+    assert 'Failed-breakdown reversal' in snapshot_embed(active).title
+    assert 'not an entry' in snapshot_embed(reclaim).description
+    assert 'PDT' in snapshot_embed(active).description
+
+
+@pytest.mark.parametrize('failure', ['no_break', 'wick_only', 'late_break', 'low_volume', 'below_vwap', 'late_reclaim'])
+def test_reversal_requires_observed_break_and_confirmed_reclaim(failure):
+    rows = reversal_bars()[:3]
+    # Remove the bearish setup so failures isolate the reversal conditions.
+    rows[0]['volume'] = 100
+    if failure == 'no_break':
+        rows[0] = bar(DAY, 15)
+    elif failure == 'wick_only':
+        rows[0]['close'] = 99.1
+    elif failure == 'late_break':
+        rows[0]['available_at'] = (session_time(DAY, 9, 47) + timedelta(seconds=31)).isoformat()
+    elif failure == 'low_volume':
+        rows[1]['volume'] = rows[2]['volume'] = 100
+    elif failure == 'below_vwap':
+        rows[1]['close'] = rows[2]['close'] = 99.2
+    elif failure == 'late_reclaim':
+        rows[1]['volume'] = 100
+        rows[2]['available_at'] = (session_time(DAY, 9, 49) + timedelta(seconds=31)).isoformat()
+    result = snapshot(rows, now=session_time(DAY, 9, 50))
+    assert not any(e.get('kind') == 'failed_breakdown_reversal' for e in result['events'])
+
+
+def test_reversal_shares_bullish_slot_and_invalidation_wins():
+    rows = reversal_bars()
+    rows += [bar(DAY, 20, 100.8, 106, 98.9, 100.2, 200),
+             bar(DAY, 21), bar(DAY, 22, 100, 102, 100, 101.5, 200)]
+    result = snapshot(rows)
+    assert result['classification']['lifecycle'] == 'invalidated'
+    assert len(result['events']) == 6
+    assert sum(e['direction'] == 'bullish' and e['phase'] == 'breakout' for e in result['events']) == 1
+
+
+def test_reversal_cannot_skip_retest_or_confirmation():
+    rows = reversal_bars()
+    rows[3] = bar(DAY, 18, 100.2, 102, 100, 101.5, 200)
+    assert snapshot(rows[:4])['classification']['phase'] == 'breakout'
+    rows = reversal_bars()
+    rows[4]['volume'] = 100
+    assert snapshot(rows)['classification']['phase'] == 'retest'
+    rows[4]['volume'] = 200
+    rows[4]['low'] = 98.5
+    assert snapshot(rows)['classification']['lifecycle'] == 'invalidated'
+
+
+def test_reversal_history_is_receipt_gated():
+    result = snapshot(reversal_bars(), prior=history(receipt=session_time(DAY, 10)))
+    assert result['reason'] == 'volume_baseline_unavailable'
+    assert result['events'] == []
+
+
+def test_reversal_deadline_is_reclaim_plus_fifteen_minutes():
+    rows = reversal_bars()[:3]
+    result = snapshot(rows)
+    assert result['classification']['expires_at'] == session_time(DAY, 10, 3).isoformat()
+    expired = snapshot(rows, now=session_time(DAY, 10, 3))
+    assert expired['classification']['lifecycle'] == 'expired'
+    assert expired['classification']['event_at'] == session_time(DAY, 10, 3).isoformat()
+    assert not expired['classification']['available']
+
+
 def test_embed_explicit_execution_boundary_and_stale_suppression():
     snap = snapshot([breakout(), retest(), trigger()])
     rendered = snapshot_embed(snap).to_dict()

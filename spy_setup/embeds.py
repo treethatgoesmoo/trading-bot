@@ -2,7 +2,7 @@
 from datetime import timedelta
 import math
 import discord
-from core import market_calendar
+from zoneinfo import ZoneInfo
 from core.session_bars import utc
 from spy_setup.signals import VERSION
 
@@ -11,8 +11,10 @@ def _number(value):
     return f'{float(value):.2f}' if value is not None and math.isfinite(float(value)) else 'not set'
 
 
-def _time(value):
-    return utc(value).astimezone(market_calendar.ET).strftime('%H:%M ET') if value else 'not set'
+def display_time(value, *, include_date=False):
+    """Pacific display only; strategy clocks and stored timestamps are unchanged."""
+    pattern = '%Y-%m-%d %I:%M:%S %p %Z' if include_date else '%I:%M %p %Z'
+    return utc(value).astimezone(ZoneInfo('America/Los_Angeles')).strftime(pattern) if value else 'not set'
 
 
 def snapshot_embed(snapshot):
@@ -21,12 +23,14 @@ def snapshot_embed(snapshot):
     lifecycle = classification.get('lifecycle', 'unavailable') if available else 'unavailable'
     direction = classification.get('direction') if available else None
     side = 'CALL setup' if direction == 'bullish' else 'PUT setup' if direction == 'bearish' else 'No setup'
+    if available and classification.get('kind') == 'failed_breakdown_reversal':
+        side += ' • Failed-breakdown reversal'
     title = f'SPY signal → SPX 0DTE • {side} • {lifecycle.replace("_", " ").upper()}'
     color = (0x2ECC71 if direction == 'bullish' else 0xE74C3C if direction == 'bearish' else 0x808080)
     if available:
         description = '\n'.join(classification.get('reasons', []))
         if classification.get('bar_at'):
-            description += '\nLatest completed SPY minute: ' + _time(utc(classification['bar_at']) + timedelta(minutes=1))
+            description += '\nLatest completed SPY minute: ' + display_time(utc(classification['bar_at']) + timedelta(minutes=1))
     else:
         title, color = 'SPY signal → SPX 0DTE • Unavailable', 0x808080
         description = 'No current setup claim — ' + str(snapshot.get('reason', 'unavailable')).replace('_', ' ') + '.'
@@ -37,8 +41,8 @@ def snapshot_embed(snapshot):
                               f"Invalidation touch: {_number(classification.get('invalidation'))}\n"
                               f"Confirmed close reference: {_number(classification.get('entry_reference'))}\n"
                               f"2R reference target: {_number(classification.get('target'))}\n"
-                              f"Phase: {classification.get('phase')} | Event: {_time(classification.get('event_at'))}\n"
-                              f"Expiry: {_time(classification.get('expires_at'))}")
+                              f"Phase: {classification.get('phase')} | Event: {display_time(classification.get('event_at'))}\n"
+                              f"Expiry: {display_time(classification.get('expires_at'))}")
     if available:
         opening = snapshot.get('opening_range', {})
         embed.add_field(name='SPY context', inline=False,

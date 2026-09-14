@@ -10,6 +10,7 @@ import math
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
+from numbers import Number
 from typing import Any
 
 import pandas as pd
@@ -116,12 +117,21 @@ class ThetaDataClient:
         """Return validated opening-time OHLCV bars, never fabricated volume.
 
         Malformed responses fail the whole request rather than silently hiding
-        a gap. Empty provider responses remain empty. No fallback feed is used.
+        a gap. Only Theta's empty inclusive end-boundary placeholder is skipped:
+        all OHLC missing and numeric zero volume/count at the exact requested end.
+        Binary rounding inconsistencies in high/low versus open/close are snapped
+        outward only within an absolute 1e-9 tolerance (no relative tolerance).
+        This is numerical normalization, not missing-bar or missing-price repair.
+        Empty provider responses remain empty. No fallback feed is used.
         """
         if symbol.upper() != "SPY" or interval != "1m":
             raise ValueError("The setup collector supports SPY 1m bars only")
         if type(session_date) is not date:
             raise ValueError("session_date must be a date")
+        start_clock = _request_time(start_time)
+        end_clock = _request_time(end_time)
+        if start_clock >= end_clock:
+            raise ValueError("start_time must precede end_time")
         try:
             frame = _pandas(self._request(
                 "stock_history_ohlc", symbol="SPY", interval="1m",
@@ -141,15 +151,27 @@ class ThetaDataClient:
         seen = set()
         for row in frame.to_dict("records"):
             stamp = _timestamp(row["timestamp"])
-            values = [_number(row[name]) for name in ("open", "high", "low", "close", "volume")]
-            o, h, low, c, volume = values
-            if (min(o, h, low, c) <= 0 or volume < 0 or volume != int(volume)
-                    or low > min(o, c) or h < max(o, c) or low > h):
-                raise ThetaDataError("ThetaData stock response has invalid OHLCV values")
             if (stamp.second or stamp.microsecond or stamp in seen
                     or stamp.astimezone(ET).date() != session_date):
                 raise ThetaDataError("ThetaData stock response has invalid or duplicate bar timestamps")
             seen.add(stamp)
+            if (stamp.astimezone(ET).time() == end_clock
+                    and all(pd.isna(row[name]) for name in ("open", "high", "low", "close"))
+                    and _numeric_zero(row["volume"]) and _numeric_zero(row.get("count"))):
+                continue
+            values = [_number(row[name]) for name in ("open", "high", "low", "close", "volume")]
+            o, h, low, c, volume = values
+            if min(o, h, low, c) <= 0 or volume < 0 or volume != int(volume):
+                raise ThetaDataError("ThetaData stock response has invalid OHLCV values")
+            # IEEE-754 conversion can put an extremum microscopically inside
+            # open/close. Normalize only that numerical noise, never a real gap.
+            lower, upper = min(o, c), max(o, c)
+            if low > lower and math.isclose(low, lower, rel_tol=0, abs_tol=1e-9):
+                low = lower
+            if h < upper and math.isclose(h, upper, rel_tol=0, abs_tol=1e-9):
+                h = upper
+            if low > lower or h < upper or low > h:
+                raise ThetaDataError("ThetaData stock response has invalid OHLCV values")
             bars.append(StockBar(stamp, o, h, low, c, volume))
         return sorted(bars, key=lambda bar: bar.timestamp)
 
@@ -164,6 +186,20 @@ class ThetaDataClient:
         closer = getattr(client, "close", None)
         if callable(closer):
             closer()
+
+
+def _request_time(value: str):
+    try:
+        parsed = datetime.strptime(value, "%H:%M:%S").time()
+        if parsed.strftime("%H:%M:%S") != value:
+            raise ValueError
+        return parsed
+    except (TypeError, ValueError):
+        raise ValueError("Request times must use HH:MM:SS") from None
+
+
+def _numeric_zero(value: Any) -> bool:
+    return isinstance(value, Number) and not isinstance(value, bool) and value == 0
 
 
 def _pandas(value: Any) -> pd.DataFrame:
