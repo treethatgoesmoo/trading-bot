@@ -1,7 +1,6 @@
-"""Live SPX service settings only. Research has its own configuration.
+"""SPY setup service settings. Collection and publication are explicit opt-ins.
 
-Collection and publication are explicit opt-ins. Obsolete feature variables are
-never parsed. Old SPX channel/poll names are migration aliases, not legacy modes.
+SPX names identify the execution destination. Retired settings are never parsed.
 """
 import os
 from dotenv import load_dotenv
@@ -21,10 +20,8 @@ def _flag(name, default=False):
     raise ValueError(f'{name} must be true/false or 1/0')
 
 
-def _integer(name, default, *, minimum=0, maximum=None, alias=None):
+def _integer(name, default, *, minimum=0, maximum=None):
     value = os.getenv(name)
-    if value is None and alias:
-        value = os.getenv(alias)
     try:
         number = int(default if value is None else value)
     except (ValueError, TypeError):
@@ -39,9 +36,8 @@ THETADATA_API_KEY = os.getenv('THETADATA_API_KEY', '').strip()
 COMMAND_PREFIX = '!'
 COLLECTION_ENABLED = _flag('COLLECTION_ENABLED')
 PUBLICATION_ENABLED = _flag('PUBLICATION_ENABLED')
-SPX_CHANNEL_ID = _integer('SPX_CHANNEL_ID', 0, alias='SPX_CONTEXT_CHANNEL_ID')
-SPX_POLL_SECONDS = _integer('SPX_POLL_SECONDS', 60, minimum=30, maximum=60,
-                            alias='SPX_CONTEXT_POLL_SECONDS')
+SPX_CHANNEL_ID = _integer('SPX_CHANNEL_ID', 0)
+SPX_POLL_SECONDS = _integer('SPX_POLL_SECONDS', 60, minimum=30, maximum=60)
 
 # Optional request-metadata window, not a strategy or a collection switch.
 # Preserve the original ET start date. Expiry never stops vendor billing.

@@ -11,7 +11,7 @@ import pytest
 
 import config
 from bot import core
-from market_state.cog import MarketStateCog
+from spy_setup.cog import SpySetupCog
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,13 +45,13 @@ def test_default_is_explicitly_off_and_legacy_settings_cannot_break_startup():
                                             SPX_CHANNEL_ID=0, SPX_POLL_SECONDS=60, THETA_AUDIT_DAYS=30)
 
 
-def test_new_names_take_precedence_and_old_channel_is_only_migration_alias():
+def test_only_current_names_enable_destination_and_poll_settings():
     result = read_config({'COLLECTION_ENABLED': 'TRUE', 'PUBLICATION_ENABLED': '1',
                           'SPX_CONTEXT_CHANNEL_ID': '123', 'SPX_CONTEXT_POLL_SECONDS': '45'})
     assert result.returncode == 0
     settings = json.loads(result.stdout)
     assert settings['COLLECTION_ENABLED'] and settings['PUBLICATION_ENABLED']
-    assert settings['SPX_CHANNEL_ID'] == 123 and settings['SPX_POLL_SECONDS'] == 45
+    assert settings['SPX_CHANNEL_ID'] == 0 and settings['SPX_POLL_SECONDS'] == 60
     result = read_config({'SPX_CHANNEL_ID': '0', 'SPX_CONTEXT_CHANNEL_ID': 'bad',
                           'SPX_POLL_SECONDS': '60', 'SPX_CONTEXT_POLL_SECONDS': 'bad'})
     assert result.returncode == 0
@@ -78,26 +78,26 @@ def test_invalid_telemetry_duration_disables_metadata_not_service():
 
 @pytest.mark.parametrize('enabled,key,expected_client', [(False, '', False), (False, 'test', False),
                                                        (True, '', False), (True, 'test', True)])
-def test_actual_bot_installs_only_market_state_and_status(enabled, key, expected_client):
+def test_actual_bot_installs_only_spy_setup_and_status(enabled, key, expected_client):
     async def check():
         bot = core.build_bot()
         with patch.multiple(config, COLLECTION_ENABLED=enabled, PUBLICATION_ENABLED=False,
                             THETADATA_API_KEY=key, SPX_CHANNEL_ID=0), \
                 patch('core.thetadata_client.ThetaDataClient') as client, \
-                patch.object(MarketStateCog, 'cog_load', new=AsyncMock()), \
-                patch.object(MarketStateCog, 'cog_unload', new=AsyncMock()):
+                patch.object(SpySetupCog, 'cog_load', new=AsyncMock()), \
+                patch.object(SpySetupCog, 'cog_unload', new=AsyncMock()):
             try:
                 await core.install_service(bot)
-                assert set(bot.cogs) == {'MarketState'}
+                assert set(bot.cogs) == {'SpySetup'}
                 assert {command.name for command in bot.commands} == {'status', 'help'}
-                assert bot.get_command('bb') is bot.get_command('status')
+                assert bot.get_command('bb') is None
                 for name in ('audit', 'commit', 'spx', 'dashboard', 'stats', 'swing', 'cmd', 'events'):
                     assert bot.get_command(name) is None
                 if expected_client:
-                    client.assert_called_once_with(purpose='market_state')
+                    client.assert_called_once_with(purpose='spy_setup')
                 else:
                     client.assert_not_called()
-                cog = bot.get_cog('MarketState')
+                cog = bot.get_cog('SpySetup')
                 assert (cog.theta_client is not None) == expected_client
             finally:
                 await bot.close()
@@ -143,11 +143,7 @@ def test_logging_setup_is_explicit_and_writes_only_under_configured_logs(tmp_pat
                 handler.close()
 
 
-def test_market_state_telemetry_purpose_is_preserved():
-    from core import theta_usage
-    assert 'market_state' in theta_usage.PURPOSES
-    with patch.object(theta_usage, 'audit_active', return_value=True), \
-            patch.object(theta_usage, '_append') as append:
-        ticket = theta_usage.begin_request('index_history_ohlc', 'market_state')
-        assert ticket.purpose == 'market_state'
-        assert append.call_args.args[0] is ticket
+def test_retired_source_trees_are_absent():
+    for name in ('research', 'market_state', 'swing', 'zero_dte', 'dashboard.html',
+                 'core/indicators.py', 'requirements-research.txt'):
+        assert not (ROOT / name).exists(), name

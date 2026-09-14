@@ -6,7 +6,7 @@ import math
 
 from core import market_calendar
 
-KIND = 'session-bars-v1'
+KIND = 'spy-session-bars-v1'
 _MINUTE = timedelta(minutes=1)
 
 
@@ -29,13 +29,14 @@ def new_record(day: date) -> dict:
 def valid_bar(bar: dict, day: date, received_at: datetime) -> bool:
     try:
         stamp = utc(bar['timestamp'])
-        if any(isinstance(bar[k], bool) for k in ('open', 'high', 'low', 'close')):
+        if any(isinstance(bar[k], bool) for k in ('open', 'high', 'low', 'close', 'volume')):
             return False
         o, h, l, c = (float(bar[k]) for k in ('open', 'high', 'low', 'close'))
         return (market_calendar.is_trading_day(day) and stamp.second == stamp.microsecond == 0
                 and session_time(day, 9, 30) <= stamp < session_time(day, *market_calendar.close_time(day))
                 and stamp + _MINUTE <= utc(received_at)
                 and all(math.isfinite(v) and v > 0 for v in (o, h, l, c))
+                and math.isfinite(float(bar['volume'])) and float(bar['volume']) >= 0
                 and l <= min(o, c) <= max(o, c) <= h)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return False
@@ -83,7 +84,7 @@ def update_record(record: dict, bars, received_at: datetime, *, data_cutoff: dat
     for bar in bars:
         try:
             row = dict(bar) if isinstance(bar, dict) else {
-                key: getattr(bar, key) for key in ('timestamp', 'open', 'high', 'low', 'close')}
+                key: getattr(bar, key) for key in ('timestamp', 'open', 'high', 'low', 'close', 'volume')}
             stamp = utc(row['timestamp'])
             if stamp in seen:
                 duplicates.add(stamp)
@@ -91,7 +92,7 @@ def update_record(record: dict, bars, received_at: datetime, *, data_cutoff: dat
             if not valid_bar(row, day, cutoff):
                 raise ValueError('Invalid or incomplete minute')
             incoming[stamp] = dict(timestamp=stamp.isoformat(), available_at=received_at.isoformat(),
-                                   **{k: float(row[k]) for k in ('open', 'high', 'low', 'close')})
+                                   **{k: float(row[k]) for k in ('open', 'high', 'low', 'close', 'volume')})
         except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
             rejected += 1
     for stamp, row in incoming.items():

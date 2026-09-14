@@ -1,4 +1,4 @@
-"""One completed-candle SPX state stream, with durable transition delivery.
+"""Completed-candle SPY setups for SPX options, with durable transition delivery.
 
 Observed state, not last successful delivery, is the transition baseline. A
 suppressed/unknown transition is never replayed after enabling publication or a
@@ -23,8 +23,8 @@ from core.paths import THETADATA_DATA_DIR
 from core.process_lock import ProcessLock
 from core.session_bars import new_record, session_time, update_record, utc
 from core.state_store import StateStore, observation_id, state_key
-from market_state.signals import VERSION, build_snapshot, preceding_sessions
-from market_state.embeds import snapshot_embed
+from spy_setup.signals import VERSION, build_snapshot, preceding_sessions
+from spy_setup.embeds import snapshot_embed
 
 logger = logging.getLogger(__name__)
 _MINUTE = timedelta(minutes=1)
@@ -41,11 +41,11 @@ def collection_open(now):
             <= session_time(day, *market_calendar.close_time(day)) + timedelta(minutes=5))
 
 
-class MarketStateCog(commands.Cog, name='MarketState'):
-    def __init__(self, bot, theta_client=None, *, directory=None, audit_directory=None):
+class SpySetupCog(commands.Cog, name='SpySetup'):
+    def __init__(self, bot, theta_client=None, *, directory=None):
         self.bot, self.theta_client = bot, theta_client
-        self.directory = Path(directory) if directory is not None else Path(THETADATA_DATA_DIR) / 'market-state'
-        self.store = StateStore(self.directory, audit_directory=audit_directory)
+        self.directory = Path(directory) if directory is not None else Path(THETADATA_DATA_DIR) / 'spy-setups'
+        self.store = StateStore(self.directory)
         self._ownership = ProcessLock(self.directory)
         self._lock = asyncio.Lock()
         self._state = None
@@ -93,10 +93,11 @@ class MarketStateCog(commands.Cog, name='MarketState'):
                     break
             if not task.cancelled():
                 task.exception()
-        self._ownership.release()
-
-    def _path(self, day):
-        return self.store.path(day)
+        try:
+            if self.theta_client is not None:
+                await self._call(self.theta_client.close)
+        finally:
+            self._ownership.release()
 
     def _load(self, day):
         try:
@@ -104,7 +105,7 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         except Exception as exc:
             self._state = None
             self._persistence_fault = True
-            raise EvidenceError('Market-state evidence could not be loaded') from exc
+            raise EvidenceError('SPY setup evidence could not be loaded') from exc
         self._state = state
         self._persistence_fault = False
         return state
@@ -122,7 +123,7 @@ class MarketStateCog(commands.Cog, name='MarketState'):
             # continue with this object after an unsuccessful persistence step.
             self._state = None
             self._persistence_fault = True
-            raise EvidenceError('Market-state evidence could not be saved') from exc
+            raise EvidenceError('SPY setup evidence could not be saved') from exc
 
     async def _call(self, function, *args, **kwargs):
         started = time.monotonic()
@@ -144,7 +145,7 @@ class MarketStateCog(commands.Cog, name='MarketState'):
             raise
         finally:
             if time.monotonic() - started >= 15:
-                logger.warning('SPX provider call exceeded 15 seconds')
+                logger.warning('SPY provider call exceeded 15 seconds')
 
     async def _prior(self, state, now=None):
         self._guard(state)
@@ -163,8 +164,8 @@ class MarketStateCog(commands.Cog, name='MarketState'):
             self._save(state)
             try:
                 closing = session_time(prior_day, *market_calendar.close_time(prior_day))
-                rows = await self._call(self.theta_client.index_history_ohlc, prior_day,
-                                       symbol='SPX', interval='1m', start_time='09:30:00',
+                rows = await self._call(self.theta_client.stock_history_ohlc, prior_day,
+                                       symbol='SPY', interval='1m', start_time='09:30:00',
                                        end_time=closing.astimezone(market_calendar.ET).strftime('%H:%M:%S'))
                 received = self._now()
                 if received.astimezone(market_calendar.ET).date() != day:
@@ -185,7 +186,7 @@ class MarketStateCog(commands.Cog, name='MarketState'):
                 counts['succeeded'] += 1
             except Exception:
                 counts['failed'] += 1
-                logger.warning('SPX prior-session warm-up request failed')
+                logger.warning('SPY prior-session warm-up request failed')
             self._save(state)
 
     def _request_id(self):
@@ -208,9 +209,8 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         try:
             classification = snapshot['classification']
             state_key(classification)
-            return (cls._fresh(snapshot, now) and classification['available'] is True
-                    and 0 <= (utc(now) - utc(classification['bar_at'])
-                              - timedelta(minutes=5)).total_seconds() <= 90)
+            return (cls._fresh(snapshot, now) and classification['available'] is True and classification.get('setup_id') is not None
+                    and 0 <= (utc(now) - utc(classification['event_at'])).total_seconds() <= 90)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             return False
 
@@ -227,7 +227,7 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         prior.update(value for stamp, value in state['prior_bar_request_ids'].items()
                      if isinstance(value, str) and
                      utc(stamp).astimezone(market_calendar.ET).date().isoformat() in accepted)
-        return dict(spx=sorted(current), prior_spx=sorted(prior))
+        return dict(spy=sorted(current), prior_spy=sorted(prior))
 
     @staticmethod
     def _observation(state, entry):
@@ -257,13 +257,9 @@ class MarketStateCog(commands.Cog, name='MarketState'):
             if channel is None:
                 entry.update(delivery='failed', reason='channel_unavailable')
             else:
-                outgoing = copy.deepcopy(item['snapshot'])
-                previous = item['previous_state']
-                outgoing['transition'] = dict(previous_direction=previous['direction'] if previous else None,
-                                              previous_volatile=previous['volatile'] if previous else None)
-                embed = snapshot_embed(outgoing)  # Render before persisting a send attempt.
+                embed = snapshot_embed(item['snapshot'])  # Render before persisting a send attempt.
                 # Rendering/lookup may take time. Recheck immediately at the
-                # boundary; candle freshness cannot be prolonged by a new1m bar.
+                # boundary; candle freshness cannot be prolonged by a new 1m bar.
                 now = self._now()
                 if not self._decision_fresh(item['snapshot'], now):
                     entry.update(delivery='suppressed', reason='expired_before_send')
@@ -316,11 +312,11 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         if backwards:
             snapshot['fresh'], snapshot['reason'] = False, 'backward_decision'
             snapshot['classification'] = dict(available=False, reason='backward_decision', bar_at=None,
-                                               direction='unavailable', volatile=None, reasons=[])
+                                               direction='unavailable', reasons=[])
         if not backwards and self._decision_fresh(snapshot, now):
             if state['observed_bar'] is None or utc(stamp) > utc(state['observed_bar']):
                 key, previous = state_key(classification), state['last_observed_state']
-                transition = key != previous if previous is not None else (key['direction'] != 'neutral' or key['volatile'])
+                transition = key != previous if previous is not None else key['setup_id'] is not None
                 item = dict(id=observation_id(state['session_date'], classification),
                             snapshot=copy.deepcopy(snapshot), evaluated_at=snapshot['as_of'],
                             previous_state=copy.deepcopy(previous), transition=bool(transition),
@@ -375,8 +371,8 @@ class MarketStateCog(commands.Cog, name='MarketState'):
                     start += _MINUTE
                 start = min(start, cutoff - _MINUTE)
                 try:
-                    rows = await self._call(self.theta_client.index_history_ohlc, day,
-                                           symbol='SPX', interval='1m',
+                    rows = await self._call(self.theta_client.stock_history_ohlc, day,
+                                           symbol='SPY', interval='1m',
                                            start_time=start.astimezone(market_calendar.ET).strftime('%H:%M:%S'),
                                            end_time=cutoff.astimezone(market_calendar.ET).strftime('%H:%M:%S'))
                     received = self._now()
@@ -398,11 +394,11 @@ class MarketStateCog(commands.Cog, name='MarketState'):
                     self._failures += 1
                     if self._failures >= 3:
                         self._pause_until = self._now() + timedelta(minutes=5)
-                    logger.warning('SPX current-session request failed')
+                    logger.warning('SPY current-session request failed')
                 self._save(state)  # Save current bars before optional history can block.
                 await self._assess(state)
                 await self._prior(state)
-                # History may have become ready within this same fresh5m window.
+                # History may have become ready within this same fresh1m window.
                 await self._assess(state)
             except EvidenceError:
                 logger.warning('SPX evidence unavailable; no further requests or publication this poll')
@@ -412,14 +408,14 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         channel_id = getattr(config, 'SPX_CHANNEL_ID', 0)
         return bool(channel_id and getattr(getattr(ctx, 'channel', None), 'id', None) == channel_id)
 
-    @commands.command(name='status', aliases=['bb'])
+    @commands.command(name='status', aliases=[])
     async def cmd_status(self, ctx):
         """Cached state and operational health, restricted to the private channel."""
         if not self._private(ctx):
             await ctx.send('SPX status is available only in the configured private channel.')
             return
         now = self._now()
-        # Do not wait for a slow network worker or fetch/migrate on a command.
+        # Do not wait for a slow network worker or fetch on a command.
         state = self._state
         collecting = self._collection_enabled()
         requested = getattr(config, 'PUBLICATION_ENABLED', False) is True
@@ -445,8 +441,8 @@ class MarketStateCog(commands.Cog, name='MarketState'):
         latest = snapshot.get('bar_at')
         age = f"{(now - utc(latest) - _MINUTE).total_seconds():.0f}s" if latest else 'unavailable'
         requests = state['requests'] if state else {'current': {}, 'prior': {}}
-        content = (f'Cached SPX state ({VERSION}); no provider request made.\n'
-                   f'Source: ThetaData SPX 1m | latest minute start: {latest or "unavailable"} | age from close: {age}\n'
+        content = (f'Cached SPY setup ({VERSION}); no provider request made.\n'
+                   f'Source: ThetaData SPY 1m | latest minute start: {latest or "unavailable"} | age from close: {age}\n'
                    f'Collection: {"on" if collecting else "off"} | publication: {"on" if publishing else "off"} '
                    f'(requested: {"on" if requested else "off"}; blocked: {blocked}) '
                    f'| destination: {getattr(config, "SPX_CHANNEL_ID", 0)}\n'
@@ -458,8 +454,8 @@ class MarketStateCog(commands.Cog, name='MarketState'):
             if (current.get('available') and current.get('bar_at') == recorded['bar_at']
                     and state_key(current) != state_key(recorded)):
                 content += (f'\nHistory changed: embed is a recomputation, NOT a new alert. '
-                            f'Recorded 5m start {recorded["bar_at"]}: '
-                            f'{recorded["direction"]}, volatile={recorded["volatile"]}. '
+                            f'Recorded 1m start {recorded["bar_at"]}: '
+                            f'{recorded["direction"]}, lifecycle={recorded["lifecycle"]}. '
                             f'Last acknowledged state: {state["last_acknowledged_state"]}.')
         await ctx.send(content=content, embed=snapshot_embed(snapshot))
 
