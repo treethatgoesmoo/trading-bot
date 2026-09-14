@@ -8,7 +8,18 @@ A private Discord service watching **SPY price structure, VWAP and relative volu
 - Requires a breakout aligned with session VWAP and at least 1.2× matching-minute relative volume, then a later retest and a later continuation close.
 - Publishes distinct lifecycle transitions: forming (breakout/retest), triggered, invalidated, expired or target reached. **Forming is not an entry.** Idle/unchanged states stay silent.
 - Labels every price as **SPY**: continuation trigger, invalidation, confirmed-close entry reference and 2R target. These are signal references, not executable SPX option prices or guaranteed fills.
-- Keeps `!status` cached and restricted to the configured private channel; `!help` is available. No old `!bb`, dashboard or research commands remain.
+- Keeps `!status` cached and restricted to the configured private channel; `!help` is available.
+- `!preview` posts five clearly labeled fictional examples in that private channel (forming, triggered and three alternative endings). No market requests, live-state writes or enabled collection/publication required; limited to once per channel per 30 seconds. No old `!bb`, dashboard or research commands remain.
+
+### Historical Discord replay
+
+- `!replay` mocks the previous trading date (even after today's close); `!replay YYYY-MM-DD` selects a prior trading session within the last 30 calendar days. Today, future dates and non-trading dates are rejected.
+- Explicitly requests up to **six historical sessions** (target plus five baseline sessions) using a separate Theta client. Requires credentials and stock entitlement; works independently of collection/publication flags and may incur provider usage. No automatic retries.
+- Posts chronological production-formatted embeds labeled **REPLAY — NOT A LIVE SIGNAL**, with the session date and assumed timely-arrival disclaimer on every embed. Up to ten event embeds plus progress/summary; zero triggered entries is reported explicitly. These are a sequence, not fictional alternative endings.
+- Assumes history was available at 09:29 ET and candles arrived five seconds after close. Historical prices may have been revised; replay does not establish actual alerts, executable fills, option returns or profitability. Incomplete sessions abort rather than imply no signals.
+- Only the configured private channel; once per channel per five minutes and one replay at a time. No live ledger, delivery intent, first-seen receipt or recorded-bar writes. The provider's existing local request-metadata auditing still applies. Review private-channel access and data licensing before use.
+
+Discord alerts, previews, replay and status timestamps use Pacific time (PST/PDT automatically). Strategy schedules remain Eastern; stored timestamps remain UTC.
 
 See [exact initial rules](docs/strategy.md). Thresholds are design conventions requiring independent validation, not optimized or proven rules.
 
@@ -25,7 +36,7 @@ python main.py
 
 Edit the existing `.env` privately on upgrades. Set `DISCORD_TOKEN`, `THETADATA_API_KEY`, `SPX_CHANNEL_ID`, and explicitly enable `COLLECTION_ENABLED=true` and `PUBLICATION_ENABLED=true` when ready. Both switches default off. `SPX_POLL_SECONDS` accepts 30–60 seconds. Old `SPX_CONTEXT_*` aliases are **no longer read**; migrate their values manually to the current names.
 
-Enable Discord Message Content Intent and verify the destination's private access and the applicable data licence. Collection off means no provider requests. Publication off prevents alerts but does not stop explicitly enabled collection or vendor billing.
+Enable Discord Message Content Intent and verify the destination's private access and the applicable data licence. Collection off stops automatic provider requests; an explicit `!replay` still requests historical data. Publication off prevents alerts but does not stop explicitly enabled collection or vendor billing.
 
 **Feed requirement:** SPY stock OHLCV, not index-only access. The adapter explicitly requests Theta's `nqb` (Nasdaq Basic) venue for current and historical minutes. VWAP and volume are feed-specific, not claimed consolidated-market measures. Confirm account entitlement and live/history comparability before enabling. No subscription is changed by this code.
 

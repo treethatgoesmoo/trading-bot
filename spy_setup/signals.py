@@ -15,7 +15,7 @@ from statistics import median
 from core import market_calendar
 from core.session_bars import session_time, utc, valid_bar
 
-VERSION = 'spy-orb-retest-v1'
+VERSION = 'spy-orb-reversal-v2'
 OPENING_MINUTES = 15
 HISTORY_SESSIONS = 5
 MIN_VOLUME_SAMPLES = 3
@@ -148,6 +148,7 @@ def build_snapshot(record, previous_bars, now):
     forced_exit = closing - timedelta(minutes=5)
     setup, used, volume_sum, typical_sum = None, set(), 0.0, 0.0
     latest_vwap, latest_rvol, latest_samples = None, None, 0
+    breakdown_at = None
 
     def transition(lifecycle, phase, row, reason, *, at=None):
         setup.update(lifecycle=lifecycle, phase=phase, event_at=(at or row['timestamp'] + _MINUTE).isoformat(),
@@ -168,6 +169,10 @@ def build_snapshot(record, previous_bars, now):
         latest_vwap, latest_rvol, latest_samples = vwap, rvol, samples
         if index < OPENING_MINUTES:
             continue
+        # Arm only from an observed, timely completed downside break. This
+        # contextual fact is not an entry and needs no volume/VWAP vote.
+        if actionable and row['close'] <= low - PRICE_BUFFER:
+            breakdown_at = end
         if setup and setup['lifecycle'] not in TERMINAL:
             bullish = setup['direction'] == 'bullish'
             stop_hit = row['low'] <= setup['invalidation'] if bullish else row['high'] >= setup['invalidation']
@@ -185,7 +190,7 @@ def build_snapshot(record, previous_bars, now):
             elif end >= utc(setup['expires_at']) or end >= cutoff:
                 transition('expired', 'terminal', row, 'Pending setup expired; no new entry.')
             elif setup['phase'] == 'breakout':
-                level = high if bullish else low
+                level = setup['boundary']
                 held = (row['low'] <= level + tolerance and row['close'] >= level + PRICE_BUFFER if bullish
                         else row['high'] >= level - tolerance and row['close'] <= level - PRICE_BUFFER)
                 aligned = vwap is not None and (row['close'] > vwap if bullish else row['close'] < vwap)
@@ -213,19 +218,31 @@ def build_snapshot(record, previous_bars, now):
                      'bearish' if row['close'] <= low - PRICE_BUFFER and row['close'] < vwap else None)
         # A new breakout requires crossing the opening boundary from inside,
         # not a first qualifying high-volume candle far into an existing trend.
+        if direction == 'bullish' and rows[index - 1]['close'] > high:
+            direction = None
+        if direction == 'bearish' and rows[index - 1]['close'] < low:
+            direction = None
+        kind = 'opening_range_breakout'
+        # Prefer an ordinary qualifying ORB; otherwise a previous downside
+        # break can qualify a bullish reclaim, including after put invalidation.
+        if (direction is None and breakdown_at is not None and breakdown_at < end
+                and row['close'] >= low + PRICE_BUFFER and row['close'] > vwap):
+            direction, kind = 'bullish', 'failed_breakdown_reversal'
         if direction is None or direction in used:
             continue
-        if direction == 'bullish' and rows[index - 1]['close'] > high:
-            continue
-        if direction == 'bearish' and rows[index - 1]['close'] < low:
-            continue
+        boundary = low if kind == 'failed_breakdown_reversal' or direction == 'bearish' else high
         used.add(direction)
         setup = dict(setup_id=f'{VERSION}/{day}/{direction}/{end.isoformat()}', direction=direction,
+                     kind=kind, boundary=boundary,
+                     breakdown_at=breakdown_at.isoformat() if kind == 'failed_breakdown_reversal' else None,
                      option_side='CALL' if direction == 'bullish' else 'PUT',
                      breakout_at=end.isoformat(), expires_at=min(end + timedelta(minutes=PENDING_MINUTES), cutoff).isoformat(),
-                     trigger=None, invalidation=high - tolerance if direction == 'bullish' else low + tolerance,
+                     trigger=None, invalidation=boundary - tolerance if direction == 'bullish' else boundary + tolerance,
                      entry_reference=None, target=None, breakout_relative_volume=rvol)
-        transition('forming', 'breakout', row, 'Opening-range breakout confirmed with VWAP alignment and at least 1.2x same-minute median volume; wait for retest, do not chase.')
+        reason = ('Failed-breakdown bullish reclaim confirmed above the opening-range low with VWAP alignment and at least 1.2x same-minute median volume; wait for a later holding retest, not an entry.'
+                  if kind == 'failed_breakdown_reversal' else
+                  'Opening-range breakout confirmed with VWAP alignment and at least 1.2x same-minute median volume; wait for retest, do not chase.')
+        transition('forming', 'breakout', row, reason)
 
     # Time alone can retire a setup, even without a new candle. Never synthesize
     # a candle/price or move the event forward to the next receipt time.
