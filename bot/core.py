@@ -1,12 +1,12 @@
-"""Discord assembly: exactly one SPX market-state cog, no historical imports."""
+"""Discord assembly: SPY setup signals for manually executed SPX options."""
 import logging
 
 import discord
 from discord.ext import commands
 
 import config
-from market_state.cog import MarketStateCog
-from market_state.signals import VERSION
+from spy_setup.cog import SpySetupCog
+from spy_setup.signals import VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,8 @@ async def install_service(bot):
     client = None
     if config.COLLECTION_ENABLED and config.THETADATA_API_KEY:
         from core.thetadata_client import ThetaDataClient
-        client = ThetaDataClient(purpose='market_state')
-    await bot.add_cog(MarketStateCog(bot, client))
+        client = ThetaDataClient(purpose='spy_setup')
+    await bot.add_cog(SpySetupCog(bot, client))
     collecting = client is not None
     publishing = collecting and config.PUBLICATION_ENABLED and bool(config.SPX_CHANNEL_ID)
     logger.info('SPX %s | collection=%s | publication=%s | private channel=%s',
@@ -41,7 +41,7 @@ async def run_bot():
 
     @bot.event
     async def on_ready():
-        logger.info('Discord connected | SPX %s | completed-candle observations only', VERSION)
+        logger.info('Discord connected | SPY → SPX %s | completed-candle setups; manual execution', VERSION)
 
     async with bot:
         await install_service(bot)

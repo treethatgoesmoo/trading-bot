@@ -9,10 +9,10 @@ logs/
 .watchlist.json
 dashboard.html
 
-# data/ is tracked: the bot commits each day's captured history here.
-# Ignore the generated dashboard and any scratch files, but keep the JSON history.
+# Preserve tracked historical data; this service never commits or syncs it.
+# Keep retired private/generated artifacts ignored on existing deployments.
 data/dashboard.html
 .api_budget.json
 .research-data/
-# Licensed ThetaData/OPRA research snapshots; never commit or redistribute.
+# Licensed provider evidence and private setup ledgers; never commit or redistribute.
 .thetadata-data/

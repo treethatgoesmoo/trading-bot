@@ -22,20 +22,9 @@ from core.paths import THETADATA_DATA_DIR
 
 logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
-_ENDPOINTS = {
-    "option_list_expirations": "options",
-    "index_snapshot_price": "index",
-    "index_history_ohlc": "index",
-    "option_history_trade_quote": "options",
-    "option_history_quote": "options",
-    "option_snapshot_quote": "options",
-    "option_snapshot_greeks_first_order": "options",
-    "option_snapshot_open_interest": "options",
-    "option_snapshot_ohlc": "options",
-}
-# Closed vocabulary prevents an accidental caller label from becoming a secret
-# or raw request payload in a metadata file.
-PURPOSES = frozenset({"unspecified", "spx_flow", "research_collector", "diagnostics", "audit", "audit_flow", "spx_context", "spx_context_flow", "bb_events", "market_state"})
+_ENDPOINTS = {"stock_history_ohlc": "stock"}
+# Closed vocabulary prevents caller labels from leaking secrets into metadata.
+PURPOSES = frozenset({"unspecified", "spy_setup"})
 
 
 def _now() -> datetime:

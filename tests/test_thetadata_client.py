@@ -1,174 +1,161 @@
-from __future__ import annotations
-
-import unittest
+"""Offline tests: never construct an authenticated SDK client."""
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pandas as pd
+import pytest
 
-from core.thetadata_client import (
-    ThetaDataClient,
-    ThetaDataConfigurationError,
-)
+from core import theta_usage
+from core.thetadata_client import ThetaDataClient, ThetaDataError, ThetaDataConfigurationError
 
-
-class FakeThetaClient:
-    options_subscription = "STANDARD"
-    index_subscription = "STANDARD"
-    stock_subscription = "FREE"
-
-    def option_list_expirations(self, symbol):
-        return pd.DataFrame({
-            "symbol": [symbol, symbol, symbol],
-            "expiration": [date(2026, 9, 4), date(2026, 9, 5), date(2026, 9, 4)],
-        })
-
-    def index_snapshot_price(self, symbol):
-        return pd.DataFrame({
-            "timestamp": ["2026-09-04T14:00:00Z", "2026-09-04T14:00:00Z"],
-            "symbol": symbol,
-            "price": [7700.25, 16.5],
-        })
-
-    def index_history_ohlc(self, **kwargs):
-        return pd.DataFrame({
-            "timestamp": ["2026-09-04T09:30:00-04:00", "2026-09-04T09:31:00-04:00"],
-            "open": [7700.0, 7701.0], "high": [7702.0, 7703.0],
-            "low": [7699.0, 7700.0], "close": [7701.0, 7702.0],
-        })
-
-    def option_history_trade_quote(self, **kwargs):
-        return pd.DataFrame({
-            "symbol": ["SPXW"], "expiration": [kwargs["expiration"]],
-            "strike": [7700.0], "right": ["call"],
-            "trade_timestamp": ["2026-09-04T10:00:01-04:00"],
-            "quote_timestamp": ["2026-09-04T10:00:00.500-04:00"],
-            "sequence": [42], "condition": [0], "size": [3], "exchange": [5],
-            "price": [8.5], "bid_size": [10], "bid": [8.0],
-            "ask_size": [12], "ask": [8.5],
-        })
-
-    def option_history_quote(self, **kwargs):
-        return pd.DataFrame({
-            "timestamp": ["2026-09-04T10:15:00-04:00"],
-            "symbol": ["SPXW"], "expiration": [kwargs["expiration"]],
-            "strike": [float(kwargs["strike"])], "right": [kwargs["right"]],
-            "bid_size": [7], "bid": [9.0], "ask_size": [8], "ask": [9.4],
-        })
-
-    def option_snapshot_quote(self, **kwargs):
-        return pd.DataFrame({
-            "timestamp": ["2026-09-04T14:00:00Z", "2026-09-04T14:00:00Z"],
-            "symbol": ["SPX", "SPX"],
-            "expiration": [kwargs["expiration"], kwargs["expiration"]],
-            "strike": [7700.0, 7700.0],
-            "right": ["call", "put"],
-            "bid_size": [10, 8],
-            "bid": [8.0, 7.5],
-            "ask_size": [12, 9],
-            "ask": [8.5, 8.0],
-        })
-
-    def option_snapshot_greeks_first_order(self, **kwargs):
-        return pd.DataFrame({
-            "symbol": ["SPX", "SPX"],
-            "expiration": [kwargs["expiration"], kwargs["expiration"]],
-            "strike": [7700.0, 7700.0],
-            "right": ["call", "put"],
-            "timestamp": ["2026-09-04T14:00:00Z"] * 2,
-            "delta": [0.51, -0.49],
-            "theta": [-1.2, -1.1],
-            "vega": [0.4, 0.4],
-            "rho": [0.02, -0.02],
-            "implied_vol": [0.22, 0.24],
-            "underlying_timestamp": ["2026-09-04T14:00:00Z"] * 2,
-            "underlying_price": [7700.25] * 2,
-        })
-
-    def option_snapshot_open_interest(self, **kwargs):
-        return pd.DataFrame({
-            "symbol": ["SPX", "SPX"],
-            "expiration": [kwargs["expiration"], kwargs["expiration"]],
-            "strike": [7700.0, 7700.0],
-            "right": ["call", "put"],
-            "open_interest": [1000, 1200],
-        })
-
-    def option_snapshot_ohlc(self, **kwargs):
-        return pd.DataFrame({
-            "symbol": ["SPX", "SPX"],
-            "expiration": [kwargs["expiration"], kwargs["expiration"]],
-            "strike": [7700.0, 7700.0],
-            "right": ["call", "put"],
-            "volume": [250, 300],
-        })
+DAY = date(2026, 9, 8)
 
 
-class ThetaDataClientTests(unittest.TestCase):
-    def test_requires_api_key_without_injected_client(self):
-        client = ThetaDataClient(api_key="")
-        with self.assertRaises(ThetaDataConfigurationError):
-            client.subscription_summary()
-
-    def test_reports_entitlements_and_normalizes_index_prices(self):
-        client = ThetaDataClient(client=FakeThetaClient())
-        self.assertEqual(client.subscription_summary()["options"], "STANDARD")
-        snapshots = client.index_snapshots(("SPX", "VIX"))
-        self.assertEqual([item.symbol for item in snapshots], ["SPX", "VIX"])
-        self.assertEqual(snapshots[0].price, 7700.25)
-
-    def test_expirations_are_sorted_and_deduplicated(self):
-        client = ThetaDataClient(client=FakeThetaClient())
-        self.assertEqual(
-            client.list_expirations("SPX"),
-            [date(2026, 9, 4), date(2026, 9, 5)],
-        )
-
-    def test_historical_index_and_trade_quote_normalization(self):
-        client = ThetaDataClient(client=FakeThetaClient())
-        bars = client.index_history_ohlc(date(2026, 9, 4))
-        self.assertEqual(len(bars), 2)
-        self.assertEqual(bars[-1].close, 7702.0)
-        trades = client.option_trade_quotes(date(2026, 9, 4), strike_range=3)
-        self.assertEqual(len(trades), 1)
-        self.assertEqual(trades[0].symbol, "SPXW")
-        self.assertEqual(trades[0].sequence, 42)
-        self.assertEqual(trades[0].size, 3)
-        self.assertEqual(trades[0].trade_timestamp.tzinfo, timezone.utc)
-        quotes = client.option_quote_history(
-            date(2026, 9, 4), expiration=date(2026, 9, 4), strike=7700,
-            right="call",
-        )
-        self.assertEqual(quotes[0].bid, 9.0)
-        self.assertEqual(quotes[0].timestamp.hour, 14)
-
-    def test_option_snapshot_uses_nbbo_and_merges_standard_details(self):
-        client = ThetaDataClient(client=FakeThetaClient())
-        snapshots = client.option_chain_snapshot(
-            date(2026, 9, 4), symbol="SPX", strike_range=2
-        )
-        self.assertEqual(len(snapshots), 2)
-        call = snapshots[0]
-        self.assertEqual(call.right, "call")
-        self.assertEqual(call.mid, 8.25)
-        self.assertEqual(call.spread_pct, 6.06)
-        self.assertEqual(call.delta, 0.51)
-        self.assertEqual(call.open_interest, 1000)
-        self.assertEqual(call.volume, 250)
-        self.assertEqual(call.underlying_price, 7700.25)
-        age = call.quote_age_seconds(datetime(2026, 9, 4, 14, 0, 5, tzinfo=timezone.utc))
-        self.assertEqual(age, 5.0)
-
-    def test_optional_detail_failure_keeps_executable_quotes(self):
-        fake = FakeThetaClient()
-        fake.option_snapshot_greeks_first_order = lambda **kwargs: (_ for _ in ()).throw(
-            RuntimeError("temporary failure")
-        )
-        client = ThetaDataClient(client=fake)
-        snapshots = client.option_chain_snapshot(date(2026, 9, 4))
-        self.assertEqual(len(snapshots), 2)
-        self.assertIsNone(snapshots[0].delta)
-        self.assertEqual(snapshots[0].bid, 8.0)
+def row(**changes):
+    result = dict(timestamp='2026-09-08T09:30:00-04:00', open=100, high=102,
+                  low=99, close=101, volume=1200)
+    result.update(changes)
+    return result
 
 
-if __name__ == "__main__":
-    unittest.main()
+def adapter(rows):
+    sdk = SimpleNamespace(stock_history_ohlc=Mock(return_value=rows))
+    return ThetaDataClient(client=sdk, purpose='spy_setup'), sdk
+
+
+def test_endpoint_and_volume_contract():
+    client, sdk = adapter([row(timestamp='2026-09-08T09:31:00-04:00', volume=0), row()])
+    bars = client.stock_history_ohlc(DAY)
+    sdk.stock_history_ohlc.assert_called_once_with(
+        symbol='SPY', interval='1m', start_date=DAY, end_date=DAY,
+        start_time='09:30:00', end_time='16:00:00', venue='nqb')
+    assert bars[0].timestamp == datetime(2026, 9, 8, 13, 30, tzinfo=timezone.utc)
+    assert [bar.volume for bar in bars] == [1200, 0]
+
+
+@pytest.mark.parametrize('changes', [
+    {'volume': None}, {'volume': -1}, {'volume': float('nan')},
+    {'volume': float('inf')}, {'volume': True}, {'volume': 1.5},
+    {'open': 0}, {'high': 100}, {'low': 102}, {'close': float('inf')},
+    {'timestamp': '2026-09-08T09:30:00'}, {'timestamp': None},
+    {'timestamp': 'NaT'}, {'timestamp': 1234},
+    {'timestamp': '2026-09-08T09:30:01-04:00'},
+    {'timestamp': '2026-09-08T09:30:00.000000001-04:00'},
+    {'timestamp': '2026-09-09T09:30:00-04:00'},
+])
+def test_bad_row_fails_entire_response(changes):
+    client, _ = adapter([row(), row(**changes)])
+    with pytest.raises(ThetaDataError):
+        client.stock_history_ohlc(DAY)
+
+
+def test_missing_volume_and_duplicate_timestamps_fail():
+    missing = row()
+    del missing['volume']
+    for rows in ([missing], [row(), row()]):
+        with pytest.raises(ThetaDataError):
+            adapter(rows)[0].stock_history_ohlc(DAY)
+
+
+@pytest.mark.parametrize('rows', [None, [], pd.DataFrame()])
+def test_empty_response(rows):
+    assert adapter(rows)[0].stock_history_ohlc(DAY) == []
+
+
+def test_dataframe_normalization_does_not_mutate():
+    frame = pd.DataFrame([row()])
+    frame.columns = [f' {name.upper()} ' for name in frame.columns]
+    original = frame.copy(deep=True)
+    assert adapter(frame)[0].stock_history_ohlc(DAY)[0].volume == 1200
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_duplicate_normalized_columns_fail():
+    frame = pd.DataFrame([row()])
+    frame[' Volume '] = 23
+    with pytest.raises(ThetaDataError):
+        adapter(frame)[0].stock_history_ohlc(DAY)
+
+
+def test_provider_exception_is_chained_but_not_interpolated():
+    client, sdk = adapter([])
+    error = RuntimeError('potentially sensitive provider response')
+    sdk.stock_history_ohlc.side_effect = error
+    with pytest.raises(ThetaDataError) as caught:
+        client.stock_history_ohlc(DAY)
+    assert caught.value.__cause__ is error
+    assert 'sensitive' not in str(caught.value)
+
+
+def test_configuration_error_remains_distinct(monkeypatch):
+    client = ThetaDataClient(api_key='')
+    client._api_key = ''
+    with pytest.raises(ThetaDataConfigurationError):
+        client.stock_history_ohlc(DAY)
+
+
+def test_request_telemetry_and_lineage(monkeypatch):
+    ticket = SimpleNamespace(request_id='request-123')
+    begin = Mock(return_value=ticket)
+    finish = Mock()
+    monkeypatch.setattr(theta_usage, 'begin_request', begin)
+    monkeypatch.setattr(theta_usage, 'finish_request', finish)
+    client, _ = adapter([row()])
+    client.stock_history_ohlc(DAY)
+    begin.assert_called_once_with('stock_history_ohlc', 'spy_setup')
+    finish.assert_called_once_with(ticket, rows=1)
+    assert client._last_request_id == 'request-123'
+
+
+def test_request_error_telemetry(monkeypatch):
+    ticket = SimpleNamespace(request_id='failed-request')
+    monkeypatch.setattr(theta_usage, 'begin_request', Mock(return_value=ticket))
+    finish = Mock()
+    monkeypatch.setattr(theta_usage, 'finish_request', finish)
+    client, sdk = adapter([])
+    error = RuntimeError('network')
+    sdk.stock_history_ohlc.side_effect = error
+    with pytest.raises(ThetaDataError):
+        client.stock_history_ohlc(DAY)
+    finish.assert_called_once_with(ticket, error=error)
+
+
+def test_inactive_telemetry_clears_previous_request_id(monkeypatch):
+    monkeypatch.setattr(theta_usage, 'begin_request', Mock(return_value=None))
+    client, _ = adapter([])
+    client._last_request_id = 'old'
+    client.stock_history_ohlc(DAY)
+    assert client._last_request_id is None
+
+
+def test_close_is_lazy_and_idempotent(monkeypatch):
+    client, sdk = adapter([])
+    sdk.close = Mock()
+    client.close()
+    client.close()
+    sdk.close.assert_called_once_with()
+    assert client._client is None
+    client = ThetaDataClient()
+    monkeypatch.setattr(client, '_get_client', Mock(side_effect=AssertionError('must remain lazy')))
+    client.close()
+
+
+def test_sdk_without_public_close_supported():
+    client, _ = adapter([])
+    client.close()
+    assert client._client is None
+
+
+@pytest.mark.parametrize('kwargs', [{'symbol': 'SPX'}, {'interval': '5m'}])
+def test_unsupported_request_rejected_before_network(kwargs):
+    client, sdk = adapter([])
+    with pytest.raises(ValueError):
+        client.stock_history_ohlc(DAY, **kwargs)
+    sdk.stock_history_ohlc.assert_not_called()
+
+
+def test_retired_api_absent():
+    for name in ('index_history_ohlc', 'index_snapshots', 'option_trade_quotes',
+                 'option_snapshots', 'list_expirations', 'subscription_summary'):
+        assert not hasattr(ThetaDataClient, name)

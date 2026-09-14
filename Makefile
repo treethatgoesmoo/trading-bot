@@ -1,5 +1,5 @@
-# SPX Discord service. Research is explicitly invoked, never scheduled here.
-.PHONY: install install-dev install-research run start stop restart status logs tail test test-all clean
+# SPY setup signals for manual SPX options execution.
+.PHONY: install install-dev run start stop restart status logs tail test clean
 
 PYTHON ?= python
 PID_FILE = .bot.pid
@@ -9,9 +9,6 @@ install:
 
 install-dev:
 	$(PYTHON) -m pip install -r requirements-dev.txt
-
-install-research:
-	$(PYTHON) -m pip install -r requirements-research.txt
 
 run:
 	$(PYTHON) main.py
@@ -53,16 +50,11 @@ logs:
 tail:
 	@ls -t logs/bot*.log 2>/dev/null | head -1 | xargs -I{} tail -f {} || echo "No log file found."
 
-# Live/shared contracts do not require research dependencies.
 test:
-	$(PYTHON) -m pytest -q tests --ignore=tests/historical
-
-# Install both dev and research requirements before the historical-reader suite.
-test-all:
 	$(PYTHON) -m pytest -q tests
 
 # Do not remove .bot.pid: losing it can orphan a running collector.
 clean:
-	@find bot core market_state research tests -type d -name __pycache__ -prune -exec rm -rf {} +
+	@find bot core spy_setup tests -type d -name __pycache__ -prune -exec rm -rf {} +
 	@rm -rf __pycache__
 	@echo "Removed Python caches; process state and evidence untouched."
