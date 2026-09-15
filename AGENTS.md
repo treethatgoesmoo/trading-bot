@@ -5,7 +5,7 @@
 One private Discord service: **SPY breakout/retest signals for manual SPX 0DTE execution**. Read `README.md` and `docs/strategy.md`. Rules are unvalidated; never fabricate confidence, fills, SPX/SPY conversion, option returns or contract recommendations.
 
 - `bot/core.py` is the cog-registration source of truth; only `SpySetupCog` belongs in startup.
-- `spy_setup/` owns pure versioned rules, rendering and collection.
+- `spy_setup/` owns pure versioned rules, rendering and collection. `daily.py` reports only persisted live observations, never snapshot replay events. Automatic post-close summaries use separate durable `daily-delivery-*` journals; unknown sends are never retried. `!day` is read-only and `!cmd` derives its guide from registered commands.
 - `core/session_bars.py` owns first-seen SPY OHLCV; `core/state_store.py` owns the new `.thetadata-data/spy-setups` ledger and delivery intents.
 - Lifecycle identity and event time drive deduplication/freshness, not direction or latest candle time. Never replay historical events through live delivery. The explicit private `!replay` command is a separate labeled historical simulation, using an isolated client and ephemeral assumed receipts; it must never write live evidence or delivery state.
 - `config.py` is the only live settings boundary. No legacy aliases, strategy modes, research scheduler, auto-tuning, dashboard or automatic Git operations.

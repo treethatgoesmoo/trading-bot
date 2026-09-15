@@ -89,9 +89,9 @@ def test_actual_bot_installs_only_spy_setup_and_status(enabled, key, expected_cl
             try:
                 await core.install_service(bot)
                 assert set(bot.cogs) == {'SpySetup'}
-                assert {command.name for command in bot.commands} == {'status', 'preview', 'replay', 'help'}
+                assert {command.name for command in bot.commands} == {'status', 'preview', 'replay', 'help', 'day', 'cmd'}
                 assert bot.get_command('bb') is None
-                for name in ('audit', 'commit', 'spx', 'dashboard', 'stats', 'swing', 'cmd', 'events'):
+                for name in ('audit', 'commit', 'spx', 'dashboard', 'stats', 'swing', 'events'):
                     assert bot.get_command(name) is None
                 if expected_client:
                     client.assert_called_once_with(purpose='spy_setup')

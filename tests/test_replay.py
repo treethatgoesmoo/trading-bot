@@ -137,7 +137,7 @@ async def test_cancel_retains_worker_until_client_closed_and_collector_independe
 
 def test_command_bounds():
     cmd = SpySetupCog.replay
-    assert cmd._buckets._cooldown.rate == 1 and cmd._buckets._cooldown.per == 300
+    assert not cmd._buckets.valid  # cooldown reserved only after callback validation
     assert cmd._max_concurrency.number == 1 and not cmd._max_concurrency.wait
 
 
