@@ -1,6 +1,10 @@
 """Explicit historical simulation. Never imports the live store or delivery queue."""
 from datetime import date, timedelta
 import re
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 from core import market_calendar
 from core.session_bars import new_record, session_time, update_record, utc
@@ -37,7 +41,9 @@ def replay_session(day, now, *, client_factory=None):
     client = (client_factory or ThetaDataClient)(purpose='unspecified')
     records = {}
     try:
-        for session in [day, *preceding_sessions(day)]:
+        for index, session in enumerate([day, *preceding_sessions(day)], 1):
+            started = time.monotonic()
+            logger.info('Replay fetching target=%s session=%s request=%d/6', day, session, index)
             closing = session_time(session, *market_calendar.close_time(session))
             bars = client.stock_history_ohlc(session, end_time=closing.astimezone(market_calendar.ET).strftime('%H:%M:%S'))
             record = new_record(session)
@@ -48,6 +54,7 @@ def replay_session(day, now, *, client_factory=None):
                     for i, row in enumerate(record['bars']))):
                 raise ValueError('Incomplete historical session; replay aborted.')
             records[session] = record
+            logger.info('Replay fetched session=%s bars=%d elapsed=%.2fs', session, len(record['bars']), time.monotonic() - started)
     finally:
         client.close()
     # Copies only: never falsify receipts in normalized evidence, even in memory.
@@ -79,4 +86,5 @@ def replay_session(day, now, *, client_factory=None):
             embed.description = f'{ASSUMPTION}\n\n{embed.description}'
             embed.set_footer(text=f'{LABEL} | {day} | {VERSION} | Unvalidated rules; historical simulation only.')
             embeds.append(embed)
+    logger.info('Replay computed session=%s transitions=%d triggered=%d shown=%d', day, len(seen), triggered, len(embeds))
     return embeds, f'{LABEL} | {day} | {VERSION}\n{len(seen)} transitions; {triggered} triggered entries; {len(embeds)} shown (cap {MAX_EVENTS}).\n{ASSUMPTION}'

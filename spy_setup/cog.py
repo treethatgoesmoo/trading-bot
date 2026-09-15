@@ -44,6 +44,7 @@ def collection_open(now):
 class SpySetupCog(commands.Cog, name='SpySetup'):
     def __init__(self, bot, theta_client=None, *, directory=None):
         self.bot, self.theta_client = bot, theta_client
+        self._replay_next = {}
         self.directory = Path(directory) if directory is not None else Path(THETADATA_DATA_DIR) / 'spy-setups'
         self.store = StateStore(self.directory)
         self._ownership = ProcessLock(self.directory)
@@ -434,21 +435,33 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                        embeds=preview_embeds())
 
     @commands.command(name='replay', help='Replay a prior session: !replay [YYYY-MM-DD]. Makes up to six historical requests.')
-    @commands.cooldown(1, 300, commands.BucketType.channel)
     @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
     async def replay(self, ctx, session: str = None):
+        logger.info('Replay requested')
         if not self._private(ctx):
+            logger.info('Replay rejected: private_channel_required')
             await ctx.send('Historical replay is available only in the configured private channel.')
             return
         from spy_setup.replay import LABEL, replay_date, replay_session
         try:
             day = replay_date(session, self._now())
         except ValueError as exc:
+            logger.info('Replay rejected: invalid_session')
             await ctx.send(f'{LABEL}: {exc}')
             return
         if self._unloading or not getattr(config, 'THETADATA_API_KEY', ''):
+            logger.info('Replay rejected: shutdown_or_missing_credentials')
             await ctx.send(f'{LABEL}: unavailable during shutdown or without provider credentials.')
             return
+        # No await between validation and cooldown reservation. Invalid requests
+        # never reset or consume another invocation's reservation.
+        clock = time.monotonic()
+        remaining = self._replay_next.get(ctx.channel.id, 0) - clock
+        if remaining > 0:
+            raise commands.CommandOnCooldown(commands.Cooldown(1, 300), remaining, commands.BucketType.channel)
+        self._replay_next[ctx.channel.id] = clock + 300
+        started = time.monotonic()
+        logger.info('Replay accepted session=%s', day)
         task = asyncio.current_task()
         self._replay_tasks.add(task)
         try:
@@ -456,18 +469,119 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                            'Historical simulation only; no live-state changes. Times are Pacific.')
             try:
                 embeds, summary = await self._call(replay_session, day, self._now())
-            except Exception:
+            except Exception as exc:
+                from core.safe_logging import failure_location
+                logger.error('Replay failed session=%s elapsed=%.2fs %s', day, time.monotonic() - started, failure_location(exc))
                 await ctx.send(f'{LABEL} | {day}: unavailable—historical access, data completeness or provider failure. No replay alerts generated.')
                 return
             # One embed per send avoids Discord's combined 6000-character limit.
             # Send failures are not automatically retried.
-            for embed in embeds:
+            for index, embed in enumerate(embeds, 1):
+                logger.info('Replay sending session=%s embed=%d/%d', day, index, len(embeds))
                 await ctx.send(embed=embed)
             await ctx.send(summary)
+            logger.info('Replay delivered session=%s embeds=%d elapsed=%.2fs', day, len(embeds), time.monotonic() - started)
         finally:
             self._replay_tasks.discard(task)
 
-    @commands.command(name='status', aliases=[])
+    @replay.error
+    async def replay_error(self, ctx, error):
+        import math
+        from core.safe_logging import failure_location
+        error = getattr(error, 'original', error)
+        if isinstance(error, commands.CommandOnCooldown):
+            seconds = math.ceil(error.retry_after)
+            logger.info('Replay blocked: cooldown remaining=%ds', seconds)
+            await ctx.send(f'Replay cooldown: try again in {seconds} seconds.')
+        elif isinstance(error, commands.MaxConcurrencyReached):
+            logger.info('Replay blocked: already_running')
+            await ctx.send('A replay is already running. Please wait for it to finish.')
+        elif isinstance(error, commands.UserInputError):
+            logger.info('Replay rejected: invalid_arguments')
+            await ctx.send('Use !replay [YYYY-MM-DD] with a prior trading date.')
+        else:
+            logger.error('Replay command failed %s', failure_location(error))
+            await ctx.send('Replay failed unexpectedly. Check the local bot log. Messages already sent will not be retried.')
+
+    @commands.command(name='day', help='Read saved live observations: day [YYYY-MM-DD]. No historical requests or simulation.')
+    async def day(self, ctx, session: str = None):
+        if not self._private(ctx):
+            await ctx.send('Daily reports are available only in the configured private channel.')
+            return
+        from spy_setup.daily import report_date, load_report_state, daily_embed
+        try:
+            day = report_date(session, self._now())
+        except ValueError as exc:
+            await ctx.send(str(exc))
+            return
+        try:
+            state = load_report_state(self.store, day)
+            embed = daily_embed(state, self._now())
+        except Exception:
+            await ctx.send(f'Daily report {day} unavailable: missing, incompatible or invalid saved evidence. No simulation performed.')
+            return
+        await ctx.send(embed=embed)
+
+    @commands.command(name='cmd', help='List current registered commands and their usage.')
+    async def cmd(self, ctx):
+        if not self._private(ctx):
+            await ctx.send('Command guide is available only in the configured private channel.')
+            return
+        prefix = getattr(ctx, 'clean_prefix', None) or config.COMMAND_PREFIX
+        lines = []
+        for command in sorted(self.bot.walk_commands(), key=lambda c: c.qualified_name):
+            if command.hidden or not command.enabled:
+                continue
+            lines.append(f'`{prefix}{command.qualified_name} {command.signature}` — {command.short_doc or "No description available."}')
+        # Bounded chunks preserve Discord's message limit as commands evolve.
+        text = 'Current commands (configured private channel):\n'
+        for line in lines:
+            if len(text) + len(line) > 1900:
+                await ctx.send(text)
+                text = ''
+            text += line[:1800] + '\n'
+        if text:
+            await ctx.send(text)
+
+    async def daily_once(self):
+        from spy_setup.daily import load_report_state, daily_embed, reserve_summary, finish_summary
+        now = self._now()
+        day = now.astimezone(market_calendar.ET).date()
+        if (self._unloading or self._persistence_fault or not self._collection_enabled()
+                or not self._publication_enabled() or not market_calendar.is_trading_day(day)):
+            return
+        closing = session_time(day, *market_calendar.close_time(day))
+        # Current session only, after final collection opportunity; no next-day catch-up.
+        if not closing + timedelta(minutes=6) <= now < closing + timedelta(minutes=30):
+            return
+        async with self._lock:
+            now = self._now()
+            if (self._unloading or self._persistence_fault or not self._collection_enabled()
+                    or not self._publication_enabled()
+                    or not closing + timedelta(minutes=6) <= now < closing + timedelta(minutes=30)):
+                return
+            try:
+                state = load_report_state(self.store, day)
+                embed = daily_embed(state, now)
+                channel = self.bot.get_channel(config.SPX_CHANNEL_ID)
+                if channel is None:
+                    return
+                if not reserve_summary(self.directory, day, now):
+                    return
+            except Exception:
+                logger.warning('Daily report unavailable; evidence/intent could not be prepared')
+                return
+            try:
+                await asyncio.wait_for(channel.send(embed=embed), timeout=30)
+                finish_summary(self.directory, day)
+                logger.info('Daily report sent | session=%s', day)
+            except asyncio.CancelledError:
+                # Reserved journal remains unknown; shutdown retains ownership until here.
+                raise
+            except Exception:
+                logger.warning('Daily report delivery unknown; no automatic retry | session=%s', day)
+
+    @commands.command(name='status', aliases=[], help='Show cached live setup and data/delivery health; no provider requests.')
     async def cmd_status(self, ctx):
         """Cached state and operational health, restricted to the private channel."""
         if not self._private(ctx):
@@ -521,6 +635,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
     @tasks.loop(seconds=60)
     async def monitor(self):
         await self.poll_once()
+        await self.daily_once()
 
     @monitor.before_loop
     async def before_monitor(self):

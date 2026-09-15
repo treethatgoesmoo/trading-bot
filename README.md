@@ -11,13 +11,24 @@ A private Discord service watching **SPY price structure, VWAP and relative volu
 - Keeps `!status` cached and restricted to the configured private channel; `!help` is available.
 - `!preview` posts five clearly labeled fictional examples in that private channel (forming, triggered and three alternative endings). No market requests, live-state writes or enabled collection/publication required; limited to once per channel per 30 seconds. No old `!bb`, dashboard or research commands remain.
 
+### Live daily records and command guide
+
+- `!cmd` lists the currently registered, enabled commands with usage/help (including `!help`); it uses the configured command prefix, not a retired static list.
+- `!day` reads today's saved **live** evidence; `!day YYYY-MM-DD` reads a prior trading date. Both commands are private-channel-only. No provider requests, replay, evidence writes or strategy reconstruction. Missing, corrupt or incompatible-version evidence returns unavailable rather than zero signals.
+- Reports deduplicate actual observed lifecycles by setup ID: formed, triggered entries, invalidated/expired before observed entry, and target/invalidation/expiry/unknown outcomes of observed entries. SPY references are not fills, trades or SPX option P&L. Unobserved transitions are never reconstructed; missing trigger evidence is not invented.
+- Reports include missing completed minutes, late receipts, history readiness, last poll and delivery counts. Even complete candles do not prove complete live observation coverage; reports explicitly label that limitation. Pending alert delivery is reported as unknown.
+- With collection and publication enabled, the monitor attempts one current-session report between **6 and 30 minutes after calendar close** (after the collector's five-minute final-bar grace period), including early closes. It reads the saved ledger only and does not fetch final missing bars. Offline/missed windows have no automatic next-day catch-up; use `!day` manually.
+- A separate `daily-delivery-YYYY-MM-DD.json` reserves the automatic send durably before Discord is contacted. Existing intents (including uncertain/interrupted sends) are never retried automatically. A crash before sending can therefore lose a report rather than duplicate it. Manual `!day` remains available and does not alter that journal. Preserve journals with evidence backups.
+
 ### Historical Discord replay
 
 - `!replay` mocks the previous trading date (even after today's close); `!replay YYYY-MM-DD` selects a prior trading session within the last 30 calendar days. Today, future dates and non-trading dates are rejected.
 - Explicitly requests up to **six historical sessions** (target plus five baseline sessions) using a separate Theta client. Requires credentials and stock entitlement; works independently of collection/publication flags and may incur provider usage. No automatic retries.
 - Posts chronological production-formatted embeds labeled **REPLAY — NOT A LIVE SIGNAL**, with the session date and assumed timely-arrival disclaimer on every embed. Up to ten event embeds plus progress/summary; zero triggered entries is reported explicitly. These are a sequence, not fictional alternative endings.
 - Assumes history was available at 09:29 ET and candles arrived five seconds after close. Historical prices may have been revised; replay does not establish actual alerts, executable fills, option returns or profitability. Incomplete sessions abort rather than imply no signals.
-- Only the configured private channel; once per channel per five minutes and one replay at a time. No live ledger, delivery intent, first-seen receipt or recorded-bar writes. The provider's existing local request-metadata auditing still applies. Review private-channel access and data licensing before use.
+- Only the configured private channel; once per channel per five minutes and one replay at a time. Invalid dates, wrong-channel requests, missing credentials and shutdown rejections do not consume or reset cooldown. Cooldown and busy attempts receive explicit Discord replies. The cooldown starts when a valid replay is accepted, including if its provider request later fails. No live ledger, delivery intent, first-seen receipt or recorded-bar writes. The provider's existing local request-metadata auditing still applies. Review private-channel access and data licensing before use.
+
+Replay logs show acceptance/rejection, cooldown or busy state, each historical request and elapsed time, computed event/entry counts, and Discord send progress. Failures log exception classes and stack locations, never exception messages or provider payloads. Routine Discord gateway/client INFO chatter is suppressed; warnings/errors remain. File log timestamps retain the host's configured timezone.
 
 Discord alerts, previews, replay and status timestamps use Pacific time (PST/PDT automatically). Strategy schedules remain Eastern; stored timestamps remain UTC.
 
@@ -44,7 +55,7 @@ Enable Discord Message Content Intent and verify the destination's private acces
 
 New state lives under `.thetadata-data/spy-setups/`; old recordings are preserved but never migrated into SPY setups. First-seen bars and volume are immutable. Missing, stale or malformed data fails closed. Five preceding sessions supply matching-minute volume baselines; at least three positive samples are required. Starting late can mean no qualifying setup that day; history is not allowed to invent earlier signals.
 
-Lifecycle identity, not direction alone, drives durable deduplication. An event expires for publication 90 seconds after its transition close; later candles do not extend it. No post-close alerts. Suppressed events are not replayed when publication is enabled. Ambiguous Discord sends are not automatically retried. Atomic evidence writes and a process lock protect collection/delivery; never delete `.service.lock` to bypass a running owner.
+Lifecycle identity, not direction alone, drives durable deduplication. An event expires for publication 90 seconds after its transition close; later candles do not extend it. No post-close actionable alerts; the separate daily evidence summary is allowed in its bounded post-close window. Suppressed events are not replayed when publication is enabled. Ambiguous Discord sends are not automatically retried. Atomic evidence writes and a process lock protect collection/delivery; never delete `.service.lock` to bypass a running owner.
 
 Optional `THETA_AUDIT_START_DATE` / `THETA_AUDIT_DAYS` control local request metadata only. Preserve the original audit date. Logs and provider evidence remain private and ignored. Establish a private, licence-compliant backup separately.
 
