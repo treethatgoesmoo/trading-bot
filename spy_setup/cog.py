@@ -412,6 +412,10 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                     logger.warning('SPY current-session request failed')
                 self._save(state)  # Save current bars before optional history can block.
                 await self._assess(state)
+                # Independent informational levels do not require setup/VWAP/
+                # relative-volume confirmation or historical warm-up.
+                from spy_setup.informational_delivery import publish_events
+                await publish_events(self, state)
                 await self._prior(state)
                 # History may have become ready within this same fresh1m window.
                 await self._assess(state)
@@ -517,6 +521,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         try:
             state = load_report_state(self.store, day)
             embed = daily_embed(state, self._now())
+            self._add_informational_counts(embed, day)
         except Exception:
             await ctx.send(f'Daily report {day} unavailable: missing, incompatible or invalid saved evidence. No simulation performed.')
             return
@@ -563,6 +568,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             try:
                 state = load_report_state(self.store, day)
                 embed = daily_embed(state, now)
+                self._add_informational_counts(embed, day)
                 channel = self.bot.get_channel(config.SPX_CHANNEL_ID)
                 if channel is None:
                     return
@@ -580,6 +586,20 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                 raise
             except Exception:
                 logger.warning('Daily report delivery unknown; no automatic retry | session=%s', day)
+
+    def _informational_counts(self, day):
+        from spy_setup.informational_delivery import delivery_counts
+        try:
+            counts = delivery_counts(self.directory, day)
+            return ' | '.join(f'{kind}: {count}' for kind, count in counts.items())
+        except Exception:
+            return 'unavailable — informational delivery evidence could not be read'
+
+    def _add_informational_counts(self, embed, day):
+        embed.add_field(name='Informational range / BB notifications',
+                        value=self._informational_counts(day) +
+                        '\nSeparate from setup counts; missing journals do not prove live coverage.',
+                        inline=False)
 
     @commands.command(name='status', aliases=[], help='Show cached live setup and data/delivery health; no provider requests.')
     async def cmd_status(self, ctx):
@@ -620,7 +640,11 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                    f'(requested: {"on" if requested else "off"}; blocked: {blocked}) '
                    f'| destination: {getattr(config, "SPX_CHANNEL_ID", 0)}\n'
                    f'Last poll: {display_time(state["last_poll_at"] if state else None, include_date=True)} | requests: {requests}\n'
-                   f'Deliveries: {counts}. Counts are attempts, not billing units. Outcomes not evaluated.')
+                   f'Deliveries: {counts}. Counts are attempts, not billing units. Outcomes not evaluated.\n'
+                   f'Informational range / BB (today): '
+                   f'{self._informational_counts(now.astimezone(market_calendar.ET).date())}\n'
+                   'BB: 1m + 5m, 20 periods / 2σ, session-only; first eligible crosses at '
+                   '6:51 AM / 8:15 AM Pacific. Informational, not entries.')
         if state and state['observations']:
             recorded = state['observations'][-1]['snapshot']['classification']
             current = snapshot.get('classification', {})

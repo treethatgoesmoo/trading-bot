@@ -160,7 +160,12 @@ def test_collector_requests_spy_stock_ohlcv(tmp_path, monkeypatch):
         assert calls[0][1]['symbol'] == 'SPY'
         assert calls[0][1]['interval'] == '1m'
         assert state['requests']['current']['succeeded'] == 1
-        assert len(channel.sent) == 1
+        # One setup transition plus independent range-ready/cross notifications.
+        assert len(state['deliveries']) == 1
+        assert state['deliveries'][0]['delivery'] == 'sent'
+        assert len(channel.sent) == 3
+        from spy_setup.informational_delivery import delivery_counts
+        assert delivery_counts(tmp_path, DAY)['sent'] == 2
     asyncio.run(run())
 
 

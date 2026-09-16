@@ -9,7 +9,20 @@ A private Discord service watching **SPY price structure, VWAP and relative volu
 - Publishes distinct lifecycle transitions: forming (breakout/retest), triggered, invalidated, expired or target reached. **Forming is not an entry.** Idle/unchanged states stay silent.
 - Labels every price as **SPY**: continuation trigger, invalidation, confirmed-close entry reference and 2R target. These are signal references, not executable SPX option prices or guaranteed fills.
 - Keeps `!status` cached and restricted to the configured private channel; `!help` is available.
-- `!preview` posts five clearly labeled fictional examples in that private channel (forming, triggered and three alternative endings). No market requests, live-state writes or enabled collection/publication required; limited to once per channel per 30 seconds. No old `!bb`, dashboard or research commands remain.
+- `!preview` posts five clearly labeled fictional examples in that private channel (forming, triggered and three alternative endings). No market requests, live-state writes or enabled collection/publication required; limited to once per channel per 30 seconds. No old `!bb`, dashboard or research commands remain; new automatic informational BB notifications are described below.
+
+### Informational range and Bollinger Band notifications
+
+Alongside the stricter setup signals, the same collection/publication opt-ins enable independent **informational SPY notifications — not entry signals**:
+
+- First 15-minute opening-range high/low at **6:45 a.m. Pacific**.
+- A completed **1m close** crossing above that high or below that low.
+- A completed **1m or 5m close** crossing outside its upper/lower Bollinger Band: **20 periods, 2 population standard deviations**, close-based SMA. Each close is compared with its own rolling bands. Touches, intrabar wicks and returning inside do not notify; staying outside does not repeat. A new outside crossing can notify again after returning inside.
+- Five-minute candles align to 09:30 ET and require all five completed minutes. Bands use **today's regular session only**, not overnight or prior-session closes. Both previous/current bands are required, so the first possible BB crossing alerts are **6:51 a.m. Pacific (1m)** and **8:15 a.m. Pacific (5m)**. Charts with extended-hours/prior-session warm-up may differ.
+
+No VWAP, relative-volume, retest or noon entry cutoff is required for these informational events. They operate during regular market hours, with no post-close sends. Missing/invalid bars fail closed; an event must still be within **90 seconds of its candle close**. Late starts do not replay old range announcements or crossings. Notifications are not guaranteed during feed/network outages.
+
+Separate `spy-informational-v1` journals live under `.thetadata-data/spy-setups/informational-v1/YYYY-MM-DD/`. Each event reserves a durable intent before sending. **Any existing intent prevents retry**, including ambiguous, rejected and suppressed sends. A crash between reservation and sending can lose a notification rather than duplicate it. Preserve these journals. This does not change setup rule versions or rewrite old setup ledgers. `!status`, `!day` and automatic daily reports show separate informational delivery counts; zero setup entries does not imply zero informational notifications.
 
 ### Live daily records and command guide
 
