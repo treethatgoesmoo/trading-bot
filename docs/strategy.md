@@ -38,6 +38,12 @@ Pending setups expire 15 minutes after breakout/reclaim or at noon ET, whichever
 
 The new semantics use `spy-orb-reversal-v2`; existing `spy-orb-retest-v1` state must not be relabeled or rewritten. The current date-keyed store rejects a same-day ledger from another version. Deploy before a fresh trading session with no existing ledger for that date, or implement a separately reviewed version-aware state handoff; a mid-session restart over a v1 ledger will fail closed. Preserve all historical state and first-seen receipts. Discord display remains Pacific (PST/PDT); all rule times here are Eastern.
 
+## Independent informational notifications: `spy-informational-v1`
+
+`spy_setup/informational.py` calculates separate opening-range and Bollinger Band events; these do **not** modify or imply the setup rules above. The 15-minute opening-range announcement and 1m close crossings need no VWAP, relative-volume or retest confirmation. The BB notifications compare completed 1m/5m closes against their own rolling 20-close SMA ±2 population standard deviations, requiring a previous inside/on-band close and a current strictly outside close. Only outward crossings notify, not touches or reentries.
+
+Five-minute bars are regular-session aligned, with five contiguous constituent minutes. No overnight/prior-session warm-up: first possible 1m/5m BB crossings are 09:51/11:15 ET. Original receipts, contiguous session coverage, the 90-second event freshness window and regular market hours gate all notifications. No setup noon cutoff applies. Separate durable journals prevent duplicates and replay; failed or uncertain sends are not automatically retried. See README for operational details and the deliberate risk of missing notifications during outages.
+
 ## Limitations
 
 These thresholds are transparent starting conventions, not a validated edge. Feed-specific Nasdaq Basic VWAP/volume may differ from a consolidated feed or a trading platform. Closed-candle references are not executable fills. SPY structure can diverge from SPX, and SPX options can lose value despite the expected underlying direction. Test this new strategy independently before relying on alerts.
