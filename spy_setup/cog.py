@@ -45,6 +45,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
     def __init__(self, bot, theta_client=None, *, directory=None):
         self.bot, self.theta_client = bot, theta_client
         self._replay_next = {}
+        self._range_next = 0
+        self._range_cache = None
         self.directory = Path(directory) if directory is not None else Path(THETADATA_DATA_DIR) / 'spy-setups'
         self.store = StateStore(self.directory)
         self._ownership = ProcessLock(self.directory)
@@ -506,6 +508,77 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         else:
             logger.error('Replay command failed %s', failure_location(error))
             await ctx.send('Replay failed unexpectedly. Check the local bot log. Messages already sent will not be retried.')
+
+    @commands.command(name='range', help='Estimate today’s SPY low–high from 20 prior sessions. Up to 22 provider requests initially; collection opt-in required.')
+    @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
+    async def projected_range(self, ctx):
+        if not self._private(ctx):
+            await ctx.send('SPY range is available only in the configured private channel.')
+            return
+        now = self._now()
+        day = now.astimezone(market_calendar.ET).date()
+        if not market_calendar.is_trading_day(day) or now < session_time(day, 9, 31):
+            await ctx.send('SPY range is available on trading days after 6:31 a.m. Pacific, once the opening minute is complete.')
+            return
+        if self._unloading or not self._collection_enabled():
+            await ctx.send('SPY range requires enabled collection and provider credentials; unavailable during shutdown.')
+            return
+        clock = time.monotonic()
+        if clock < self._range_next:
+            raise commands.CommandOnCooldown(commands.Cooldown(1, 300), self._range_next - clock, commands.BucketType.channel)
+        history = self._range_cache[1] if self._range_cache and self._range_cache[0] == day else None
+        anchor = self._range_cache[2] if history is not None else None
+        self._range_cache = (day, history, anchor)
+        self._range_next = clock + (60 if history is not None else 300)
+        task = asyncio.current_task()
+        # Shared shutdown tracking keeps ownership until isolated workers exit.
+        self._replay_tasks.add(task)
+        try:
+            await ctx.send('Estimating SPY’s daily range from 20 preceding sessions. '
+                           + ('Using cached history; fetching today’s completed candles.' if history is not None else
+                              'First request may use up to 22 provider calls; history is cached until restart or the next session.')
+                           + ' Historical estimate only—not guaranteed support/resistance.')
+            from spy_setup.projected_range import range_session
+            try:
+                result = await self._call(range_session, day, now, history=history, anchor=anchor)
+                self._range_cache = (day, result.history, result.anchor)
+                # History warm-up can be slow: refresh today's bars once rather
+                # than silently describe the initial cutoff as current.
+                if (self._now() - now).total_seconds() > 30:
+                    now = self._now()
+                    result = await self._call(range_session, day, now, history=result.history, anchor=result.anchor)
+                delivered = self._now()
+                if (delivered.astimezone(market_calendar.ET).date() != day
+                        or (delivered - now).total_seconds() > 30
+                        or (delivered < session_time(day, *market_calendar.close_time(day))
+                            and not 0 <= (delivered - result.candle_close).total_seconds() <= 90)
+                        or (delivered >= session_time(day, *market_calendar.close_time(day))
+                            and result.candle_close != session_time(day, *market_calendar.close_time(day)))
+                        or self._unloading or not self._collection_enabled()):
+                    raise ValueError('Range became stale or collection disabled')
+            except Exception as exc:
+                from core.safe_logging import failure_location
+                logger.warning('SPY range unavailable %s', failure_location(exc))
+                await ctx.send('SPY range unavailable: incomplete/stale data or provider failure. No estimate generated; no automatic retries.')
+                return
+            await ctx.send(embed=result.embed)
+        finally:
+            self._replay_tasks.discard(task)
+
+    @projected_range.error
+    async def projected_range_error(self, ctx, error):
+        import math
+        from core.safe_logging import failure_location
+        error = getattr(error, 'original', error)
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f'SPY range cooldown: try again in {math.ceil(error.retry_after)} seconds.')
+        elif isinstance(error, commands.MaxConcurrencyReached):
+            await ctx.send('A SPY range request is already running. Please wait.')
+        elif isinstance(error, commands.UserInputError):
+            await ctx.send('Use !range with no arguments for today’s SPY estimate.')
+        else:
+            logger.error('SPY range command failed %s', failure_location(error))
+            await ctx.send('SPY range failed unexpectedly. Check the local bot log; no automatic retries.')
 
     @commands.command(name='day', help='Read saved live observations: day [YYYY-MM-DD]. No historical requests or simulation.')
     async def day(self, ctx, session: str = None):
