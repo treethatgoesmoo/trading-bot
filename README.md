@@ -24,6 +24,16 @@ No VWAP, relative-volume, retest or noon entry cutoff is required for these info
 
 Separate `spy-informational-v1` journals live under `.thetadata-data/spy-setups/informational-v1/YYYY-MM-DD/`. Each event reserves a durable intent before sending. **Any existing intent prevents retry**, including ambiguous, rejected and suppressed sends. A crash between reservation and sending can lose a notification rather than duplicate it. Preserve these journals. This does not change setup rule versions or rewrite old setup ledgers. `!status`, `!day` and automatic daily reports show separate informational delivery counts; zero setup entries does not imply zero informational notifications.
 
+### Projected daily SPY range: `!range`
+
+Private-channel-only, on-demand **historical estimate of today's SPY low–high**, not an entry signal or guaranteed support/resistance. No automatic range alerts. Available after the first completed opening minute (6:31 a.m. Pacific); before open, holidays, incomplete or stale data return unavailable.
+
+- Uses the **20 preceding trading sessions**, including early closes. For each session, measures percentage moves from its open to its low and high. Separately takes the linearly interpolated **80th percentile** of each excursion and applies those distances to today's open. This is **not an 80% full-session coverage guarantee**; accuracy is unvalidated. No options-implied volatility or SPX price conversion is used.
+- Shows the estimated bounds, accepted opening anchor, actual low–high so far, latest completed close, Pacific timestamp, sample dates and observed breaches. After close, requires a complete session and labels the observed full-day range. Prices can exceed the estimate.
+- Keeps the historical sample and first accepted opening anchor in memory for that session so subsequent requests do not chase price or revised opening candles. **Restarting clears this cache**; revised provider history/open prices can change a newly calculated estimate. This is not a persisted forecast or an accuracy-tracking system. Feed differences, splits, news and volatility-regime changes can distort historical estimates.
+- Requires the existing **collection opt-in and credentials**. Publication opt-in does not gate this explicit command reply. First use can make up to **22 sequential provider requests** (20 prior sessions, today, and at most one current-data refresh after slow warm-up). Cached use makes at most two. Provider usage may be billable; no background collection is added. Failed warm-up/current requests may require history to be fetched again on the next invocation.
+- One range request at a time; five-minute cooldown on initial/uncached attempts, one minute on cached attempts. Cache lasts until restart or the next session. An isolated client and cancellation-safe worker use no live setup or delivery journals. No automatic retries of failed requests or sends. Historical timestamps reflect actual retrieval, not simulated live observation.
+
 ### Live daily records and command guide
 
 - `!cmd` lists the currently registered, enabled commands with usage/help (including `!help`); it uses the configured command prefix, not a retired static list.
