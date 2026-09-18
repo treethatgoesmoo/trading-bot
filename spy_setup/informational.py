@@ -1,7 +1,7 @@
 """Pure informational SPY levels; not entry signals or a delivery queue.
 
 build_events(record, now) returns all currently eligible events, sorted by close
-then ID. Common fields: id, version, session_date, kind, timeframe ("1"/"5"),
+then ID. Common fields: id, version, session_date, kind, timeframe ("1" for range, "5"/"10" for BB),
 event_at (UTC candle close), informational=True. Range events include range_high
 and range_low; crossings also include close, previous_close and direction
 ("above"/"below"). BB events include period, deviations, upper, lower,
@@ -9,8 +9,9 @@ previous_upper and previous_lower. Prices refer only to SPY.
 
 Bands use completed regular-session closes, a 20-bar SMA and population standard
 deviation, including each evaluated candle in its own band. Both current and
-previous bands must exist (21 candles). Five-minute bars align to 09:30 ET and
-require all five minutes. No previous-session warm-up or persisted state is used.
+previous bands must exist (21 candles). BB bars align to 09:30 ET and
+require all constituent minutes. No previous-session warm-up or persisted state
+is used. Thirty-minute BBs cannot warm up within a regular session (630 minutes).
 
 Receipt timestamps are never altered. Missing/invalid evidence fails closed.
 Only events within 90 seconds of their original close are returned; callers must
@@ -25,7 +26,7 @@ from math import fsum, sqrt
 from core import market_calendar
 from core.session_bars import session_time, utc, validate_record
 
-VERSION = 'spy-informational-v1'
+VERSION = 'spy-informational-v2'
 PERIOD = 20
 DEVIATIONS = 2.0
 FRESH_SECONDS = 90
@@ -101,7 +102,7 @@ def build_events(record, now):
                          direction=direction, close=current['close'],
                          previous_close=previous['close'], **levels)
 
-        for timeframe in (1, 5):
+        for timeframe in (5, 10):
             candles = []
             for start in range(0, len(minutes) - timeframe + 1, timeframe):
                 block = minutes[start:start + timeframe]

@@ -350,13 +350,15 @@ def test_reversal_deadline_is_reclaim_plus_fifteen_minutes():
     assert not expired['classification']['available']
 
 
-def test_embed_explicit_execution_boundary_and_stale_suppression():
+def test_embed_scannable_direction_and_stale_suppression():
     snap = snapshot([breakout(), retest(), trigger()])
     rendered = snapshot_embed(snap).to_dict()
     text = json.dumps(rendered)
-    assert 'NOT SPX prices' in text and 'fresh SPX option quotes' in text
+    assert 'NOT SPX prices' not in text and 'Execution boundary' not in text
+    assert 'BULLISH setup' in text and 'above VWAP' in text
+    assert any(field['name'] == 'SPY levels' for field in rendered['fields'])
     assert VERSION in text and 'Unvalidated' in text
     snap['fresh'] = False
     rendered = snapshot_embed(snap).to_dict()
     assert 'Unavailable' in rendered['title']
-    assert not any('SPY levels' in f['name'] for f in rendered['fields'])
+    assert not any('SPY levels' in f['name'] for f in rendered.get('fields', []))

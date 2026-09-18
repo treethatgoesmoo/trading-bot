@@ -52,7 +52,7 @@ def prepared(tmp_path, monkeypatch, channel=None):
 
 
 def journals(tmp_path):
-    return sorted((tmp_path / 'informational-v1' / str(DAY)).glob('*.json'))
+    return sorted((tmp_path / 'informational-v2' / str(DAY)).glob('*.json'))
 
 
 def journal(tmp_path):
@@ -79,7 +79,7 @@ def test_durable_intent_precedes_send_and_duplicate_restart_does_not_retry(tmp_p
         assert len(channel.sent) == 1
         assert state == before
         assert delivery.delivery_counts(tmp_path, DAY) == dict(sent=1, failed=0, unknown=0, suppressed=0)
-        assert {p.name for p in tmp_path.iterdir()} == {'informational-v1'}
+        assert {p.name for p in tmp_path.iterdir()} == {'informational-v2'}
     asyncio.run(run())
 
 
@@ -291,9 +291,9 @@ def test_market_closed_builds_no_intents(tmp_path, monkeypatch):
 def test_later_events_rechecked_after_first_send_wait(tmp_path, monkeypatch):
     async def run():
         cog, state, channel = prepared(tmp_path, monkeypatch)
-        state['record'] = record([100] * 20 + [110])
-        cog.now = at(21)
-        channel.inspect = lambda: setattr(cog, 'now', at(21, 91))
+        state['record'] = record([100] * 104 + [110])
+        cog.now = at(105)
+        channel.inspect = lambda: setattr(cog, 'now', at(105, 91))
         await delivery.publish_events(cog, state)
         assert len(channel.sent) == 1
         assert delivery.delivery_counts(tmp_path, DAY) == dict(sent=1, failed=0, unknown=0, suppressed=1)
@@ -351,12 +351,31 @@ def test_delivery_counts_missing_is_read_only_and_corrupt_is_unknown(tmp_path):
     for index, status in enumerate(delivery.STATUSES):
         item = dict(event, id=event['id'] + f'-{index}')
         delivery._reserve(tmp_path, item, at(15), status, 'test')
-    folder = tmp_path / 'informational-v1' / str(DAY)
+    folder = tmp_path / 'informational-v2' / str(DAY)
     (folder / 'corrupt.json').write_text('{')
     (folder / 'ignored.tmp').write_text('{')
     before = {p: p.read_bytes() for p in folder.iterdir()}
     assert delivery.delivery_counts(tmp_path, DAY) == dict(sent=1, failed=1, unknown=2, suppressed=1)
     assert {p: p.read_bytes() for p in folder.iterdir()} == before
+
+
+def test_v2_journals_do_not_read_or_rewrite_v1(tmp_path, monkeypatch):
+    async def run():
+        cog, state, channel = prepared(tmp_path, monkeypatch)
+        event = delivery.build_events(state['record'], cog._now())[0]
+        old_id = event['id'].replace('spy-informational-v2', 'spy-informational-v1')
+        folder = tmp_path / 'informational-v1' / str(DAY)
+        folder.mkdir(parents=True)
+        old_path = folder / delivery._filename(old_id)
+        old_path.write_text(json.dumps(dict(id=old_id, version='spy-informational-v1', status='sent')))
+        before = old_path.read_bytes()
+        assert delivery.delivery_counts(tmp_path, DAY) == dict(sent=0, failed=0, unknown=0, suppressed=0)
+        await delivery.publish_events(cog, state)
+        assert len(channel.sent) == 1
+        assert journal(tmp_path)['version'] == 'spy-informational-v2'
+        assert old_path.read_bytes() == before
+        assert delivery.delivery_counts(tmp_path, DAY) == dict(sent=1, failed=0, unknown=0, suppressed=0)
+    asyncio.run(run())
 
 
 def test_delivery_counts_scan_error_does_not_claim_zero(tmp_path, monkeypatch):
@@ -368,17 +387,24 @@ def test_delivery_counts_scan_error_does_not_claim_zero(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('closes,minutes,timeframe', [([100] * 15, 15, None),
-    ([100] * 20 + [110], 21, '1'), ([100] * 104 + [90], 105, '5')])
+    ([100] * 209 + [110], 210, '10'), ([100] * 104 + [90], 105, '5')])
 def test_embeds_are_informational_spy_and_pacific(closes, minutes, timeframe):
     events = delivery.build_events(record(closes), at(minutes))
     event = (events[0] if timeframe is None else
              next(e for e in events if e['kind'].startswith('bb_') and e['timeframe'] == timeframe))
     embed = delivery.informational_embed(event).to_dict()
     assert 'SPY' in embed['title']
-    assert 'INFORMATIONAL — NOT AN ENTRY SIGNAL' in embed['description']
+    assert 'Not an entry signal' in embed['footer']['text']
     assert 'PDT' in embed['description']
-    assert 'not SPX option prices' in embed['description']
+    assert 'not SPX option prices' not in embed['description']
+    if event.get('direction'):
+        bullish = event['direction'] == 'above'
+        assert ('BULLISH CROSS' if bullish else 'BEARISH CROSS') in embed['description']
+        assert embed['color'] == (0x2ECC71 if bullish else 0xE74C3C)
+        assert f"{event['close'] - event['previous_close']:+.2f}" in embed['description']
+    else:
+        assert 'RANGE ESTABLISHED' in embed['description']
     if timeframe:
         assert timeframe + 'm' in embed['title']
         assert '20 periods / 2σ' in embed['fields'][0]['name']
-        assert 'population standard deviation' in embed['fields'][0]['value']
+        assert 'Regular-session closes' in embed['fields'][0]['value']

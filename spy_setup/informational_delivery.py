@@ -7,7 +7,7 @@ are logged safely and contained. Cancellation propagates; an invalid state
 object still raises through cog._guard.
 
 Each event has its own exclusive journal under
-informational-v1/YYYY-MM-DD/<sha256(event id)>.json. ANY existing path blocks a
+informational-v2/YYYY-MM-DD/<sha256(event id)>.json. ANY existing path blocks a
 retry, including corrupt, suppressed, failed or uncertain intents. This favors
 lost notifications over duplicates: even a definitely rejected send is not
 retried. Publication-disabled observations are durably suppressed. Events not
@@ -41,7 +41,7 @@ from spy_setup.informational import VERSION, FRESH_SECONDS, build_events
 logger = logging.getLogger(__name__)
 STATUSES = ('sent', 'failed', 'unknown', 'suppressed')
 SEND_TIMEOUT_SECONDS = 30
-_JOURNAL_ROOT = 'informational-v1'
+_JOURNAL_ROOT = 'informational-v2'
 
 
 def _day(value):
@@ -135,6 +135,8 @@ def _finish(reservation, status, reason, now):
 
 
 def _finish_safely(reservation, status, reason, now):
+    logger.info('Informational delivery outcome | event=%s status=%s reason=%s',
+                reservation[0].stem, status, reason)
     try:
         _finish(reservation, status, reason, now)
     except Exception as exc:
@@ -177,20 +179,27 @@ def informational_embed(event):
         title = f"SPY opening range · 1m close {event['direction']} range"
     else:
         title = f"SPY Bollinger Bands · {event['timeframe']}m close {event['direction']} band"
-    embed = discord.Embed(title=title, color=0x3498DB, description=(
-        '**INFORMATIONAL — NOT AN ENTRY SIGNAL**\n'
-        f"Completed candle: {display_time(event['event_at'], include_date=True)}\n"
-        'SPY prices only; not SPX option prices, fills or trade recommendations.'))
+    direction = event.get('direction')
+    heading = ('🟢 ↑ BULLISH CROSS' if direction == 'above' else
+               '🔴 ↓ BEARISH CROSS' if direction == 'below' else '🔵 RANGE ESTABLISHED')
+    color = 0x2ECC71 if direction == 'above' else 0xE74C3C if direction == 'below' else 0x3498DB
+    movement = ''
+    if 'previous_close' in event and 'close' in event:
+        change = event['close'] - event['previous_close']
+        movement = f"\n{event['timeframe']}m close change: **{change:+.2f}**"
+    embed = discord.Embed(title=title, color=color, description=(
+        f'**{heading}**{movement}\n'
+        f"Completed candle: {display_time(event['event_at'], include_date=True)}"))
     if kind.startswith('opening_range_'):
         embed.add_field(name='SPY opening range · 9:30–9:45 ET',
                         value=f"High: ${event['range_high']:.2f}\nLow: ${event['range_low']:.2f}", inline=False)
     else:
         embed.add_field(name=f"SPY {event['timeframe']}m Bollinger Bands · 20 periods / 2σ",
                         value=f"Upper: ${event['upper']:.2f}\nLower: ${event['lower']:.2f}\n"
-                              'Completed regular-session closes; population standard deviation.', inline=False)
+                              'Regular-session closes.', inline=False)
     if 'close' in event:
         embed.add_field(name='SPY confirmed close', value=f"${event['close']:.2f}", inline=False)
-    embed.set_footer(text=f'{VERSION} | Pacific display | informational levels, not setup confirmation')
+    embed.set_footer(text=f'{VERSION} | Informational • Not an entry signal')
     return embed
 
 
@@ -214,7 +223,13 @@ async def publish_events(cog, state):
                 else:
                     embed = informational_embed(event)
             reservation = _reserve(cog.directory, event, now, status, reason or 'send_reserved')
-            if reservation is None or status != 'unknown':
+            if reservation is None:
+                logger.debug('Informational duplicate blocked | event=%s', _filename(event['id'])[:-5])
+                continue
+            logger.info('Informational event reserved | event=%s kind=%s timeframe=%s session=%s status=%s reason=%s age_seconds=%.1f',
+                        reservation[0].stem, event['kind'], event['timeframe'], event['session_date'],
+                        status, reason or 'send_reserved', (utc(now) - utc(event['event_at'])).total_seconds())
+            if status != 'unknown':
                 continue
             cog._guard(state)
             reason = _blocked(cog, event, cog._now())

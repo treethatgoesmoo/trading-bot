@@ -17,7 +17,7 @@ def test_examples_are_labeled_deterministic_and_within_discord_limits():
         assert DEMO in embed.title and DEMO in embed.footer.text
         assert 'NOT current market data' in embed.description
         assert len(embed.title) <= 256
-        assert any('NOT SPX prices' in f.name for f in embed.fields)
+        assert any(f.name == 'SPY levels' for f in embed.fields)
     assert 'not set' in embeds[0].fields[0].value
     assert '600.92' in embeds[1].fields[0].value
 

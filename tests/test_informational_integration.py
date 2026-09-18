@@ -76,7 +76,7 @@ async def test_real_poll_range_without_setup_or_history_saved_before_send(servic
         assert state['requests']['current']['succeeded'] == 1
         assert state['observations'] == state['deliveries'] == []
         assert state['previous_bars'] == []
-        journals = list(s.directory.glob('informational-v1/*/*.json'))
+        journals = list(s.directory.glob('informational-v2/*/*.json'))
         assert len(journals) == 1
         assert json.loads(journals[0].read_text())['status'] == 'unknown'
         assert s.trace == ['current']  # No history request precedes the send.
@@ -87,7 +87,7 @@ async def test_real_poll_range_without_setup_or_history_saved_before_send(servic
     assert len(s.channel.sent) == 1
     embed = s.channel.sent[0]['embed']
     assert 'opening range ready' in embed.title
-    assert 'NOT AN ENTRY SIGNAL' in embed.description
+    assert 'Not an entry signal' in embed.footer.text
     state = s.cog.store.load(DAY)
     assert state['observations'] == state['deliveries'] == []
     assert state['previous_bars'] == [] and not state['prior_complete']
@@ -174,7 +174,7 @@ async def test_real_poll_setup_and_informational_messages_have_independent_ledge
     await cog.poll_once()
     assert len(channel.sent) == 3
     informational = [item['embed'] for item in channel.sent
-                     if 'INFORMATIONAL' in (item['embed'].description or '')]
+                     if 'Informational' in (item['embed'].footer.text or '')]
     assert len(informational) == 2
     assert {embed.title for embed in informational} == {
         'SPY opening range ready · first 15 minutes',

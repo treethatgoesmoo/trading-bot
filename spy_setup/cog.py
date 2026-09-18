@@ -11,6 +11,7 @@ import asyncio
 import copy
 from datetime import date, datetime, timedelta, timezone
 import logging
+from hashlib import sha256
 from pathlib import Path
 import time
 
@@ -21,6 +22,7 @@ from discord.ext import commands, tasks
 from core import market_calendar
 from core.paths import THETADATA_DATA_DIR
 from core.process_lock import ProcessLock
+from core.safe_logging import failure_location
 from core.session_bars import new_record, session_time, update_record, utc
 from core.state_store import StateStore, observation_id, state_key
 from spy_setup.signals import VERSION, build_snapshot, preceding_sessions
@@ -57,6 +59,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         self._pause_until = None
         self._replay_tasks = set()
         self._unloading = False
+        self._poll_log_key = None
+        self._poll_log_at = None
 
     @staticmethod
     def _now():
@@ -201,9 +205,10 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                                            for key in known) == expected
                 state['prior_complete'] = all(meta['complete'] for meta in state['prior_sessions'].values())
                 counts['succeeded'] += 1
-            except Exception:
+            except Exception as exc:
                 counts['failed'] += 1
-                logger.warning('SPY prior-session warm-up request failed')
+                logger.warning('SPY prior-session warm-up request failed | session=%s prior=%s %s',
+                               day, prior_day, failure_location(exc))
             self._save(state)
 
     def _request_id(self):
@@ -259,7 +264,24 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                 and state_key(classification) == state['last_observed_state']
                 and self._decision_fresh(snapshot, self._now()))
 
+    @staticmethod
+    def _log_delivery(state, entry, *, durable):
+        # Hash the internal identity: correlate retries without logging payloads.
+        correlation = sha256(str(entry.get('id', '')).encode('utf8')).hexdigest()[:16]
+        level = logging.WARNING if entry.get('delivery') in ('failed', 'unknown') or not durable else logging.INFO
+        logger.log(level, 'SPY setup delivery | session=%s event=%s outcome=%s reason=%s attempts=%s durable=%s',
+                   state['session_date'], correlation, entry.get('delivery'), entry.get('reason'),
+                   entry.get('attempts', 0), durable)
+
     async def _deliver(self, state, entry):
+        correlation = sha256(str(entry.get('id', '')).encode('utf8')).hexdigest()[:16]
+        logger.debug('SPY setup delivery evaluation | session=%s event=%s', state['session_date'], correlation)
+        try:
+            await self._deliver_impl(state, entry)
+        finally:
+            self._log_delivery(state, entry, durable=not self._persistence_fault and state is self._state)
+
+    async def _deliver_impl(self, state, entry):
         self._guard(state)
         item = self._observation(state, entry)
         now = self._now()
@@ -303,11 +325,12 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                         self._save(state)
                     finally:
                         raise
-                except (discord.Forbidden, discord.NotFound):
+                except (discord.Forbidden, discord.NotFound) as exc:
                     entry.update(delivery='failed', reason='discord_rejected')
-                except Exception:
+                    logger.warning('SPY setup delivery rejected %s', failure_location(exc))
+                except Exception as exc:
                     entry.update(delivery='unknown', reason='ambiguous_send')
-                    logger.warning('SPX delivery acknowledgement unavailable')
+                    logger.warning('SPY setup delivery acknowledgement unavailable %s', failure_location(exc))
                 else:
                     delivered = self._now()
                     entry.update(delivery='sent', delivered_at=delivered.isoformat(),
@@ -346,6 +369,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                                                     delivered_at=None, reason='state_transition'))
         # Resolve expired/superseded failed intents before any new send. A
         # changed or unavailable snapshot can never authorize an older retry.
+        suppressed = []
         for entry in state['deliveries']:
             if entry['delivery'] not in ('failed', 'pending'):
                 continue
@@ -354,7 +378,11 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                 entry.update(delivery='suppressed', reason='expired_before_send')
             elif not self._still_current(state, item):
                 entry.update(delivery='suppressed', reason='superseded_or_unavailable')
+            if entry['delivery'] == 'suppressed':
+                suppressed.append(entry)
         self._save(state)
+        for entry in suppressed:
+            self._log_delivery(state, entry, durable=True)
         if not self._decision_fresh(snapshot, self._now()):
             return
         for entry in state['deliveries']:
@@ -362,7 +390,45 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                 await self._deliver(state, entry)
 
     async def poll_once(self, now=None):
+        started = time.monotonic()
+        try:
+            await self._poll_once_impl(now)
+        except asyncio.CancelledError:
+            logger.info('SPY poll cancelled | elapsed=%.2fs', time.monotonic() - started)
+            raise
+        except Exception as exc:
+            logger.warning('SPY poll interrupted | elapsed=%.2fs %s',
+                           time.monotonic() - started, failure_location(exc))
+            raise
+        finally:
+            self._log_poll(started)
+
+    def _log_poll(self, started):
+        state = self._state or {}
+        snapshot = state.get('snapshot') or {}
+        fresh = bool(snapshot and self._fresh(snapshot, self._now()))
+        collecting = self._collection_enabled()
+        paused = bool(self._pause_until and self._now() < self._pause_until)
+        health = ('evidence_error' if self._persistence_fault else 'collection_off' if not collecting
+                  else 'outside_collection_window' if not collection_open(self._now())
+                  else 'backoff' if paused else 'request_failed' if state.get('poll_status') == 'failed'
+                  else 'no_snapshot' if not snapshot else 'stale' if not fresh
+                  else 'warming_up' if not snapshot.get('classification', {}).get('available') else 'healthy')
+        key = (state.get('session_date'), health, state.get('poll_status'), self._publication_enabled())
+        current = time.monotonic()
+        prominent = (key != self._poll_log_key or self._poll_log_at is None or current - self._poll_log_at >= 300)
+        logger.log(logging.INFO if prominent else logging.DEBUG,
+                   'SPY poll outcome | session=%s health=%s status=%s fresh=%s publication=%s '
+                   'bars=%s prior_bars=%s prior_complete=%s polls=%s failures=%s elapsed=%.2fs',
+                   state.get('session_date'), health, state.get('poll_status'), fresh, key[-1],
+                   len(state.get('record', {}).get('bars', [])), len(state.get('previous_bars', [])),
+                   state.get('prior_complete', False), state.get('polls', 0), self._failures, current - started)
+        if prominent:
+            self._poll_log_key, self._poll_log_at = key, current
+
+    async def _poll_once_impl(self, now=None):
         if not self._collection_enabled() or not collection_open(now or self._now()):
+            logger.debug('SPY poll skipped | collection_disabled_or_outside_window')
             return
         async with self._lock:
             now = self._now()
@@ -404,14 +470,15 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                     state['poll_status'] = 'success'
                     state['requests']['current']['succeeded'] += 1
                     self._failures, self._pause_until = 0, None
-                except Exception:
+                except Exception as exc:
                     state['poll_status'] = 'failed'
                     state['requests']['current']['failed'] += 1
                     record['fetch_failures'] += 1
                     self._failures += 1
                     if self._failures >= 3:
                         self._pause_until = self._now() + timedelta(minutes=5)
-                    logger.warning('SPY current-session request failed')
+                    logger.warning('SPY current-session request failed | session=%s failures=%s backoff=%s %s',
+                                   day, self._failures, self._pause_until is not None, failure_location(exc))
                 self._save(state)  # Save current bars before optional history can block.
                 await self._assess(state)
                 # Independent informational levels do not require setup/VWAP/
@@ -421,8 +488,9 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                 await self._prior(state)
                 # History may have become ready within this same fresh1m window.
                 await self._assess(state)
-            except EvidenceError:
-                logger.warning('SPX evidence unavailable; no further requests or publication this poll')
+            except EvidenceError as exc:
+                logger.warning('SPY evidence unavailable; no further requests or publication this poll | session=%s %s',
+                               day, failure_location(exc))
 
     @staticmethod
     def _private(ctx):

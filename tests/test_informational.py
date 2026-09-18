@@ -85,7 +85,7 @@ def test_range_touch_is_not_cross_but_recross_has_new_identity():
     assert first['id'] != again['id']
 
 
-@pytest.mark.parametrize('timeframe', [1, 5])
+@pytest.mark.parametrize('timeframe', [5, 10])
 @pytest.mark.parametrize('last,direction', [(110, 'above'), (90, 'below')])
 def test_bb_population_bands_and_21_bar_requirement(timeframe, last, direction):
     closes = [100] * (21 * timeframe)
@@ -104,25 +104,29 @@ def test_bb_population_bands_and_21_bar_requirement(timeframe, last, direction):
     assert event['event_at'] == at(21 * timeframe, 0).isoformat()
 
 
-def test_bb_staying_outside_does_not_repeat():
-    data = record([100] * 20 + [110, 111, 112])
-    assert len(bb(build_events(data, at(21)), 1)) == 1
-    # At 23:05 the original crossing is stale; later outside closes are not crosses.
-    assert bb(build_events(data, at(23)), 1) == []
+@pytest.mark.parametrize('timeframe', [5, 10])
+def test_bb_staying_outside_does_not_repeat(timeframe):
+    closes = [price for price in [100] * 20 + [110, 111, 112]
+              for _ in range(timeframe)]
+    data = record(closes)
+    assert len(bb(build_events(data, at(21 * timeframe)), timeframe)) == 1
+    assert bb(build_events(data, at(23 * timeframe)), timeframe) == []
 
 
-def test_five_minute_requires_complete_aligned_block():
-    data = record([100] * 100 + [110] * 5)
-    assert bb(build_events(data, at(104)), 5) == []
-    assert len(bb(build_events(data, at(105)), 5)) == 1
-    assert bb(build_events(data, at(107)), 5) == []
+@pytest.mark.parametrize('timeframe', [5, 10])
+def test_bb_requires_complete_aligned_block(timeframe):
+    data = record([100] * (20 * timeframe) + [110] * timeframe)
+    assert bb(build_events(data, at(21 * timeframe - 1)), timeframe) == []
+    assert len(bb(build_events(data, at(21 * timeframe)), timeframe)) == 1
+    assert bb(build_events(data, at(21 * timeframe + 2)), timeframe) == []
 
 
 def test_returns_all_fresh_events_not_only_latest():
-    data = record([100] * 20 + [110])
-    events = build_events(data, at(21))
+    data = record([100] * 209 + [110])
+    events = build_events(data, at(210))
     assert set(kinds(events)) == {'opening_range_cross_above', 'bb_cross_above'}
-    assert len({e['id'] for e in events}) == 2
+    assert len({e['id'] for e in events}) == 3
+    assert {e['timeframe'] for e in events} == {'1', '5', '10'}
     assert events == sorted(events, key=lambda e: (e['event_at'], e['id']))
 
 
@@ -142,19 +146,23 @@ def test_invalid_or_incomplete_evidence_fails_closed(damage):
     assert build_events(data, at(21)) == []
 
 
-def test_receipt_gating_gap_and_late_crossing():
-    data = record([100] * 20 + [110])
-    data['bars'][4]['available_at'] = at(21, 80).isoformat()
-    assert build_events(data, at(21)) == []
-    assert bb(build_events(data, at(21, 80)), 1)
-    data['bars'][-1]['available_at'] = at(21, 91).isoformat()
-    assert build_events(data, at(21, 91)) == []
+@pytest.mark.parametrize('timeframe', [5, 10])
+def test_receipt_gating_gap_and_late_crossing(timeframe):
+    end = 21 * timeframe
+    data = record([100] * (end - 1) + [110])
+    data['bars'][4]['available_at'] = at(end, 80).isoformat()
+    assert build_events(data, at(end)) == []
+    assert bb(build_events(data, at(end, 80)), timeframe)
+    data['bars'][-1]['available_at'] = at(end, 91).isoformat()
+    assert build_events(data, at(end, 91)) == []
 
 
-def test_late_previous_crossing_candle_is_not_trusted():
-    data = record([100] * 20 + [110])
-    data['bars'][-2]['available_at'] = at(20, 100).isoformat()
-    assert bb(build_events(data, at(21, 60)), 1) == []
+@pytest.mark.parametrize('timeframe', [5, 10])
+def test_late_previous_crossing_candle_is_not_trusted(timeframe):
+    end = 21 * timeframe
+    data = record([100] * (end - 1) + [110])
+    data['bars'][20 * timeframe - 1]['available_at'] = at(20 * timeframe, 100).isoformat()
+    assert bb(build_events(data, at(end, 60)), timeframe) == []
 
 
 @pytest.mark.parametrize('day', [DAY, date(2026, 11, 27)])
@@ -172,6 +180,23 @@ def test_nontrading_date_and_wrong_session_are_rejected():
     assert build_events(record([100] * 20 + [110]), at(21, day=DAY + timedelta(days=1))) == []
 
 
-def test_flat_bands_do_not_emit_a_touch():
-    assert bb(build_events(record([100] * 105), at(105)), 1) == []
-    assert bb(build_events(record([100] * 105), at(105)), 5) == []
+@pytest.mark.parametrize('timeframe', [5, 10])
+def test_flat_bands_do_not_emit_a_touch(timeframe):
+    end = 21 * timeframe
+    assert bb(build_events(record([100] * end), at(end)), timeframe) == []
+
+
+def test_retired_one_minute_and_unsupported_thirty_minute_bb_never_emit():
+    data = record([100] * 20 + [110] + [100] * 187 + [110])
+    for end in (21, 210):
+        events = build_events(data, at(end))
+        assert bb(events, 1) == []
+        assert bb(events, 30) == []
+    assert 'opening_range_cross_above' in kinds(build_events(data, at(21)))
+
+
+def test_ten_minute_bb_cannot_warm_up_on_early_close():
+    day = date(2026, 11, 27)
+    data = record([100] * 209 + [110], day=day)
+    assert bb(build_events(data, at(209, day=day)), 10) == []
+    assert build_events(data, at(210, day=day)) == []
