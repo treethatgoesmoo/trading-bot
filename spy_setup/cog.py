@@ -296,7 +296,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             if channel is None:
                 entry.update(delivery='failed', reason='channel_unavailable')
             else:
-                embed = snapshot_embed(item['snapshot'])  # Render before persisting a send attempt.
+                from spy_setup.market_context import build_context
+                embed = snapshot_embed(item['snapshot'], context=build_context(state['record'], now))
                 # Rendering/lookup may take time. Recheck immediately at the
                 # boundary; candle freshness cannot be prolonged by a new 1m bar.
                 now = self._now()
@@ -393,6 +394,11 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         started = time.monotonic()
         try:
             await self._poll_once_impl(now)
+            # Also evaluate cached candle age on failed/backoff polls. Retain
+            # collector/process ownership for independent health journals.
+            async with self._lock:
+                from spy_setup.feed_health import check_feed_health
+                await check_feed_health(self)
         except asyncio.CancelledError:
             logger.info('SPY poll cancelled | elapsed=%.2fs', time.monotonic() - started)
             raise
@@ -784,8 +790,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                    f'Deliveries: {counts}. Counts are attempts, not billing units. Outcomes not evaluated.\n'
                    f'Informational range / BB (today): '
                    f'{self._informational_counts(now.astimezone(market_calendar.ET).date())}\n'
-                   'BB: 1m + 5m, 20 periods / 2σ, session-only; first eligible crosses at '
-                   '6:51 AM / 8:15 AM Pacific. Informational, not entries.')
+                   'BB: 5m + 10m, 20 periods / 2σ, session-only. Ready means sufficient candles, not a crossing.')
         if state and state['observations']:
             recorded = state['observations'][-1]['snapshot']['classification']
             current = snapshot.get('classification', {})
@@ -795,7 +800,9 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                             f'Recorded 1m start {display_time(recorded["bar_at"], include_date=True)}: '
                             f'{recorded["direction"]}, lifecycle={recorded["lifecycle"]}. '
                             f'Last acknowledged state: {state["last_acknowledged_state"]}.')
-        await ctx.send(content=content, embed=snapshot_embed(snapshot))
+        from spy_setup.market_context import build_context
+        context = build_context(state['record'] if state and not self._persistence_fault else None, now)
+        await ctx.send(content=content, embed=snapshot_embed(snapshot, context=context))
 
     @tasks.loop(seconds=60)
     async def monitor(self):

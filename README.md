@@ -8,7 +8,7 @@ A private Discord service watching **SPY price structure, VWAP and relative volu
 - Requires a breakout aligned with session VWAP and at least 1.2× matching-minute relative volume, then a later retest and a later continuation close.
 - Publishes distinct lifecycle transitions: forming (breakout/retest), triggered, invalidated, expired or target reached. **Forming is not an entry.** Idle/unchanged states stay silent.
 - Labels every price as **SPY**: continuation trigger, invalidation, confirmed-close entry reference and 2R target. These are signal references, not executable SPX option prices or guaranteed fills.
-- Keeps `!status` cached and restricted to the configured private channel; `!help` is available.
+- Keeps `!status` cached and restricted to the configured private channel; `!help` is available. Status and live setup/range/BB alerts include a compact completed-candle momentum summary and BB readiness; no extra provider requests.
 - `!preview` posts five clearly labeled fictional examples in that private channel (forming, triggered and three alternative endings). No market requests, live-state writes or enabled collection/publication required; limited to once per channel per 30 seconds. No old `!bb`, dashboard or research commands remain; new automatic informational BB notifications are described below.
 
 ### Informational range and Bollinger Band notifications
@@ -23,6 +23,14 @@ Alongside the stricter setup signals, the same collection/publication opt-ins en
 No VWAP, relative-volume, retest or noon entry cutoff is required for these informational events. They operate during regular market hours, with no post-close sends. Missing/invalid bars fail closed; an event must still be within **90 seconds of its candle close**. Late starts do not replay old range announcements or crossings. Notifications are not guaranteed during feed/network outages.
 
 Separate `spy-informational-v2` journals live under `.thetadata-data/spy-setups/informational-v2/YYYY-MM-DD/`. The v2 timeframe change does not migrate, relabel or delete v1 journals; current informational delivery counts read v2 only. Deploy between sessions: a mid-session version switch gives even unchanged range events new IDs and could notify a still-fresh range event again. Each event reserves a durable intent before sending. **Any existing intent prevents retry**, including ambiguous, rejected and suppressed sends. A crash between reservation and sending can lose a notification rather than duplicate it. Preserve these journals. This does not change setup rule versions or rewrite old setup ledgers. `!status`, `!day` and automatic daily reports show separate informational delivery counts; zero setup entries does not imply zero informational notifications.
+
+### Cached momentum, BB readiness and feed health
+
+- **Momentum:** `5m ↑ (+0.50) | 10m ↓ (-0.25) • MIXED` compares the last two completed, session-aligned closes in each timeframe. Arrows describe observed SPY dollar changes, not a forecast or entry recommendation. Partial candles are excluded; each timeframe needs two candles. Mixed includes a flat timeframe alongside a directional one.
+- **BB readiness:** each timeframe shows warming-up candle counts out of 21, ready, or unavailable. Ready means sufficient samples for previous/current 20-period bands, not that a crossing occurred. On early-close days 10m BB cannot warm up before close. Missing minutes, invalid evidence and stale data suppress the display context. `!status` rebuilds this from cached evidence without fetching or writing data.
+- **Feed notices:** during market hours, a completed SPY minute more than 90 seconds old triggers one stall notice; the first fresh candle triggers one recovery notice. Empty-session startup has until 90 seconds after the first expected minute close. Checks continue during provider backoff. Recovery establishes latest-candle freshness only; historical gaps may remain.
+- Notices require existing collection/publication opt-ins and the configured private destination. Separate durable `feed-health-v1/YYYY-MM-DD/` journals prevent repeats across restarts and allow subsequent distinct outages. Publication-disabled stalls are suppressed without later replay. Recovery is sent only if the stall send was durably acknowledged; ambiguous/rejected sends are not retried. Preserve these journals. No new requests, setup-rule changes or post-close attempts are introduced.
+- These notices depend on a functioning bot and Discord connection: they cannot report a stopped process or guarantee delivery during an outage. Corrupt/unavailable evidence fails closed and is logged rather than claimed healthy.
 
 ### Projected daily SPY range: `!range`
 

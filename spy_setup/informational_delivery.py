@@ -222,6 +222,9 @@ async def publish_events(cog, state):
                     status, reason = 'failed', 'channel_unavailable'
                 else:
                     embed = informational_embed(event)
+                    from spy_setup.market_context import build_context, context_text
+                    embed.add_field(name='SPY momentum & BB readiness',
+                                    value=context_text(build_context(state['record'], now)), inline=False)
             reservation = _reserve(cog.directory, event, now, status, reason or 'send_reserved')
             if reservation is None:
                 logger.debug('Informational duplicate blocked | event=%s', _filename(event['id'])[:-5])

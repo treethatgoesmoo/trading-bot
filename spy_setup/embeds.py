@@ -17,7 +17,7 @@ def display_time(value, *, include_date=False):
     return utc(value).astimezone(ZoneInfo('America/Los_Angeles')).strftime(pattern) if value else 'not set'
 
 
-def snapshot_embed(snapshot):
+def snapshot_embed(snapshot, *, context=None):
     classification = snapshot.get('classification', {})
     available = snapshot.get('fresh') and classification.get('available')
     lifecycle = classification.get('lifecycle', 'unavailable') if available else 'unavailable'
@@ -56,6 +56,9 @@ def snapshot_embed(snapshot):
                         value=f"Opening range: {_number(opening.get('low'))}–{_number(opening.get('high'))}\n"
                               f"VWAP: {_number(snapshot.get('vwap'))} | Same-minute relative volume: {_number(snapshot.get('relative_volume'))}x\n"
                               f"Baseline samples: {snapshot.get('volume_samples', 0)} / 5 preceding sessions")
+    if context is not None:
+        from spy_setup.market_context import context_text
+        embed.add_field(name='SPY momentum & BB readiness', value=context_text(context), inline=False)
     operational = snapshot.get('operational')
     if isinstance(operational, dict):
         operational = ' | '.join(f'{key.replace("_", " ")}: {operational[key]}' for key in
