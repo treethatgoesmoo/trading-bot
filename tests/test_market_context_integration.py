@@ -10,11 +10,12 @@ from test_informational_integration import DAY, service  # noqa: F401
 
 
 @pytest.mark.asyncio
-async def test_alert_and_read_only_status_include_cached_context(service):
+async def test_alert_is_compact_and_read_only_status_keeps_cached_context(service):
     s = service
     await s.cog.poll_once()
-    fields = s.channel.sent[0]['embed'].fields
-    assert any('5m →' in f.value and '10m warming up' in f.value for f in fields)
+    alert = s.channel.sent[0]['embed']
+    assert not alert.fields and not alert.footer.text
+    assert '\n' not in alert.description
     before_calls = len(s.provider.calls)
     before = {p: p.read_bytes() for p in s.directory.rglob('*.json')}
     ctx = SimpleNamespace(channel=SimpleNamespace(id=123), send=s.channel.send)
@@ -39,7 +40,8 @@ async def test_backoff_stall_once_then_real_poll_recovery(service):
     await s.cog.poll_once()
     await s.cog.poll_once()
     assert len(s.provider.calls) == calls
-    assert [m['embed'].title for m in s.channel.sent] == ['⚠ SPY feed stalled']
+    assert [m['embed'].title for m in s.channel.sent] == ['⚠️ SPY FEED STALE']
+    assert 'Last candle:' in s.channel.sent[0]['embed'].description
 
     original = s.provider.stock_history_ohlc
 
@@ -55,6 +57,9 @@ async def test_backoff_stall_once_then_real_poll_recovery(service):
     s.cog._pause_until = None
     await s.cog.poll_once()
     await s.cog.poll_once()
-    assert [m['embed'].title for m in s.channel.sent] == ['⚠ SPY feed stalled', '✓ SPY feed recovered']
+    assert [m['embed'].title for m in s.channel.sent] == ['⚠️ SPY FEED STALE', '✅ SPY FEED FRESH AGAIN']
+    assert 'Historical gaps may remain' in s.channel.sent[-1]['embed'].description
+    assert all(not m['embed'].fields and not m['embed'].footer.text
+               and '\n' not in m['embed'].description for m in s.channel.sent)
     journals = sorted((s.directory / 'feed-health-v1' / DAY.isoformat()).glob('*.json'))
     assert len(journals) == 2
