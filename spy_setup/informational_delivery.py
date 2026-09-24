@@ -173,34 +173,19 @@ def _blocked(cog, event, now):
 def informational_embed(event):
     """Render SPY levels in Pacific time without implying entry/fill advice."""
     kind = event['kind']
-    if kind == 'opening_range_ready':
-        title = 'SPY opening range ready · first 15 minutes'
-    elif kind.startswith('opening_range_cross_'):
-        title = f"SPY opening range · 1m close {event['direction']} range"
-    else:
-        title = f"SPY Bollinger Bands · {event['timeframe']}m close {event['direction']} band"
     direction = event.get('direction')
-    heading = ('🟢 ↑ BULLISH CROSS' if direction == 'above' else
-               '🔴 ↓ BEARISH CROSS' if direction == 'below' else '🔵 RANGE ESTABLISHED')
     color = 0x2ECC71 if direction == 'above' else 0xE74C3C if direction == 'below' else 0x3498DB
-    movement = ''
-    if 'previous_close' in event and 'close' in event:
-        change = event['close'] - event['previous_close']
-        movement = f"\n{event['timeframe']}m close change: **{change:+.2f}**"
-    embed = discord.Embed(title=title, color=color, description=(
-        f'**{heading}**{movement}\n'
-        f"Completed candle: {display_time(event['event_at'], include_date=True)}"))
-    if kind.startswith('opening_range_'):
-        embed.add_field(name='SPY opening range · 9:30–9:45 ET',
-                        value=f"High: ${event['range_high']:.2f}\nLow: ${event['range_low']:.2f}", inline=False)
+    if kind == 'opening_range_ready':
+        title = '📏 SPY OPENING RANGE'
+        detail = f"${event['range_low']:.2f}–${event['range_high']:.2f}"
     else:
-        embed.add_field(name=f"SPY {event['timeframe']}m Bollinger Bands · 20 periods / 2σ",
-                        value=f"Upper: ${event['upper']:.2f}\nLower: ${event['lower']:.2f}\n"
-                              'Regular-session closes.', inline=False)
-    if 'close' in event:
-        embed.add_field(name='SPY confirmed close', value=f"${event['close']:.2f}", inline=False)
-    embed.set_footer(text=f'{VERSION} | Informational • Not an entry signal')
-    return embed
+        icon = '🟢' if direction == 'above' else '🔴'
+        label = 'OPENING RANGE' if kind.startswith('opening_range_cross_') else f"{event['timeframe']}m BB"
+        title = f'{icon} SPY {direction.upper()} {label}'
+        change = event['close'] - event['previous_close']
+        detail = f"${event['close']:.2f} · {event['timeframe']}m {change:+.2f}"
+    return discord.Embed(title=title, color=color,
+                         description=f"{detail} · {display_time(event['event_at'])}")
 
 
 async def publish_events(cog, state):
@@ -222,9 +207,6 @@ async def publish_events(cog, state):
                     status, reason = 'failed', 'channel_unavailable'
                 else:
                     embed = informational_embed(event)
-                    from spy_setup.market_context import build_context, context_text
-                    embed.add_field(name='SPY momentum & BB readiness',
-                                    value=context_text(build_context(state['record'], now)), inline=False)
             reservation = _reserve(cog.directory, event, now, status, reason or 'send_reserved')
             if reservation is None:
                 logger.debug('Informational duplicate blocked | event=%s', _filename(event['id'])[:-5])

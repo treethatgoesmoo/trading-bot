@@ -86,8 +86,9 @@ async def test_real_poll_range_without_setup_or_history_saved_before_send(servic
     assert s.trace == ['current', 'send'] + ['prior'] * 5
     assert len(s.channel.sent) == 1
     embed = s.channel.sent[0]['embed']
-    assert 'opening range ready' in embed.title
-    assert 'Not an entry signal' in embed.footer.text
+    assert embed.title == '📏 SPY OPENING RANGE'
+    assert not embed.fields and not embed.footer.text
+    assert '\n' not in embed.description
     state = s.cog.store.load(DAY)
     assert state['observations'] == state['deliveries'] == []
     assert state['previous_bars'] == [] and not state['prior_complete']
@@ -172,13 +173,21 @@ async def test_real_poll_setup_and_informational_messages_have_independent_ledge
 
     cog.theta_client = BreakoutProvider()
     await cog.poll_once()
-    assert len(channel.sent) == 3
+    assert len(channel.sent) == 4
+    setup_alerts = [item['embed'] for item in channel.sent if 'SETUP ·' in item['embed'].title]
+    assert len(setup_alerts) == 1
+    assert 'FORMING' in setup_alerts[0].title
+    assert 'Not triggered' in setup_alerts[0].description
+    assert all(not item['embed'].fields and not item['embed'].footer.text
+               and '\n' not in item['embed'].description for item in channel.sent)
+    from spy_setup.early_shift_delivery import delivery_counts as early_counts
+    assert early_counts(tmp_path, state['session_date'])['sent'] == 1
     informational = [item['embed'] for item in channel.sent
-                     if 'Informational' in (item['embed'].footer.text or '')]
+                     if 'OPENING RANGE' in item['embed'].title]
     assert len(informational) == 2
     assert {embed.title for embed in informational} == {
-        'SPY opening range ready · first 15 minutes',
-        'SPY opening range · 1m close above range',
+        '📏 SPY OPENING RANGE',
+        '🟢 SPY ABOVE OPENING RANGE',
     }
     assert len(state['deliveries']) == 1
     assert state['deliveries'][0]['delivery'] == 'sent'

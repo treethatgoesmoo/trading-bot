@@ -26,7 +26,7 @@ from core.safe_logging import failure_location
 from core.session_bars import new_record, session_time, update_record, utc
 from core.state_store import StateStore, observation_id, state_key
 from spy_setup.signals import VERSION, build_snapshot, preceding_sessions
-from spy_setup.embeds import snapshot_embed, display_time
+from spy_setup.embeds import snapshot_embed, alert_embed, display_time
 
 logger = logging.getLogger(__name__)
 _MINUTE = timedelta(minutes=1)
@@ -296,8 +296,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             if channel is None:
                 entry.update(delivery='failed', reason='channel_unavailable')
             else:
-                from spy_setup.market_context import build_context
-                embed = snapshot_embed(item['snapshot'], context=build_context(state['record'], now))
+                embed = alert_embed(item['snapshot'])
                 # Rendering/lookup may take time. Recheck immediately at the
                 # boundary; candle freshness cannot be prolonged by a new 1m bar.
                 now = self._now()
@@ -487,6 +486,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                                    day, self._failures, self._pause_until is not None, failure_location(exc))
                 self._save(state)  # Save current bars before optional history can block.
                 await self._assess(state)
+                from spy_setup.early_shift_delivery import publish_events as publish_early_shifts
+                await publish_early_shifts(self, state)
                 # Independent informational levels do not require setup/VWAP/
                 # relative-volume confirmation or historical warm-up.
                 from spy_setup.informational_delivery import publish_events
@@ -742,11 +743,19 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         except Exception:
             return 'unavailable — informational delivery evidence could not be read'
 
+    def _early_shift_counts(self, day):
+        from spy_setup.early_shift_delivery import delivery_counts
+        try:
+            return ' | '.join(f'{kind}: {count}' for kind, count in delivery_counts(self.directory, day).items())
+        except Exception:
+            return 'unavailable — early-shift delivery evidence could not be read'
+
     def _add_informational_counts(self, embed, day):
         embed.add_field(name='Informational range / BB notifications',
                         value=self._informational_counts(day) +
                         '\nSeparate from setup counts; missing journals do not prove live coverage.',
                         inline=False)
+        embed.add_field(name='Early-shift warnings', value=self._early_shift_counts(day), inline=False)
 
     @commands.command(name='status', aliases=[], help='Show cached live setup and data/delivery health; no provider requests.')
     async def cmd_status(self, ctx):
@@ -790,6 +799,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                    f'Deliveries: {counts}. Counts are attempts, not billing units. Outcomes not evaluated.\n'
                    f'Informational range / BB (today): '
                    f'{self._informational_counts(now.astimezone(market_calendar.ET).date())}\n'
+                   f'Early-shift warnings (today): {self._early_shift_counts(now.astimezone(market_calendar.ET).date())}\n'
                    'BB: 5m + 10m, 20 periods / 2σ, session-only. Ready means sufficient candles, not a crossing.')
         if state and state['observations']:
             recorded = state['observations'][-1]['snapshot']['classification']

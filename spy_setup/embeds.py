@@ -17,6 +17,35 @@ def display_time(value, *, include_date=False):
     return utc(value).astimezone(ZoneInfo('America/Los_Angeles')).strftime(pattern) if value else 'not set'
 
 
+def alert_embed(snapshot):
+    """Compact live lifecycle message; detailed evidence stays in status."""
+    item = snapshot.get('classification', {})
+    if not snapshot.get('fresh') or not item.get('available'):
+        return discord.Embed(title='⚪ SPY UNAVAILABLE', description='No current setup claim.', color=0x808080)
+    lifecycle = item.get('lifecycle', 'unavailable')
+    direction = item.get('direction')
+    side = 'CALL' if direction == 'bullish' else 'PUT'
+    icon = ('🔴' if lifecycle == 'invalidated' else '🟡' if lifecycle in ('forming', 'expired')
+            else '🟢' if direction == 'bullish' else '🔴')
+    title = f'{icon} SPY {side} SETUP · {lifecycle.replace("_", " ").upper()}'
+    if lifecycle == 'forming':
+        detail = f'{str(item.get("phase", "forming")).replace("_", " ").capitalize()} confirmed · Not triggered'
+    elif lifecycle == 'triggered':
+        detail = (f'Ref ${_number(item.get("entry_reference"))} · Invalid ${_number(item.get("invalidation"))}'
+                  f' · Target ${_number(item.get("target"))}')
+    elif lifecycle == 'invalidated':
+        detail = f'${_number(item.get("invalidation"))} level breached'
+    elif lifecycle == 'target_reached':
+        detail = f'${_number(item.get("target"))} reference reached'
+    else:
+        detail = 'Setup window ended'
+    if item.get('kind') == 'failed_breakdown_reversal':
+        detail = 'Failed-breakdown reversal · ' + detail
+    return discord.Embed(title=title, description=f'{detail} · {display_time(item.get("event_at"))}',
+                         color=0xE74C3C if lifecycle == 'invalidated' or direction == 'bearish' else
+                         0xF1C40F if lifecycle in ('forming', 'expired') else 0x2ECC71)
+
+
 def snapshot_embed(snapshot, *, context=None):
     classification = snapshot.get('classification', {})
     available = snapshot.get('fresh') and classification.get('available')

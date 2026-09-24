@@ -394,17 +394,19 @@ def test_embeds_are_informational_spy_and_pacific(closes, minutes, timeframe):
              next(e for e in events if e['kind'].startswith('bb_') and e['timeframe'] == timeframe))
     embed = delivery.informational_embed(event).to_dict()
     assert 'SPY' in embed['title']
-    assert 'Not an entry signal' in embed['footer']['text']
+    assert not embed.get('fields')
+    assert not embed.get('footer')
+    assert '\n' not in embed['description']
     assert 'PDT' in embed['description']
     assert 'not SPX option prices' not in embed['description']
     if event.get('direction'):
         bullish = event['direction'] == 'above'
-        assert ('BULLISH CROSS' if bullish else 'BEARISH CROSS') in embed['description']
+        assert ('🟢 SPY ABOVE' if bullish else '🔴 SPY BELOW') in embed['title']
         assert embed['color'] == (0x2ECC71 if bullish else 0xE74C3C)
         assert f"{event['close'] - event['previous_close']:+.2f}" in embed['description']
     else:
-        assert 'RANGE ESTABLISHED' in embed['description']
+        assert embed['title'] == '📏 SPY OPENING RANGE'
+        assert f"${event['range_low']:.2f}–${event['range_high']:.2f}" in embed['description']
     if timeframe:
         assert timeframe + 'm' in embed['title']
-        assert '20 periods / 2σ' in embed['fields'][0]['name']
-        assert 'Regular-session closes' in embed['fields'][0]['value']
+        assert embed['title'].endswith(f'{timeframe}m BB')

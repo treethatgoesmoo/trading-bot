@@ -156,14 +156,12 @@ async def check_feed_health(cog):
                 or current['stalled'] != sample['stalled'] or not cog._publication_enabled()):
             _finish(path, item, 'suppressed', 'changed_before_send')
             return
-        latest = display_time(current['latest'], include_date=True) if current['latest'] else 'No completed minute received'
+        latest = display_time(current['latest']) if current['latest'] else 'No completed minute received'
         embed = discord.Embed(
-            title='⚠ SPY feed stalled' if kind == 'stall' else '✓ SPY feed recovered',
+            title='⚠️ SPY FEED STALE' if kind == 'stall' else '✅ SPY FEED FRESH AGAIN',
             color=0xF1C40F if kind == 'stall' else 0x2ECC71,
-            description=('No fresh completed SPY minute; cached signals may be stale.' if kind == 'stall' else
-                         'Fresh completed SPY minutes are available again. Historical gaps may remain.')
-                        + f'\nLatest candle close: {latest}')
-        embed.set_footer(text='Feed health only • Not a trade signal')
+            description=(f'Last candle: {latest}' if kind == 'stall' else
+                         f'Latest: {latest} · Historical gaps may remain'))
     except Exception as exc:
         logger.warning('Feed health unavailable; no send %s', failure_location(exc))
         return
