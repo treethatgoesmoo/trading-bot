@@ -20,7 +20,8 @@ NOW = session_time(DAY, 10)
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'SPX_CHANNEL_ID', 123)
-    monkeypatch.setattr(config, 'THETADATA_API_KEY', 'fictional')
+    monkeypatch.setattr(config, 'ALPACA_API_KEY_ID', 'fictional')
+    monkeypatch.setattr(config, 'ALPACA_API_SECRET_KEY', 'offline-secret')
     monkeypatch.setattr(config, 'COLLECTION_ENABLED', True)
     cog = SpySetupCog(None, object(), directory=tmp_path)
     cog._now = lambda: NOW
@@ -43,7 +44,7 @@ async def test_rejections_make_no_requests(setup, monkeypatch, reason):
     elif reason == 'disabled':
         monkeypatch.setattr(config, 'COLLECTION_ENABLED', False)
     elif reason == 'credentials':
-        monkeypatch.setattr(config, 'THETADATA_API_KEY', '')
+        monkeypatch.setattr(config, 'ALPACA_API_KEY_ID', '')
     elif reason == 'shutdown':
         cog._unloading = True
     elif reason == 'preopen':

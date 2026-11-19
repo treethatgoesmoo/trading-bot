@@ -37,13 +37,13 @@ async def test_real_invoke_rejections_cooldown_and_concurrency(tmp_path, caplog)
             await cmd.dispatch_error(ctx, error)
         return ' '.join(str(c.args) for c in ctx.send.call_args_list)
 
-    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.object(config, 'THETADATA_API_KEY', 'test'), patch('spy_setup.replay.replay_session', return_value=([], '0 triggered entries')) as provider:
+    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch('spy_setup.replay.replay_session', return_value=([], '0 triggered entries')) as provider:
         caplog.set_level(logging.INFO)
         assert 'today/future' in await invoke(context('2026-09-14'))
         assert not cog._replay_next
         assert 'private channel' in await invoke(context(channel=999))
         assert not cog._replay_next
-        with patch.object(config, 'THETADATA_API_KEY', ''):
+        with patch.object(config, 'ALPACA_API_KEY_ID', ''):
             assert 'credentials' in await invoke(context())
         assert not cog._replay_next
         cog._unloading = True

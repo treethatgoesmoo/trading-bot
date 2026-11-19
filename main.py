@@ -27,5 +27,5 @@ def configure_logging():
 if __name__ == '__main__':
     configure_logging()
     logging.getLogger(__name__).info(
-        'Starting private SPY setup alerts: completed candles, ThetaData stock source, Discord delivery')
+        'Starting private SPY setup alerts: completed candles, Alpaca IEX, Discord delivery')
     asyncio.run(run_bot())

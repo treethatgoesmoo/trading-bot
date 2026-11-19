@@ -1,6 +1,6 @@
 """Opt-in, local-only request metadata; never persist request arguments or data.
 
-Window is [THETA_AUDIT_START_DATE, start + THETA_AUDIT_DAYS), in Eastern
+Window is [MARKET_DATA_AUDIT_START_DATE, start + MARKET_DATA_AUDIT_DAYS), in Eastern
 calendar dates. A request admitted in the window always gets its completion in
 its start-date file, even if it completes after midnight or the window ends.
 Unmatched starts mean pending/interrupted requests, not proven network hangs.
@@ -18,7 +18,7 @@ import uuid
 
 import config
 from core.market_calendar import ET
-from core.paths import THETADATA_DATA_DIR
+from core.paths import MARKET_DATA_DIR
 
 logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
@@ -34,8 +34,8 @@ def _now() -> datetime:
 def audit_active(now: datetime | None = None) -> bool:
     """Invalid, missing or out-of-window configuration disables recording."""
     try:
-        start = date.fromisoformat(getattr(config, "THETA_AUDIT_START_DATE", ""))
-        days = int(getattr(config, "THETA_AUDIT_DAYS", 30))
+        start = date.fromisoformat(config.MARKET_DATA_AUDIT_START_DATE)
+        days = config.MARKET_DATA_AUDIT_DAYS
         now = now or _now()
         return (
             days > 0 and now.tzinfo is not None
@@ -70,14 +70,14 @@ def _append(ticket: RequestTicket, event: str, **fields) -> None:
     }
     try:
         with _LOCK:
-            directory = Path(THETADATA_DATA_DIR) / "audit"
+            directory = Path(MARKET_DATA_DIR) / "audit"
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / f"usage-{ticket.session_date}.jsonl"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
     except Exception:
         # Do not log exception text: paths/errors may contain private material.
-        logger.warning("ThetaData usage metadata could not be persisted")
+        logger.warning("Market data usage metadata could not be persisted")
 
 
 def begin_request(endpoint: str, purpose: str = "unspecified") -> RequestTicket | None:
@@ -95,7 +95,7 @@ def begin_request(endpoint: str, purpose: str = "unspecified") -> RequestTicket 
         _append(ticket, "start")
         return ticket
     except Exception:
-        logger.warning("ThetaData usage metadata could not be started")
+        logger.warning("Market data usage metadata could not be started")
         return None
 
 
@@ -103,7 +103,7 @@ def finish_request(
     ticket: RequestTicket | None, *, rows: int | None = None,
     error: BaseException | None = None,
 ) -> None:
-    """A success counts returned rows, not normalized/usable observations."""
+    """A success records the provider adapter's usable row count."""
     if ticket is None:
         return
     try:
@@ -116,4 +116,4 @@ def finish_request(
             rows=rows,
         )
     except Exception:
-        logger.warning("ThetaData usage metadata could not be completed")
+        logger.warning("Market data usage metadata could not be completed")

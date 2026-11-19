@@ -52,4 +52,4 @@ A shared 15-minute event-time cooldown bounds warnings in either direction. Each
 
 ## Limitations
 
-These thresholds are transparent starting conventions, not a validated edge. Feed-specific Nasdaq Basic VWAP/volume may differ from a consolidated feed or a trading platform. Closed-candle references are not executable fills. SPY structure can diverge from SPX, and SPX options can lose value despite the expected underlying direction. Test this new strategy independently before relying on alerts.
+These thresholds are transparent starting conventions, not a validated edge. Feed-specific Alpaca IEX VWAP/volume may differ from a consolidated feed or a trading platform. Closed-candle references are not executable fills. SPY structure can diverge from SPX, and SPX options can lose value despite the expected underlying direction. Test this new strategy independently before relying on alerts.

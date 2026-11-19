@@ -25,7 +25,8 @@ class Channel:
 def prepared(tmp_path, monkeypatch, channel=None):
     monkeypatch.setattr(config, 'COLLECTION_ENABLED', True)
     monkeypatch.setattr(config, 'PUBLICATION_ENABLED', True)
-    monkeypatch.setattr(config, 'THETADATA_API_KEY', 'offline-test')
+    monkeypatch.setattr(config, 'ALPACA_API_KEY_ID', 'offline-test')
+    monkeypatch.setattr(config, 'ALPACA_API_SECRET_KEY', 'offline-secret')
     monkeypatch.setattr(config, 'SPX_CHANNEL_ID', 123)
     channel = channel or Channel()
     cog = SpySetupCog(SimpleNamespace(get_channel=lambda _: channel), object(), directory=tmp_path)
@@ -154,7 +155,7 @@ def test_collector_requests_spy_stock_ohlcv(tmp_path, monkeypatch):
             def stock_history_ohlc(self, day, **kwargs):
                 calls.append((day, kwargs))
                 return [breakout()]
-        cog.theta_client = Provider()
+        cog.data_client = Provider()
         await cog.poll_once()
         assert len(calls) == 1
         assert calls[0][1]['symbol'] == 'SPY'

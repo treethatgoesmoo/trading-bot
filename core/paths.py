@@ -9,5 +9,6 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 LOGS_DIR = os.path.join(ROOT, "logs")
-# Licensed ThetaData/OPRA snapshots are local-only and must never enter data/.
-THETADATA_DATA_DIR = os.path.join(ROOT, ".thetadata-data")
+# Market data is local-only. Keep the retired feed's ledgers separate.
+MARKET_DATA_DIR = os.path.join(ROOT, ".alpaca-data")
+LEGACY_MARKET_DATA_DIR = os.path.join(ROOT, ".thetadata-data")

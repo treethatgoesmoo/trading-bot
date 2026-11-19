@@ -20,16 +20,16 @@ def build_bot() -> commands.Bot:
 async def install_service(bot):
     """Install cached status even when requests are disabled or unconfigured."""
     client = None
-    if config.COLLECTION_ENABLED and config.THETADATA_API_KEY:
-        from core.thetadata_client import ThetaDataClient
-        client = ThetaDataClient(purpose='spy_setup')
+    if config.COLLECTION_ENABLED and config.market_data_configured():
+        from core.alpaca_client import AlpacaClient
+        client = AlpacaClient(purpose='spy_setup')
     await bot.add_cog(SpySetupCog(bot, client))
     collecting = client is not None
     publishing = collecting and config.PUBLICATION_ENABLED and bool(config.SPX_CHANNEL_ID)
     logger.info('SPX %s | collection=%s | publication=%s | private channel=%s',
                 VERSION, collecting, publishing, config.SPX_CHANNEL_ID)
-    if config.COLLECTION_ENABLED and not config.THETADATA_API_KEY:
-        logger.error('Collection requested but THETADATA_API_KEY is missing; no provider requests')
+    if config.COLLECTION_ENABLED and not config.market_data_configured():
+        logger.error('Collection requested but Alpaca credentials are incomplete; no provider requests')
     if config.PUBLICATION_ENABLED and not publishing:
         logger.warning('Publication requested but collection/channel requirements are not met')
 

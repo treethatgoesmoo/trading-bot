@@ -48,7 +48,7 @@ class Channel:
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     for name, value in [('COLLECTION_ENABLED', True), ('PUBLICATION_ENABLED', True),
-                        ('THETADATA_API_KEY', 'offline-test'), ('SPX_CHANNEL_ID', 123)]:
+                        ('ALPACA_API_KEY_ID', 'offline-test'), ('ALPACA_API_SECRET_KEY', 'offline-secret'), ('SPX_CHANNEL_ID', 123)]:
         monkeypatch.setattr(config, name, value)
     trace = []
     provider, channel = Provider(trace), Channel(trace)
@@ -171,7 +171,7 @@ async def test_real_poll_setup_and_informational_messages_have_independent_ledge
         def stock_history_ohlc(self, day, **kwargs):
             return [breakout()]
 
-    cog.theta_client = BreakoutProvider()
+    cog.data_client = BreakoutProvider()
     await cog.poll_once()
     assert len(channel.sent) == 4
     setup_alerts = [item['embed'] for item in channel.sent if 'SETUP ·' in item['embed'].title]

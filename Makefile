@@ -1,5 +1,5 @@
 # SPY setup signals for manual SPX options execution.
-.PHONY: install install-dev run start stop restart status logs tail test clean
+.PHONY: install install-dev run start stop restart status logs tail test check-feed clean
 
 PYTHON ?= python
 PID_FILE = .bot.pid
@@ -52,6 +52,9 @@ tail:
 
 test:
 	$(PYTHON) -m pytest -q tests
+
+check-feed:
+	$(PYTHON) -m core.feed_check
 
 # Do not remove .bot.pid: losing it can orphan a running collector.
 clean:

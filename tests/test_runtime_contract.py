@@ -28,7 +28,7 @@ os.environ.update(json.loads(sys.argv[1]))
 import config
 print(json.dumps({name: getattr(config, name) for name in (
     'COLLECTION_ENABLED', 'PUBLICATION_ENABLED', 'SPX_CHANNEL_ID',
-    'SPX_POLL_SECONDS', 'THETA_AUDIT_DAYS')}))
+    'SPX_POLL_SECONDS', 'MARKET_DATA_AUDIT_DAYS')}))
 '''
     return subprocess.run([sys.executable, '-c', script, json.dumps(values)],
                           cwd=ROOT, capture_output=True, text=True, timeout=20)
@@ -42,7 +42,7 @@ def test_default_is_explicitly_off_and_legacy_settings_cannot_break_startup():
                           'GIT_AUTOCOMMIT_ENABLED': '1', 'ALERT_CHANNEL_ID': '123'})
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == dict(COLLECTION_ENABLED=False, PUBLICATION_ENABLED=False,
-                                            SPX_CHANNEL_ID=0, SPX_POLL_SECONDS=60, THETA_AUDIT_DAYS=30)
+                                            SPX_CHANNEL_ID=0, SPX_POLL_SECONDS=60, MARKET_DATA_AUDIT_DAYS=30)
 
 
 def test_only_current_names_enable_destination_and_poll_settings():
@@ -71,9 +71,9 @@ def test_invalid_live_settings_fail_explicitly_without_echoing_values(values):
 
 
 def test_invalid_telemetry_duration_disables_metadata_not_service():
-    result = read_config({'THETA_AUDIT_DAYS': 'invalid'})
+    result = read_config({'MARKET_DATA_AUDIT_DAYS': 'invalid'})
     assert result.returncode == 0
-    assert json.loads(result.stdout)['THETA_AUDIT_DAYS'] == 0
+    assert json.loads(result.stdout)['MARKET_DATA_AUDIT_DAYS'] == 0
 
 
 @pytest.mark.parametrize('enabled,key,expected_client', [(False, '', False), (False, 'test', False),
@@ -82,8 +82,8 @@ def test_actual_bot_installs_only_spy_setup_and_status(enabled, key, expected_cl
     async def check():
         bot = core.build_bot()
         with patch.multiple(config, COLLECTION_ENABLED=enabled, PUBLICATION_ENABLED=False,
-                            THETADATA_API_KEY=key, SPX_CHANNEL_ID=0), \
-                patch('core.thetadata_client.ThetaDataClient') as client, \
+                            ALPACA_API_KEY_ID=key, ALPACA_API_SECRET_KEY='test-secret', SPX_CHANNEL_ID=0), \
+                patch('core.alpaca_client.AlpacaClient') as client, \
                 patch.object(SpySetupCog, 'cog_load', new=AsyncMock()), \
                 patch.object(SpySetupCog, 'cog_unload', new=AsyncMock()):
             try:
@@ -98,7 +98,7 @@ def test_actual_bot_installs_only_spy_setup_and_status(enabled, key, expected_cl
                 else:
                     client.assert_not_called()
                 cog = bot.get_cog('SpySetup')
-                assert (cog.theta_client is not None) == expected_client
+                assert (cog.data_client is not None) == expected_client
             finally:
                 await bot.close()
     asyncio.run(check())
@@ -117,7 +117,7 @@ import importlib.abc, sys, types
 sys.modules['dotenv'] = types.SimpleNamespace(load_dotenv=lambda: None)
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in ('research', 'zero_dte', 'swing', 'yfinance') or fullname == 'core.git_sync':
+        if fullname.split('.')[0] in ('research', 'zero_dte', 'swing', 'yfinance', 'thetadata') or fullname == 'core.git_sync':
             raise AssertionError('Retired import: ' + fullname)
 sys.meta_path.insert(0, Guard())
 import main, bot.core

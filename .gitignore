@@ -16,3 +16,4 @@ data/dashboard.html
 .research-data/
 # Licensed provider evidence and private setup ledgers; never commit or redistribute.
 .thetadata-data/
+.alpaca-data/

@@ -20,7 +20,7 @@ import discord
 from discord.ext import commands, tasks
 
 from core import market_calendar
-from core.paths import THETADATA_DATA_DIR
+from core.paths import LEGACY_MARKET_DATA_DIR, MARKET_DATA_DIR
 from core.process_lock import ProcessLock
 from core.safe_logging import failure_location
 from core.session_bars import new_record, session_time, update_record, utc
@@ -44,13 +44,16 @@ def collection_open(now):
 
 
 class SpySetupCog(commands.Cog, name='SpySetup'):
-    def __init__(self, bot, theta_client=None, *, directory=None):
-        self.bot, self.theta_client = bot, theta_client
+    def __init__(self, bot, data_client=None, *, directory=None):
+        self.bot, self.data_client = bot, data_client
         self._replay_next = {}
         self._range_next = 0
         self._range_cache = None
-        self.directory = Path(directory) if directory is not None else Path(THETADATA_DATA_DIR) / 'spy-setups'
+        self.directory = Path(directory) if directory is not None else Path(MARKET_DATA_DIR) / 'spy-setups'
         self.store = StateStore(self.directory)
+        self._legacy_store = (
+            StateStore(Path(LEGACY_MARKET_DATA_DIR) / 'spy-setups') if directory is None else None
+        )
         self._ownership = ProcessLock(self.directory)
         self._lock = asyncio.Lock()
         self._state = None
@@ -70,7 +73,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         # Missing credentials should yield a None client from assembly. Check
         # both here too: a disabled flag never means "collect anyway for status".
         return (getattr(config, 'COLLECTION_ENABLED', False) is True
-                and bool(getattr(config, 'THETADATA_API_KEY', '')) and self.theta_client is not None)
+                and config.market_data_configured() and self.data_client is not None)
 
     @staticmethod
     def _publication_enabled():
@@ -115,8 +118,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             if not task.cancelled():
                 task.exception()
         try:
-            if self.theta_client is not None:
-                await self._call(self.theta_client.close)
+            if self.data_client is not None:
+                await self._call(self.data_client.close)
         finally:
             self._ownership.release()
 
@@ -185,7 +188,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             self._save(state)
             try:
                 closing = session_time(prior_day, *market_calendar.close_time(prior_day))
-                rows = await self._call(self.theta_client.stock_history_ohlc, prior_day,
+                rows = await self._call(self.data_client.stock_history_ohlc, prior_day,
                                        symbol='SPY', interval='1m', start_time='09:30:00',
                                        end_time=closing.astimezone(market_calendar.ET).strftime('%H:%M:%S'))
                 received = self._now()
@@ -212,7 +215,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             self._save(state)
 
     def _request_id(self):
-        value = getattr(self.theta_client, '_last_request_id', None)
+        value = getattr(self.data_client, '_last_request_id', None)
         return value if isinstance(value, str) and value else None
 
     @staticmethod
@@ -459,7 +462,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
                     start += _MINUTE
                 start = min(start, cutoff - _MINUTE)
                 try:
-                    rows = await self._call(self.theta_client.stock_history_ohlc, day,
+                    rows = await self._call(self.data_client.stock_history_ohlc, day,
                                            symbol='SPY', interval='1m',
                                            start_time=start.astimezone(market_calendar.ET).strftime('%H:%M:%S'),
                                            end_time=cutoff.astimezone(market_calendar.ET).strftime('%H:%M:%S'))
@@ -530,7 +533,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             logger.info('Replay rejected: invalid_session')
             await ctx.send(f'{LABEL}: {exc}')
             return
-        if self._unloading or not getattr(config, 'THETADATA_API_KEY', ''):
+        if self._unloading or not config.market_data_configured():
             logger.info('Replay rejected: shutdown_or_missing_credentials')
             await ctx.send(f'{LABEL}: unavailable during shutdown or without provider credentials.')
             return
@@ -667,9 +670,18 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             await ctx.send(str(exc))
             return
         try:
-            state = load_report_state(self.store, day)
+            store = self.store
+            try:
+                state = load_report_state(store, day)
+            except FileNotFoundError:
+                if session is None or self._legacy_store is None:
+                    raise
+                store = self._legacy_store
+                state = load_report_state(store, day)
             embed = daily_embed(state, self._now())
-            self._add_informational_counts(embed, day)
+            if store is self._legacy_store:
+                embed.title = f'Archived ThetaData · {embed.title}'
+            self._add_informational_counts(embed, day, directory=store.directory)
         except Exception:
             await ctx.send(f'Daily report {day} unavailable: missing, incompatible or invalid saved evidence. No simulation performed.')
             return
@@ -735,27 +747,29 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
             except Exception:
                 logger.warning('Daily report delivery unknown; no automatic retry | session=%s', day)
 
-    def _informational_counts(self, day):
+    def _informational_counts(self, day, *, directory=None):
         from spy_setup.informational_delivery import delivery_counts
         try:
-            counts = delivery_counts(self.directory, day)
+            counts = delivery_counts(directory or self.directory, day)
             return ' | '.join(f'{kind}: {count}' for kind, count in counts.items())
         except Exception:
             return 'unavailable — informational delivery evidence could not be read'
 
-    def _early_shift_counts(self, day):
+    def _early_shift_counts(self, day, *, directory=None):
         from spy_setup.early_shift_delivery import delivery_counts
         try:
-            return ' | '.join(f'{kind}: {count}' for kind, count in delivery_counts(self.directory, day).items())
+            counts = delivery_counts(directory or self.directory, day)
+            return ' | '.join(f'{kind}: {count}' for kind, count in counts.items())
         except Exception:
             return 'unavailable — early-shift delivery evidence could not be read'
 
-    def _add_informational_counts(self, embed, day):
+    def _add_informational_counts(self, embed, day, *, directory=None):
         embed.add_field(name='Informational range / BB notifications',
-                        value=self._informational_counts(day) +
+                        value=self._informational_counts(day, directory=directory) +
                         '\nSeparate from setup counts; missing journals do not prove live coverage.',
                         inline=False)
-        embed.add_field(name='Early-shift warnings', value=self._early_shift_counts(day), inline=False)
+        embed.add_field(name='Early-shift warnings',
+                        value=self._early_shift_counts(day, directory=directory), inline=False)
 
     @commands.command(name='status', aliases=[], help='Show cached live setup and data/delivery health; no provider requests.')
     async def cmd_status(self, ctx):
@@ -770,8 +784,8 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         requested = getattr(config, 'PUBLICATION_ENABLED', False) is True
         publishing = collecting and self._publication_enabled()
         blocked = ('collection flag off' if not getattr(config, 'COLLECTION_ENABLED', False) else
-                   'credentials missing' if not getattr(config, 'THETADATA_API_KEY', '') else
-                   'provider unavailable' if self.theta_client is None else
+                   'credentials missing' if not config.market_data_configured() else
+                   'provider unavailable' if self.data_client is None else
                    'publication flag off' if not requested else
                    'destination missing' if not getattr(config, 'SPX_CHANNEL_ID', 0) else 'none')
         if state is None:
@@ -791,7 +805,7 @@ class SpySetupCog(commands.Cog, name='SpySetup'):
         age = f"{(now - utc(latest) - _MINUTE).total_seconds():.0f}s" if latest else 'unavailable'
         requests = state['requests'] if state else {'current': {}, 'prior': {}}
         content = (f'Cached SPY setup ({VERSION}); no provider request made.\n'
-                   f'Source: ThetaData SPY 1m | latest minute start: {display_time(latest, include_date=True)} | age from close: {age}\n'
+                   f'Source: Alpaca IEX SPY 1m | latest minute start: {display_time(latest, include_date=True)} | age from close: {age}\n'
                    f'Collection: {"on" if collecting else "off"} | publication: {"on" if publishing else "off"} '
                    f'(requested: {"on" if requested else "off"}; blocked: {blocked}) '
                    f'| destination: {getattr(config, "SPX_CHANNEL_ID", 0)}\n'

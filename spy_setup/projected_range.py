@@ -14,7 +14,7 @@ import discord
 
 from core import market_calendar
 from core.session_bars import new_record, session_time, update_record, utc, validate_record
-from core.thetadata_client import ThetaDataClient
+from core.alpaca_client import AlpacaClient
 from spy_setup.embeds import display_time
 
 VERSION = 'spy-range-v1'
@@ -130,7 +130,7 @@ def range_session(day, now, *, history=None, anchor=None, client_factory=None, c
         for session in sessions:
             _validate(history[session], session, now, received_by=received_by, complete=True)
 
-    client = (client_factory or ThetaDataClient)(purpose='unspecified')
+    client = (client_factory or AlpacaClient)(purpose='unspecified')
     try:
         if history is None:
             history = {}
@@ -178,6 +178,6 @@ def range_session(day, now, *, history=None, anchor=None, client_factory=None, c
                     'Not an 80% coverage guarantee; accuracy is unvalidated.', inline=False)
     embed.add_field(name='Data as of', value=f'{display_time(now, include_date=True)}'
                     + (' • Session closed; observed full-day range.' if now >= _close(day) else '')
-                    + '\nTheta Nasdaq Basic (nqb); historical data may be revised.', inline=False)
+                    + '\nAlpaca IEX; historical data may be revised.', inline=False)
     embed.set_footer(text=f'{VERSION} | SPY prices only; no SPX option prices or returns inferred.')
     return RangeResult(embed=embed, history=history, anchor=anchor, candle_close=candle_close)

@@ -87,12 +87,12 @@ def test_provider_error_or_gap_fails_closed_and_closes(kwargs):
 
 @pytest.mark.asyncio
 async def test_command_is_private_and_errors_sanitized(tmp_path):
-    cog = SpySetupCog(None, theta_client=object(), directory=tmp_path)
+    cog = SpySetupCog(None, data_client=object(), directory=tmp_path)
     cog._now = lambda: NOW
     cog._state = {'sentinel': 'unchanged'}
     original = copy.deepcopy(cog._state)
     ctx = SimpleNamespace(channel=SimpleNamespace(id=456), send=AsyncMock())
-    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.object(config, 'THETADATA_API_KEY', 'test'), patch('spy_setup.replay.replay_session', side_effect=RuntimeError('secret-token')) as run:
+    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch('spy_setup.replay.replay_session', side_effect=RuntimeError('secret-token')) as run:
         await SpySetupCog.replay.callback(cog, ctx)
         run.assert_not_called()
         ctx.channel.id = 123
@@ -109,7 +109,7 @@ async def test_command_is_private_and_errors_sanitized(tmp_path):
 @pytest.mark.asyncio
 async def test_cancel_retains_worker_until_client_closed_and_collector_independent(tmp_path):
     entered, release, closed = threading.Event(), threading.Event(), threading.Event()
-    cog = SpySetupCog(None, theta_client=object(), directory=tmp_path)
+    cog = SpySetupCog(None, data_client=object(), directory=tmp_path)
     cog._now = lambda: NOW
     ctx = SimpleNamespace(channel=SimpleNamespace(id=123), send=AsyncMock())
     def worker(*args):
@@ -119,7 +119,7 @@ async def test_cancel_retains_worker_until_client_closed_and_collector_independe
             return [], 'done'
         finally:
             closed.set()
-    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.object(config, 'THETADATA_API_KEY', 'test'), patch('spy_setup.replay.replay_session', side_effect=worker):
+    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch('spy_setup.replay.replay_session', side_effect=worker):
         task = asyncio.create_task(SpySetupCog.replay.callback(cog, ctx))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -143,12 +143,12 @@ def test_command_bounds():
 
 @pytest.mark.asyncio
 async def test_success_posts_ordered_embeds_then_summary_without_delivery(tmp_path):
-    cog = SpySetupCog(None, theta_client=object(), directory=tmp_path)
+    cog = SpySetupCog(None, data_client=object(), directory=tmp_path)
     cog._now = lambda: NOW
     cog._deliver = AsyncMock(side_effect=AssertionError('must not use live delivery'))
     ctx = SimpleNamespace(channel=SimpleNamespace(id=123), send=AsyncMock())
     embeds = [object(), object()]
-    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.object(config, 'THETADATA_API_KEY', 'test'), patch('spy_setup.replay.replay_session', return_value=(embeds, 'summary')):
+    with patch.object(config, 'SPX_CHANNEL_ID', 123), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch('spy_setup.replay.replay_session', return_value=(embeds, 'summary')):
         await SpySetupCog.replay.callback(cog, ctx)
     assert ctx.send.call_args_list[1].kwargs == {'embed': embeds[0]}
     assert ctx.send.call_args_list[2].kwargs == {'embed': embeds[1]}

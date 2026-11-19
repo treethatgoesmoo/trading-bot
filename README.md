@@ -22,11 +22,11 @@ Alongside the stricter setup signals, the same collection/publication opt-ins en
 
 No VWAP, relative-volume, retest or noon entry cutoff is required for these informational events. They operate during regular market hours, with no post-close sends. Missing/invalid bars fail closed; an event must still be within **90 seconds of its candle close**. Late starts do not replay old range announcements or crossings. Notifications are not guaranteed during feed/network outages.
 
-Separate `spy-informational-v2` journals live under `.thetadata-data/spy-setups/informational-v2/YYYY-MM-DD/`. The v2 timeframe change does not migrate, relabel or delete v1 journals; current informational delivery counts read v2 only. Deploy between sessions: a mid-session version switch gives even unchanged range events new IDs and could notify a still-fresh range event again. Each event reserves a durable intent before sending. **Any existing intent prevents retry**, including ambiguous, rejected and suppressed sends. A crash between reservation and sending can lose a notification rather than duplicate it. Preserve these journals. This does not change setup rule versions or rewrite old setup ledgers. `!status`, `!day` and automatic daily reports show separate informational delivery counts; zero setup entries does not imply zero informational notifications.
+Separate `spy-informational-v2` journals live under `.alpaca-data/spy-setups/informational-v2/YYYY-MM-DD/`. The v2 timeframe change does not migrate, relabel or delete v1 journals; current informational delivery counts read v2 only. Deploy between sessions: a mid-session version switch gives even unchanged range events new IDs and could notify a still-fresh range event again. Each event reserves a durable intent before sending. **Any existing intent prevents retry**, including ambiguous, rejected and suppressed sends. A crash between reservation and sending can lose a notification rather than duplicate it. Preserve these journals. This does not change setup rule versions or rewrite old setup ledgers. `!status`, `!day` and automatic daily reports show separate informational delivery counts; zero setup entries does not imply zero informational notifications.
 
 ### Early-shift volume warnings
 
-Independent `spy-early-shift-v1` warnings highlight an observed expansion, **not a prediction or setup entry**. A completed SPY 1m close must strictly exceed the **preceding ten completed minutes' high** (bullish) or low (bearish), excluding the current candle, with **at least 1.5× same-minute relative volume**. The denominator is the median positive volume for that ET minute across the five preceding trading sessions, requiring at least three samples. Thresholds are unvalidated conventions; Nasdaq Basic volume is feed-specific. VWAP position is context, not an additional qualifying filter.
+Independent `spy-early-shift-v1` warnings highlight an observed expansion, **not a prediction or setup entry**. A completed SPY 1m close must strictly exceed the **preceding ten completed minutes' high** (bullish) or low (bearish), excluding the current candle, with **at least 1.5× same-minute relative volume**. The denominator is the median positive volume for that ET minute across the five preceding trading sessions, requiring at least three samples. Thresholds are unvalidated conventions; IEX volume is feed-specific. VWAP position is context, not an additional qualifying filter.
 
 Messages stay compact: `🟢 SPY EARLY ↑ · VOL 1.8×` followed by `10m high broken · Above VWAP · 09:14 AM PDT` (illustrative). They operate throughout regular hours, including after the setup noon-ET cutoff; no extra provider requests or commands are added. Existing collection/publication opt-ins and private destination apply.
 
@@ -64,7 +64,7 @@ Private-channel-only, on-demand **historical estimate of today's SPY low–high*
 ### Historical Discord replay
 
 - `!replay` mocks the previous trading date (even after today's close); `!replay YYYY-MM-DD` selects a prior trading session within the last 30 calendar days. Today, future dates and non-trading dates are rejected.
-- Explicitly requests up to **six historical sessions** (target plus five baseline sessions) using a separate Theta client. Requires credentials and stock entitlement; works independently of collection/publication flags and may incur provider usage. No automatic retries.
+- Explicitly requests up to **six historical sessions** (target plus five baseline sessions) using a separate Alpaca IEX client. Requires credentials and stock entitlement; works independently of collection/publication flags and may incur provider usage. No automatic retries.
 - Posts chronological production-formatted embeds labeled **REPLAY — NOT A LIVE SIGNAL**, with the session date and assumed timely-arrival disclaimer on every embed. Up to ten event embeds plus progress/summary; zero triggered entries is reported explicitly. These are a sequence, not fictional alternative endings.
 - Assumes history was available at 09:29 ET and candles arrived five seconds after close. Historical prices may have been revised; replay does not establish actual alerts, executable fills, option returns or profitability. Incomplete sessions abort rather than imply no signals.
 - Only the configured private channel; once per channel per five minutes and one replay at a time. Invalid dates, wrong-channel requests, missing credentials and shutdown rejections do not consume or reset cooldown. Cooldown and busy attempts receive explicit Discord replies. The cooldown starts when a valid replay is accepted, including if its provider request later fails. No live ledger, delivery intent, first-seen receipt or recorded-bar writes. The provider's existing local request-metadata auditing still applies. Review private-channel access and data licensing before use.
@@ -81,7 +81,7 @@ See [exact initial rules](docs/strategy.md). Thresholds are design conventions r
 
 ## Setup
 
-Python **3.12+** is required by the official Theta SDK.
+Use Python **3.11+**. The stock adapter uses the Alpaca data API over HTTPS.
 
 ```bash
 python -m pip install -r requirements.txt
@@ -90,19 +90,26 @@ cp .env.example .env
 python main.py
 ```
 
-Edit the existing `.env` privately on upgrades. Set `DISCORD_TOKEN`, `THETADATA_API_KEY`, `SPX_CHANNEL_ID`, and explicitly enable `COLLECTION_ENABLED=true` and `PUBLICATION_ENABLED=true` when ready. Both switches default off. `SPX_POLL_SECONDS` accepts 30–60 seconds. Old `SPX_CONTEXT_*` aliases are **no longer read**; migrate their values manually to the current names.
+Edit the existing `.env` privately on upgrades. Set `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` using Alpaca paper-account API credentials. Keep your existing `DISCORD_TOKEN` and `SPX_CHANNEL_ID`. Enable `COLLECTION_ENABLED=true` and `PUBLICATION_ENABLED=true` after checking the feed. Both switches default off. `SPX_POLL_SECONDS` accepts 30–60 seconds. Old `SPX_CONTEXT_*` aliases are **no longer read**; migrate their values manually to the current names.
 
 Enable Discord Message Content Intent and verify the destination's private access and the applicable data licence. Collection off stops automatic provider requests; an explicit `!replay` still requests historical data. Publication off prevents alerts but does not stop explicitly enabled collection or vendor billing.
 
-**Feed requirement:** SPY stock OHLCV, not index-only access. The adapter explicitly requests Theta's `nqb` (Nasdaq Basic) venue for current and historical minutes. VWAP and volume are feed-specific, not claimed consolidated-market measures. Confirm account entitlement and live/history comparability before enabling. No subscription is changed by this code.
+**Feed check.** The bot uses the Alpaca Basic IEX feed explicitly for both live and historical SPY minutes. IEX is a single exchange. Its highs, lows, volume and VWAP can differ from Robinhood or a consolidated feed. The session VWAP uses the existing typical-price calculation. Compare results against your chart, and use the same IEX feed for relative-volume baselines.
+
+```bash
+make check-feed
+python -m core.feed_check --date YYYY-MM-DD
+```
+
+The check reports present and missing completed minutes without connecting to Discord or writing live candles. Run it during a session to check recent coverage and again after close to check the whole day. A gap stays a gap: opening-range and contiguous-history rules can stay unavailable, and `!range` or `!replay` can reject incomplete sessions. HTTP 401 or 403 means to check the key, secret, and IEX entitlement. See the [Alpaca market data FAQ](https://docs.alpaca.markets/us/docs/market-data-faq).
 
 ## Evidence and safeguards
 
-New state lives under `.thetadata-data/spy-setups/`; old recordings are preserved but never migrated into SPY setups. First-seen bars and volume are immutable. Missing, stale or malformed data fails closed. Five preceding sessions supply matching-minute volume baselines; at least three positive samples are required. Starting late can mean no qualifying setup that day; history is not allowed to invent earlier signals.
+Alpaca state lives under `.alpaca-data/spy-setups/`. The previous `.thetadata-data/` state and audits stay on disk. An explicit `!day YYYY-MM-DD` can display a separately labeled old report when the new ledger has no record for that date. The live collector reads only Alpaca evidence. Stop the old process and switch between sessions to prevent duplicate first-day alerts from restarting with a fresh ledger. First-seen bars and volume are immutable. Missing, stale or malformed data fails closed. Five preceding sessions supply matching-minute volume baselines; at least three positive samples are required. Starting late can mean no qualifying setup that day; history is not allowed to invent earlier signals.
 
 Lifecycle identity, not direction alone, drives durable deduplication. An event expires for publication 90 seconds after its transition close; later candles do not extend it. No post-close actionable alerts; the separate daily evidence summary is allowed in its bounded post-close window. Suppressed events are not replayed when publication is enabled. Ambiguous Discord sends are not automatically retried. Atomic evidence writes and a process lock protect collection/delivery; never delete `.service.lock` to bypass a running owner.
 
-Optional `THETA_AUDIT_START_DATE` / `THETA_AUDIT_DAYS` control local request metadata only. Preserve the original audit date. Logs and provider evidence remain private and ignored. Establish a private, licence-compliant backup separately.
+Optional `MARKET_DATA_AUDIT_START_DATE` / `MARKET_DATA_AUDIT_DAYS` control local request metadata only. The existing audit archive stays in place. Logs and provider evidence remain private and ignored. Establish a private, licence-compliant backup separately.
 
 ## Validate and deploy
 
@@ -116,7 +123,7 @@ git diff --check
 
 Offline tests cover synthetic rules and safety contracts, not profitability, SPX option P&L, live entitlement, feed correctness or Discord permissions. This strategy requires fresh independent evaluation; old recorded sessions are not part of its operation.
 
-For the existing Pi: review and merge changes to remote `master`, stop the old service and verify it has exited, then pull in the existing clone, preserve `.env`, install dependencies and review the current configuration names. Use `make restart`, `make status`, `make tail`. Process status is not data-health proof; check cached Discord status and logs. No remote deployment or paid request is implied by local validation.
+For the existing Pi: review and merge changes to remote `master`, stop the old service and verify it has exited, then pull in the existing clone, preserve `.env` and the evidence directories, install dependencies, add the Alpaca keys, and run the feed check before starting. Use `make restart`, `make status`, `make tail`. Process status is not data-health proof; check cached Discord status and logs. No remote deployment or paid request is implied by local validation.
 
 ## Repository boundary
 

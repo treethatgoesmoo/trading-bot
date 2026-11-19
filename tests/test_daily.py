@@ -84,15 +84,40 @@ async def test_actual_day_and_dynamic_cmd_dispatch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_explicit_legacy_day_is_read_only_and_live_store_starts_fresh(tmp_path, monkeypatch):
+    from spy_setup import cog as module
+
+    old = tmp_path / 'old'
+    new = tmp_path / 'new'
+    monkeypatch.setattr(module, 'MARKET_DATA_DIR', new)
+    monkeypatch.setattr(module, 'LEGACY_MARKET_DATA_DIR', old)
+    monkeypatch.setattr(config, 'SPX_CHANNEL_ID', 123)
+    store = StateStore(old / 'spy-setups')
+    store.save(new_state(DAY))
+    before = store.path(DAY).read_bytes()
+
+    bot = SpySetupCog(None)
+    bot._now = lambda: session_time(DAY, 16)
+    ctx = SimpleNamespace(channel=SimpleNamespace(id=123), send=AsyncMock())
+    await SpySetupCog.day.callback(bot, ctx, DAY.isoformat())
+    assert ctx.send.call_args.kwargs['embed'].title.startswith('Archived ThetaData')
+    assert store.path(DAY).read_bytes() == before
+    assert not bot.store.path(DAY).exists()
+
+    await SpySetupCog.day.callback(bot, ctx)
+    assert 'unavailable' in ctx.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('day,hour', [(DAY, 16), (date(2026, 11, 27), 13)])
 async def test_automatic_calendar_window_restart_dedup_and_flags(tmp_path, day, hour):
     channel = SimpleNamespace(send=AsyncMock())
     bot = SimpleNamespace(get_channel=lambda _: channel)
-    cog = SpySetupCog(bot, theta_client=object(), directory=tmp_path)
+    cog = SpySetupCog(bot, data_client=object(), directory=tmp_path)
     cog.store.save(new_state(day))
     clock = session_time(day, hour)
     cog._now = lambda: clock
-    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.object(config, 'THETADATA_API_KEY', 'test'), patch.object(config, 'SPX_CHANNEL_ID', 123):
+    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch.object(config, 'SPX_CHANNEL_ID', 123):
         await cog.daily_once()
         channel.send.assert_not_awaited()
         clock += timedelta(minutes=6)
@@ -101,7 +126,7 @@ async def test_automatic_calendar_window_restart_dedup_and_flags(tmp_path, day, 
         assert not list(tmp_path.glob('daily-*'))
         await cog.daily_once()
         await cog.daily_once()
-        restart = SpySetupCog(bot, theta_client=object(), directory=tmp_path)
+        restart = SpySetupCog(bot, data_client=object(), directory=tmp_path)
         restart._now = lambda: clock
         await restart.daily_once()
         channel.send.assert_awaited_once()
@@ -112,10 +137,10 @@ async def test_automatic_calendar_window_restart_dedup_and_flags(tmp_path, day, 
 @pytest.mark.parametrize('failure', ['send', 'cancel', 'disk'])
 async def test_unknown_send_and_disk_fail_closed(tmp_path, failure):
     channel = SimpleNamespace(send=AsyncMock())
-    cog = SpySetupCog(SimpleNamespace(get_channel=lambda _: channel), theta_client=object(), directory=tmp_path)
+    cog = SpySetupCog(SimpleNamespace(get_channel=lambda _: channel), data_client=object(), directory=tmp_path)
     cog.store.save(new_state(DAY))
     cog._now = lambda: session_time(DAY, 16, 6)
-    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.object(config, 'THETADATA_API_KEY', 'test'), patch.object(config, 'SPX_CHANNEL_ID', 123):
+    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch.object(config, 'SPX_CHANNEL_ID', 123):
         if failure == 'disk':
             with patch('spy_setup.daily.reserve_summary', side_effect=OSError):
                 await cog.daily_once()
@@ -136,10 +161,10 @@ async def test_unknown_send_and_disk_fail_closed(tmp_path, failure):
 async def test_monitor_postclose_no_provider_and_no_catchup(tmp_path):
     channel = SimpleNamespace(send=AsyncMock())
     provider = MagicMock()
-    cog = SpySetupCog(SimpleNamespace(get_channel=lambda _: channel), theta_client=provider, directory=tmp_path)
+    cog = SpySetupCog(SimpleNamespace(get_channel=lambda _: channel), data_client=provider, directory=tmp_path)
     clock = session_time(DAY, 16, 6)
     cog._now = lambda: clock
-    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.object(config, 'THETADATA_API_KEY', 'test'), patch.object(config, 'SPX_CHANNEL_ID', 123):
+    with patch.object(config, 'COLLECTION_ENABLED', True), patch.object(config, 'PUBLICATION_ENABLED', True), patch.multiple(config, ALPACA_API_KEY_ID='test', ALPACA_API_SECRET_KEY='test-secret'), patch.object(config, 'SPX_CHANNEL_ID', 123):
         # No saved day is not a zero-signal report, and creates no journal.
         await cog.monitor.coro(cog)
         assert not list(tmp_path.glob('daily-*'))

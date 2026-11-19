@@ -1,6 +1,4 @@
-# SPY setup service. Official Theta SDK requires Python 3.12+.
+# SPY setup service.
 discord.py>=2.3.0
-pandas>=2.0.0
 python-dotenv>=1.0.0
 pytz>=2023.3
-thetadata>=1.0.10,<2

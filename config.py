@@ -32,7 +32,8 @@ def _integer(name, default, *, minimum=0, maximum=None):
 
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
-THETADATA_API_KEY = os.getenv('THETADATA_API_KEY', '').strip()
+ALPACA_API_KEY_ID = os.getenv('ALPACA_API_KEY_ID', '').strip()
+ALPACA_API_SECRET_KEY = os.getenv('ALPACA_API_SECRET_KEY', '').strip()
 COMMAND_PREFIX = '!'
 COLLECTION_ENABLED = _flag('COLLECTION_ENABLED')
 PUBLICATION_ENABLED = _flag('PUBLICATION_ENABLED')
@@ -41,8 +42,12 @@ SPX_POLL_SECONDS = _integer('SPX_POLL_SECONDS', 60, minimum=30, maximum=60)
 
 # Optional request-metadata window, not a strategy or a collection switch.
 # Preserve the original ET start date. Expiry never stops vendor billing.
-THETA_AUDIT_START_DATE = os.getenv('THETA_AUDIT_START_DATE', '').strip()
+MARKET_DATA_AUDIT_START_DATE = os.getenv('MARKET_DATA_AUDIT_START_DATE', '').strip()
 try:
-    THETA_AUDIT_DAYS = int(os.getenv('THETA_AUDIT_DAYS', '30'))
+    MARKET_DATA_AUDIT_DAYS = int(os.getenv('MARKET_DATA_AUDIT_DAYS', '30'))
 except ValueError:
-    THETA_AUDIT_DAYS = 0  # Invalid metadata settings disable recording only.
+    MARKET_DATA_AUDIT_DAYS = 0  # Invalid metadata settings disable recording only.
+
+
+def market_data_configured():
+    return bool(ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)

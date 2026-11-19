@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 from core import market_calendar
 from core.session_bars import new_record, session_time, update_record, utc
-from core.thetadata_client import ThetaDataClient
+from core.alpaca_client import AlpacaClient
 from spy_setup.signals import VERSION, build_snapshot, preceding_sessions, state_key
 from spy_setup.embeds import snapshot_embed
 
@@ -38,7 +38,7 @@ def replay_date(value, now):
 def replay_session(day, now, *, client_factory=None):
     """Six sequential requests, isolated client, in-memory normalized evidence only."""
     replay_date(day.isoformat(), now)
-    client = (client_factory or ThetaDataClient)(purpose='unspecified')
+    client = (client_factory or AlpacaClient)(purpose='unspecified')
     records = {}
     try:
         for index, session in enumerate([day, *preceding_sessions(day)], 1):
